@@ -1,0 +1,5 @@
+# build/release artifacts
+/dist/
+# test scratch
+*.test
+coverage.out
