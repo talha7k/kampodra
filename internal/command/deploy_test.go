@@ -395,22 +395,6 @@ func TestDeployShellExecRequiresACommand(t *testing.T) {
 	}
 }
 
-func TestDeployPipelineNotYetPorted(t *testing.T) {
-	deps, _, _, stderr := setupDeploy(t)
-	if code := runDeploy(t, deps, "--host", statusHost); code != 1 {
-		t.Fatalf("bare deploy: exit = %d, want 1 (fail closed — nothing was deployed)", code)
-	}
-	if !strings.Contains(stderr.String(), "NOT_YET_PORTED") {
-		t.Errorf("stderr = %q, want the honest not-ported message", stderr.String())
-	}
-	if code := runDeploy(t, deps, "--rollback"); code != 1 {
-		t.Fatalf("deploy --rollback: exit = %d, want 1", code)
-	}
-	if code := runDeploy(t, deps, "--version", "abc1234"); code != 1 {
-		t.Fatalf("deploy --version: exit = %d, want 1", code)
-	}
-}
-
 func TestDeployHelpDocumentsLifecycle(t *testing.T) {
 	deps, _, stdout, _ := setupDeploy(t)
 	if code := runDeploy(t, deps, "--help"); code != 0 {

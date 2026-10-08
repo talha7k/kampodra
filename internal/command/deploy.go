@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -19,11 +20,15 @@ import (
 	"github.com/talha7k/kampodra/internal/adapter/transport"
 )
 
-// Ports of scripts/deploy.sh (surface) and scripts/deploy-lifecycle.sh +
-// scripts/common.sh (behavior): the deployment lifecycle over ssh. The
-// build/stream pipeline itself is NOT ported yet — the surface is complete,
-// the pipeline invocation degrades to an honest NOT_YET_PORTED message
-// (fail closed: nothing was deployed).
+// Ports of scripts/deploy.sh (surface + the full build/stream pipeline)
+// and scripts/deploy-lifecycle.sh + scripts/common.sh (behavior): the
+// deployment lifecycle over ssh. The pipeline: clean-tree gate → podman
+// build (GIT_SHA) → podman save | ssh podman load → env push → init
+// restart → VM-side health gate (served-sha verify) → kamal-proxy re-point
+// → public smoke → ledger append → disk report → keep-set cleanup.
+// --rollback [<sha>] resolves explicit arg > deployed-sha stamp > die
+// (NEVER git HEAD). --rolling is the kampodra-native zero-downtime shadow
+// double re-point (see deploy_rolling.go).
 const (
 	deployDiskPath = "/var/lib/containers"
 	deployKeepN    = 2 // prune's --keep default
@@ -32,8 +37,9 @@ const (
 
 const deployHelp = `Usage:
   kampodra deploy [--host root@<ip>] [--profile <name>] [--version <sha7>] [--rollback [<sha7>]]
-                   [--dockerfile <path>] [--ssh-key <path>] [--skip-smoke] [--refresh-config]
-                   [--require-disk <pct>]
+                   [--rolling] [--drain-timeout <s>] [--dockerfile <path>] [--env-file <path>]
+                   [--ssh-key <path>] [--skip-smoke] [--refresh-config] [--require-disk <pct>]
+  kampodra deploy converge [--host root@<ip>] [--profile <name>] [<sha7>]   # finish an interrupted --rolling
   kampodra deploy list   [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--all-profiles]
   kampodra deploy prune  [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--keep N] [--dry-run]
   kampodra deploy logs   [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--lines N] [--follow]
@@ -44,6 +50,32 @@ Lifecycle subcommands are --host-aware with the SAME resolution as deploy:
 --host | --profile <name> | KAMPODRA_PROFILE | config defaultProfile |
 KAMPODRA_HOST; --ssh-key | profile sshKey | KAMPODRA_SSH_KEY | ssh-agent /
 ~/.ssh/config.
+
+  (default) the full pipeline: clean-tree gate → podman build
+            (--build-arg GIT_SHA=<sha>, sha tag from git rev-parse) →
+            podman save | ssh podman load (registry-free stream) →
+            env-file push (--env-file, 0600 + atomic mv, API_GIT_SHA
+            stamped) → init restart → VM-side health gate (served-sha
+            verified against the deployed tag) → kamal-proxy re-point →
+            public smoke → ledger append → disk report → keep-set image
+            cleanup (running + ts-rollback + newest 3 kept).
+            --require-disk <pct> fails closed BEFORE the build when the VM
+            disk is at/over pct; >90% always warns loudly.
+  --version <sha7>  stream an EXISTING local build (no rebuild; the
+            clean-tree gate is skipped — the build happened when that sha
+            was HEAD). The sha is required, never inferred.
+  --rollback [<sha7>]  instant image-tag rollback. The target resolves:
+            the EXPLICIT sha, else the VM's deployed-sha stamp file
+            (written by every successful deploy), else it DIES — it NEVER
+            falls back to git HEAD (rolling back must not redeploy the
+            very build you are rolling back from). Skips build/stream when
+            the tag still exists on the VM (podman image exists); streams
+            from this machine when it does not. Never rewrites the stamp.
+  converge  finish an interrupted --rolling deploy (retag → restart →
+            health gate → re-point to the main container → remove the
+            shadow). The sha comes from the argument, else from the
+            shadow's own image — never HEAD. A leftover shadow from an
+            interrupted deploy must be converged before the next --rolling.
 
   list     deployment history: the VM's sha-tagged images (running one marked)
            merged with the local ledger (~/.kampodra/deployments.jsonl) with a
@@ -59,7 +91,33 @@ KAMPODRA_HOST; --ssh-key | profile sshKey | KAMPODRA_SSH_KEY | ssh-agent /
   shell    interactive sh inside the running api container; ` + "`exec -- <cmd>`" + `
            runs a one-shot command instead.
 
+ROLLING (--rolling, opt-in) — zero-downtime shadow double re-point:
+  the new version boots as <container>-shadow from the SHA tag (never
+  :latest) on the kamal network with a loopback-only probe port; the health
+  gate passes BEFORE any traffic can reach it; kamal-proxy re-points to the
+  shadow (first switch); the old container is init-STOPPED (respawn
+  discipline — never podman stop); :latest is retagged; the service starts;
+  the new main is health-gated; kamal-proxy re-points back (second switch);
+  the shadow is removed LAST. On every failure path the safer state
+  survives: a bad shadow never took traffic (removed, main untouched);
+  a switch already made leaves the shadow SERVING — exit LOUD and finish
+  with "kampodra deploy converge".
+
+  sqlite two-writer overlap: during the switch BOTH containers run against
+  the same sqlite database. The overlap is deliberately bounded — the
+  shadow health gate happens before the switch (main still the only
+  writer of record), the drain budget (--drain-timeout, default 10s)
+  lets in-flight requests finish, and the init stop ends the old writer;
+  worst case ≈ health+drain+stop budgets, with sqlite's file locking
+  (busy timeout) bridging the gap.
+
 Examples:
+  kampodra deploy --host root@203.0.113.10
+  kampodra deploy --host root@203.0.113.10 --rolling --env-file ./ops/env.production
+  kampodra deploy --host root@203.0.113.10 --rollback            # stamp-resolved
+  kampodra deploy --host root@203.0.113.10 --rollback ccc3333    # explicit
+  kampodra deploy --host root@203.0.113.10 --version ccc3333 --skip-smoke
+  kampodra deploy --host root@203.0.113.10 --require-disk 85
   kampodra deploy list --host root@203.0.113.10
   kampodra deploy prune --host root@203.0.113.10 --dry-run
   kampodra deploy logs --host root@203.0.113.10 --lines 200 --follow
@@ -67,33 +125,28 @@ Examples:
   kampodra deploy shell --host root@203.0.113.10 exec -- df -h /var/lib/containers
 `
 
-// pipelineFlags mark deploy modes whose implementation is the build/stream
-// pipeline (not ported yet) — naming them keeps the honest failure.
-var pipelineFlags = []string{"dockerfile", "refresh-config", "require-disk", "skip-smoke", "version", "rollback"}
-
 func newDeployCommand(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "deploy [--host root@<ip>] [--profile <name>] [--version <sha7>] [--rollback [<sha7>]] [--dockerfile <path>] [--ssh-key <path>] [--skip-smoke] [--refresh-config] [--require-disk <pct>]",
-		Short: "stream deploy (podman save | ssh podman load) with sha-verified health gate; --rollback [sha] = instant image-tag rollback",
+		Use:   "deploy [--host root@<ip>] [--profile <name>] [--version <sha7>] [--rollback [<sha7>]] [--rolling] [--dockerfile <path>] [--env-file <path>] [--ssh-key <path>] [--skip-smoke] [--refresh-config] [--require-disk <pct>]",
+		Short: "stream deploy (podman save | ssh podman load) with sha-verified health gate; --rollback [sha] = instant image-tag rollback; --rolling = zero-downtime shadow switch",
 		Args:  cobra.ArbitraryArgs,
-		RunE: func(c *cobra.Command, _ []string) error {
-			for _, f := range pipelineFlags {
-				if c.Flags().Changed(f) {
-					return fmt.Errorf("the deploy build/stream pipeline (--%s) is NOT_YET_PORTED in kampodra — the lifecycle subcommands are live: kampodra deploy list | logs | prune | restart | shell", f)
-				}
-			}
-			return fmt.Errorf("the deploy build/stream pipeline is NOT_YET_PORTED in kampodra — the lifecycle subcommands are live: kampodra deploy list | logs | prune | restart | shell")
+		RunE: func(c *cobra.Command, args []string) error {
+			return runDeployRoot(d, c, args)
 		},
 	}
 	cmd.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODRA_HOST and any profile")
 	cmd.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
 	cmd.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
-	cmd.Flags().String("dockerfile", "", "Dockerfile to build (pipeline)")
-	cmd.Flags().String("version", "", "deploy a specific version (git sha fragment) (pipeline)")
-	cmd.Flags().String("rollback", "", "instant image-tag rollback to the previous (or given) sha (pipeline)")
+	cmd.Flags().String("dockerfile", "Dockerfile", "Containerfile/Dockerfile to build (pipeline; context = the repo root)")
+	cmd.Flags().String("version", "", "stream an existing local build of this sha (required, never inferred)")
+	cmd.Flags().String("rollback", "", "instant image-tag rollback: explicit sha, else the VM's deployed-sha stamp, else die (never HEAD)")
+	cmd.Flags().Lookup("rollback").NoOptDefVal = "-" // bare --rollback = stamp-resolved
+	cmd.Flags().Bool("rolling", false, "zero-downtime: shadow container double re-point (see the ROLLING section in --help)")
+	cmd.Flags().Int("drain-timeout", deployRollingDrainTimeout, "seconds to wait for the proxy switch to confirm before continuing (--rolling only)")
 	cmd.Flags().String("require-disk", "", "fail closed when VM disk usage >= pct (pipeline)")
+	cmd.Flags().String("env-file", "", "push this env file (0600 + atomic mv, API_GIT_SHA stamped) before restart (pipeline)")
 	cmd.Flags().Bool("skip-smoke", false, "skip the public smoke (pipeline)")
-	cmd.Flags().Bool("refresh-config", false, "refresh the config service BEFORE restart (pipeline)")
+	cmd.Flags().Bool("refresh-config", false, "accepted for script compatibility; the retired shell's ansible hook (a warning prints)")
 	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
 		fmt.Fprint(c.OutOrStdout(), deployHelp)
 	})
@@ -116,6 +169,36 @@ func newDeployCommand(d Deps) *cobra.Command {
 		}
 		return ResolveTarget(cfg, host, key, profile, d.Env)
 	}
+
+	// --- converge -------------------------------------------------------------
+	subConverge := &cobra.Command{
+		Use:   "converge [<sha7>]",
+		Short: "finish an interrupted --rolling deploy: retag → restart → health gate → re-point to main → remove the shadow",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(c *cobra.Command, args []string) error {
+			target, err := resolveDeploy(c, "")
+			if err != nil {
+				return err
+			}
+			if err := requireHost(target); err != nil {
+				return err
+			}
+			sha := ""
+			if len(args) == 1 {
+				sha = args[0]
+				if !shaFragmentRe.MatchString(sha) {
+					return fmt.Errorf("converge <sha> must be a git sha fragment (got: %s)", sha)
+				}
+			}
+			drain, _ := c.Flags().GetInt("drain-timeout")
+			return runDeployConverge(d, c.Context(), target, sha, drain)
+		},
+	}
+	deployTargetFlags(subConverge)
+	subConverge.Flags().Int("drain-timeout", deployRollingDrainTimeout, "drain budget carried from the interrupted deploy (s)")
+	subConverge.SetHelpFunc(func(c *cobra.Command, _ []string) {
+		fmt.Fprint(c.OutOrStdout(), deployHelp)
+	})
 
 	// --- list ---------------------------------------------------------------
 	subList := &cobra.Command{
@@ -241,8 +324,133 @@ func newDeployCommand(d Deps) *cobra.Command {
 	}
 	deployTargetFlags(subShell)
 
-	cmd.AddCommand(subList, subPrune, subLogs, subRestart, subShell)
+	cmd.AddCommand(subConverge, subList, subPrune, subLogs, subRestart, subShell)
 	return cmd
+}
+
+// runDeployRoot dispatches the pipeline surface: --rollback / --version /
+// plain (optionally --rolling), with the shell's argument grammar (a
+// positional in rollback mode is the sha; anything else is unknown).
+func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
+	host, _ := c.Flags().GetString("host")
+	key, _ := c.Flags().GetString("ssh-key")
+	profile, _ := c.Flags().GetString("profile")
+	versionArg, _ := c.Flags().GetString("version")
+	rollbackRaw, _ := c.Flags().GetString("rollback")
+	rollbackSet := c.Flags().Changed("rollback")
+	rolling, _ := c.Flags().GetBool("rolling")
+	drain, _ := c.Flags().GetInt("drain-timeout")
+	dockerfile, _ := c.Flags().GetString("dockerfile")
+	envFile, _ := c.Flags().GetString("env-file")
+	requireDisk, _ := c.Flags().GetString("require-disk")
+	skipSmoke, _ := c.Flags().GetBool("skip-smoke")
+	refreshCfg, _ := c.Flags().GetBool("refresh-config")
+
+	if versionSet := c.Flags().Changed("version"); versionSet && rollbackSet {
+		return fmt.Errorf("--rollback and --version are exclusive")
+	}
+	if rolling && rollbackSet {
+		return fmt.Errorf("--rolling and --rollback are exclusive (rollback is instant — the old image is already on the VM)")
+	}
+	if c.Flags().Changed("drain-timeout") && !rolling {
+		return fmt.Errorf("--drain-timeout requires --rolling")
+	}
+	if drain < 0 {
+		return fmt.Errorf("--drain-timeout must be a non-negative number of seconds (got: %d)", drain)
+	}
+	if requireDisk != "" {
+		if n, err := strconv.Atoi(requireDisk); err != nil || n < 0 || n > 100 {
+			return fmt.Errorf("--require-disk must be a percentage 0-100 (got: %s)", requireDisk)
+		}
+	}
+	if versionSet := c.Flags().Changed("version"); versionSet && !shaFragmentRe.MatchString(versionArg) {
+		return fmt.Errorf("--version must be a git sha fragment (got: %s)", versionArg)
+	}
+	// positionals: only the rollback mode takes one (the sha)
+	rollbackSha := ""
+	if rollbackSet && rollbackRaw != "-" {
+		rollbackSha = rollbackRaw
+	}
+	if len(args) > 0 {
+		if !rollbackSet {
+			return fmt.Errorf("unknown argument: %s (--help)", args[0])
+		}
+		if rollbackSha != "" {
+			return fmt.Errorf("rollback sha given twice (--rollback=%s and %s)", rollbackSha, args[0])
+		}
+		rollbackSha = args[0]
+	}
+	if rollbackSet && rollbackSha != "" && !shaFragmentRe.MatchString(rollbackSha) {
+		return fmt.Errorf("--rollback must be a git sha fragment (or bare for stamp-resolved rollback; got: %s)", rollbackSha)
+	}
+
+	cfg, err := state.LoadConfig(d.Home)
+	if err != nil {
+		return err
+	}
+	target, err := ResolveTarget(cfg, host, key, profile, d.Env)
+	if err != nil {
+		return err
+	}
+	if err := requireHost(target); err != nil {
+		return err
+	}
+
+	opts := deployOpts{
+		dockerfile:   dockerfile,
+		envFile:      envFile,
+		requireDisk:  requireDisk,
+		skipSmoke:    skipSmoke,
+		refreshCfg:   refreshCfg,
+		rolling:      rolling,
+		drainTimeout: drain,
+	}
+	ctx := c.Context()
+
+	if rollbackSet {
+		// THE resolution ladder: explicit arg > the VM's deployed-sha stamp
+		// file > die. NEVER git HEAD (the shell's silent-HEAD fallback
+		// redeployed the very build being rolled back from).
+		sha, _, err := resolveRollbackSha(d, ctx, target, rollbackSha)
+		if err != nil {
+			return err
+		}
+		return runDeployPipeline(d, ctx, target, sha, "rollback", opts)
+	}
+
+	ver := versionArg
+	mode := "deploy"
+	if c.Flags().Changed("version") {
+		// version mode: stream an EXISTING build — no rebuild, no clean-tree
+		// gate (the build already happened when that sha was HEAD).
+		mode = "version"
+	} else {
+		// deploy mode: build HEAD — the sha comes from git rev-parse (the
+		// clean-tree gate guarantees the tree shipped what HEAD names).
+		out, err := localOutput(ctx, "", "git", "rev-parse", "--short", "HEAD")
+		if err != nil {
+			return fmt.Errorf("cannot resolve HEAD (not a git repository?) — deploy stamps the git sha; from a non-repo directory use --version <sha7> to stream an existing build")
+		}
+		ver = strings.TrimSpace(out)
+	}
+	return runDeployPipeline(d, ctx, target, ver, mode, opts)
+}
+
+// resolveRollbackSha is the rollback ladder: explicit argument first, then
+// the VM's deployed-sha stamp file, then die naming both routes — the
+// error never suggests git HEAD.
+func resolveRollbackSha(d Deps, ctx context.Context, target Target, explicit string) (string, string, error) {
+	if explicit != "" {
+		return explicit, "explicit", nil
+	}
+	stampFile := target.Project.DeployedShaFile
+	out, err := d.Runner.Run(ctx, target.HostSpec, fmt.Sprintf("cat %s 2>/dev/null", stampFile))
+	sha := strings.TrimSpace(out)
+	if err == nil && shaFragmentRe.MatchString(sha) {
+		fmt.Fprintf(d.Stdout, "[deploy] rollback target: %s (from the VM's deployed-sha stamp)\n", sha)
+		return sha, "stamp", nil
+	}
+	return "", "", fmt.Errorf("no rollback target: pass the sha (kampodra deploy --rollback <sha7>) or make sure %s exists on the VM (every successful deploy writes it; see: kampodra deploy list) — a bare --rollback never falls back to git HEAD", stampFile)
 }
 
 // fanOutProfileNames: single-shot resolution yields [""] (the normal
