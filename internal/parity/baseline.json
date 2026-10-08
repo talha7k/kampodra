@@ -3,7 +3,6 @@
     "bluegreen",
     "dns",
     "image-import",
-    "metrics",
     "migrate"
   ]
 }
