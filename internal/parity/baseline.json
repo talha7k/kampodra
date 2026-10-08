@@ -2,7 +2,6 @@
   "not_yet_ported": [
     "backup",
     "bluegreen",
-    "config",
     "dns",
     "image-import",
     "metrics",
