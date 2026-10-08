@@ -1,7 +1,6 @@
 {
   "not_yet_ported": [
     "bluegreen",
-    "dns",
     "image-import",
     "migrate"
   ]
