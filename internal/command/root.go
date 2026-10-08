@@ -151,6 +151,7 @@ func NewRoot(version string, deps Deps) *cobra.Command {
 	root.AddCommand(newEnvCommand(d))
 	root.AddCommand(newSSHCommand(d))
 	root.AddCommand(newConfigCommand(d))
+	root.AddCommand(newBackupCommand(d))
 	return root
 }
 
