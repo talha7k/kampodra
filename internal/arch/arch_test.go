@@ -32,7 +32,7 @@ func TestAdapterLayering(t *testing.T) {
 		if !entry.IsDir() {
 			continue
 		}
-		self := "github.com/talha7k/kampodine-go/internal/adapter/" + entry.Name()
+		self := "github.com/talha7k/kampodra/internal/adapter/" + entry.Name()
 		dir := filepath.Join(adapterRoot, entry.Name())
 		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
 		if err != nil {
@@ -45,11 +45,11 @@ func TestAdapterLayering(t *testing.T) {
 		for _, file := range files {
 			for _, imp := range imports(t, file) {
 				switch {
-				case strings.HasPrefix(imp, "github.com/talha7k/kampodine-go/internal/command"):
+				case strings.HasPrefix(imp, "github.com/talha7k/kampodra/internal/command"):
 					violations = append(violations, file+": adapter imports internal/command ("+imp+")")
-				case imp == "github.com/talha7k/kampodine-go/internal/adapter":
+				case imp == "github.com/talha7k/kampodra/internal/adapter":
 					violations = append(violations, file+": adapter imports its own parent package")
-				case strings.HasPrefix(imp, "github.com/talha7k/kampodine-go/internal/adapter/"):
+				case strings.HasPrefix(imp, "github.com/talha7k/kampodra/internal/adapter/"):
 					if imp != self {
 						violations = append(violations, file+": sideways adapter import ("+imp+") — go up through the command layer or inject an interface")
 					}
@@ -65,8 +65,8 @@ func TestAdapterLayering(t *testing.T) {
 func TestEntrypointIsThin(t *testing.T) {
 	file := filepath.Join("../..", "cmd", "kampodine", "main.go")
 	for _, imp := range imports(t, file) {
-		if strings.HasPrefix(imp, "github.com/talha7k/kampodine-go/internal/") &&
-			imp != "github.com/talha7k/kampodine-go/internal/command" {
+		if strings.HasPrefix(imp, "github.com/talha7k/kampodra/internal/") &&
+			imp != "github.com/talha7k/kampodra/internal/command" {
 			t.Errorf("%s: cmd/kampodine must import internal/command only, found %s", file, imp)
 		}
 	}

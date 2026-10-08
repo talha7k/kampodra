@@ -6,7 +6,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/talha7k/kampodine-go/internal/parity"
+	"github.com/talha7k/kampodra/internal/parity"
 )
 
 // BuildSnapshot flattens a cobra tree into the parity guard's view: every

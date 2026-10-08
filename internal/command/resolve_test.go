@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/talha7k/kampodine-go/internal/adapter/state"
+	"github.com/talha7k/kampodra/internal/adapter/state"
 )
 
 func mustCfg(t *testing.T, json string) *state.Config {

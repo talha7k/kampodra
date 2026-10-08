@@ -7,10 +7,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	initadapter "github.com/talha7k/kampodine-go/internal/adapter/init"
-	"github.com/talha7k/kampodine-go/internal/adapter/osfacts"
-	"github.com/talha7k/kampodine-go/internal/adapter/runtime"
-	"github.com/talha7k/kampodine-go/internal/adapter/state"
+	initadapter "github.com/talha7k/kampodra/internal/adapter/init"
+	"github.com/talha7k/kampodra/internal/adapter/osfacts"
+	"github.com/talha7k/kampodra/internal/adapter/runtime"
+	"github.com/talha7k/kampodra/internal/adapter/state"
 )
 
 // Constants from the shell scripts (status.sh / deploy-lifecycle.sh).
@@ -176,7 +176,7 @@ func runStatus(d Deps, cmd *cobra.Command) error {
 
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "== blue/green pair ==")
-	fmt.Fprintln(out, "bluegreen is NOT_YET_PORTED in kampodine-go — tracked by internal/parity/baseline.json; pair view skipped")
+	fmt.Fprintln(out, "bluegreen is NOT_YET_PORTED in kampodra — tracked by internal/parity/baseline.json; pair view skipped")
 	return nil
 }
 

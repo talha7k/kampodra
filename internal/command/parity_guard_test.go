@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/talha7k/kampodine-go/internal/command"
-	"github.com/talha7k/kampodine-go/internal/parity"
+	"github.com/talha7k/kampodra/internal/command"
+	"github.com/talha7k/kampodra/internal/parity"
 )
 
 // TestCommandParityGuard is THE ratchet: the Go cobra tree must cover the

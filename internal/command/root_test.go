@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/talha7k/kampodine-go/internal/command"
+	"github.com/talha7k/kampodra/internal/command"
 )
 
 func runRoot(t *testing.T, args ...string) (int, string, string) {

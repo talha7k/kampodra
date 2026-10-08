@@ -23,7 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/talha7k/kampodine-go/internal/parity"
+	"github.com/talha7k/kampodra/internal/parity"
 )
 
 const (

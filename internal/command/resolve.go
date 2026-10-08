@@ -1,8 +1,8 @@
 package command
 
 import (
-	"github.com/talha7k/kampodine-go/internal/adapter/state"
-	"github.com/talha7k/kampodine-go/internal/adapter/transport"
+	"github.com/talha7k/kampodra/internal/adapter/state"
+	"github.com/talha7k/kampodra/internal/adapter/transport"
 )
 
 // defaultProxyHost is APP_HOST_HEADER's default (the shell scripts'
