@@ -206,10 +206,13 @@ func (r *deployRun) execute() error {
 
 	// --- stream (skipped when the VM already has the tag: rollback to an
 	// image that never left the host is instant and works even when the
-	// local build is long gone) ------------------------------------------
-	if r.mode == "rollback" && !r.skipStream {
+	// local build is long gone; an explicit --version deploy of a sha that
+	// already lives on the VM is the same case — verified live 2026-10-08
+	// when re-deploying an existing sha tried to stream from a machine
+	// that never had it) ------------------------------------------
+	if (r.mode == "rollback" || r.mode == "version") && !r.skipStream {
 		if err := r.vmTolerantErr(fmt.Sprintf("podman image exists %s:%s", pj.ImagePrefix, r.ver)); err == nil {
-			r.say("rollback: %s:%s already on the VM — skipping build/stream", pj.ImagePrefix, r.ver)
+			r.say("%s:%s already on the VM — skipping build/stream", pj.ImagePrefix, r.ver)
 			r.skipStream = true
 		}
 	}
