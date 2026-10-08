@@ -286,7 +286,7 @@ func TestDeployPipelineHappyPathSequencePinned(t *testing.T) {
 	mustContain(t, stdout.String(), "done (version: "+pipelineVer+"). instant rollback: kampodra deploy --rollback")
 }
 
-func TestDeployPipelineVersionModeStreamsExistingBuild(t *testing.T) {
+func TestDeployPipelineVersionModeVMHasTagSkipsStream(t *testing.T) {
 	deps, stubDir, stdout, _, _ := setupDeployPipeline(t)
 	writeFixture(t, stubDir, "gitstatus", " M dirty.txt\n") // dirty tree MUST NOT block version mode
 	writeFixture(t, stubDir, "gitsha", "def9999\n")
@@ -297,15 +297,31 @@ func TestDeployPipelineVersionModeStreamsExistingBuild(t *testing.T) {
 	}
 	inv := invocations(t, stubDir)
 	if strings.Contains(inv, "podman build") {
-		t.Errorf("version mode must stream the EXISTING build, never rebuild:\n%s", inv)
+		t.Errorf("version mode must never rebuild:\n%s", inv)
 	}
-	if !strings.Contains(inv, "podman save --format docker-archive "+deployImageRepo+":def9999") {
-		t.Errorf("version mode never streamed:\n%s", inv)
+	if strings.Contains(inv, "podman save --format docker-archive") {
+		t.Errorf("version mode with the tag already on the VM must skip streaming:\n%s", inv)
 	}
+	mustContain(t, stdout.String(), "already on the VM — skipping build/stream")
 	if strings.Contains(inv, "git status --porcelain") {
 		t.Error("version mode must skip the clean-tree gate (the build already happened when that sha was HEAD)")
 	}
 	mustContain(t, stdout.String(), "Total deployments: 4 · current tag: def9999")
+}
+
+func TestDeployPipelineVersionModeStreamsWhenVMLacksTag(t *testing.T) {
+	deps, stubDir, _, _, _ := setupDeployPipeline(t)
+	writeFixture(t, stubDir, "gitstatus", " M dirty.txt\n")
+	writeFixture(t, stubDir, "health", `{"ok":true,"git":"def9999"}`)
+	writeFixture(t, stubDir, "served-sha", "def9999")
+	writeFixture(t, stubDir, "vmimageexists", "1") // VM does NOT have it
+	if code := runDeploy(t, deps, "--host", statusHost, "--version", "def9999"); code != 0 {
+		t.Fatalf("exit = %d\nstderr: %s", code, stderrString(t, deps))
+	}
+	inv := invocations(t, stubDir)
+	if !strings.Contains(inv, "podman save --format docker-archive "+deployImageRepo+":def9999") {
+		t.Errorf("version mode must stream the existing local build when the VM lacks it:\n%s", inv)
+	}
 }
 
 func TestDeployPipelineDirtyTreeDiesBeforeBuild(t *testing.T) {
