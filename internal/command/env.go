@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/talha7k/kampodra/internal/adapter/envfile"
+	"github.com/talha7k/kampodra/internal/adapter/envschema"
 	"github.com/talha7k/kampodra/internal/adapter/state"
 )
 
@@ -57,14 +59,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 		c.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
 	}
 	resolve := func(c *cobra.Command) (Target, error) {
-		host, _ := c.Flags().GetString("host")
-		key, _ := c.Flags().GetString("ssh-key")
-		profile, _ := c.Flags().GetString("profile")
-		cfg, err := state.LoadConfig(d.Home)
-		if err != nil {
-			return Target{}, err
-		}
-		return ResolveTarget(cfg, host, key, profile, d.Env)
+		return resolveEnvTarget(d, c)
 	}
 
 	subList := &cobra.Command{
@@ -248,8 +243,122 @@ func newEnvCommand(d Deps) *cobra.Command {
 	}
 	envFlags(subDiff)
 
-	cmd.AddCommand(subList, subPush, subPull, subFingerprint, subDiff)
+	subFromSchema := newEnvFromSchemaCommand(d)
+	envFlags(subFromSchema)
+	cmd.AddCommand(subList, subPush, subPull, subFingerprint, subDiff, subFromSchema)
 	return cmd
+}
+
+// newEnvFromSchemaCommand is kampodra-NATIVE (beyond the frozen spec): the
+// deploy.sh varlock block, surfaced as its own subcommand — generate the
+// env file from the repo's COMMITTED .env.schema (pass() refs resolve via
+// the repo's varlock + the pass store; values NEVER echo), then write it
+// locally (--out, 0600) or push it through the env family's flow.
+func newEnvFromSchemaCommand(d Deps) *cobra.Command {
+	sub := &cobra.Command{
+		Use:   "from-schema [--repo <path>] [--schema apps/api/.env.schema] [--out <file>]",
+		Short: "kampodra-native: generate the env file from the repo's committed .env.schema via varlock (fingerprints only), write locally or push",
+		Args:  cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			return runEnvFromSchema(d, c)
+		},
+	}
+	sub.Flags().String("repo", ".", "the app repo (must contain node_modules/.bin/varlock and the committed schema)")
+	sub.Flags().String("schema", "apps/api/.env.schema", "schema path relative to the repo root")
+	sub.Flags().String("out", "", "write the generated env file here (0600) instead of pushing")
+	return sub
+}
+
+func runEnvFromSchema(d Deps, c *cobra.Command) error {
+	repoFlag, _ := c.Flags().GetString("repo")
+	schema, _ := c.Flags().GetString("schema")
+	out, _ := c.Flags().GetString("out")
+
+	repoRoot := repoFlag
+	if resolved, err := gitRepoRoot(c.Context(), repoRoot); err == nil {
+		repoRoot = resolved
+	} else if repoFlag == "." {
+		return fmt.Errorf("no git repo at . — pass --repo <path>")
+	}
+
+	target, err := resolveEnvTarget(d, c)
+	if out == "" {
+		if err != nil {
+			return err
+		}
+		if err := requireHost(target); err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprintf(d.Stdout, "[env] generating from %s in %s (committed schema; secrets resolve from the pass store — never echoed)\n", schema, repoRoot)
+	body, err := envschema.Generate(c.Context(), repoRoot, schema, target.Project.EnvClearKeys)
+	if err != nil {
+		return err
+	}
+
+	if out != "" {
+		f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		if err != nil {
+			return fmt.Errorf("cannot write %s", out)
+		}
+		if _, err := f.WriteString(body); err != nil {
+			f.Close()
+			return fmt.Errorf("cannot write %s", out)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("cannot write %s", out)
+		}
+		if err := os.Chmod(out, 0o600); err != nil {
+			return fmt.Errorf("cannot write %s", out)
+		}
+		fmt.Fprintf(d.Stdout, "[env] wrote %s (0600) — fingerprint summary (values NEVER printed):\n", out)
+		fmt.Fprint(d.Stdout, envfile.Table(body))
+		return nil
+	}
+
+	remote := target.Project.EnvFilePath
+	fmt.Fprintf(d.Stdout, "[env] pushing generated env -> %s:%s (fingerprint summary below; values are NEVER printed)\n",
+		target.HostSpec.Host, remote)
+	fmt.Fprint(d.Stdout, envfile.Table(body))
+	tmp := envfile.RemoteTmpPath(remote, os.Getpid())
+	if _, err := d.Runner.RunWithStdin(c.Context(), target.HostSpec, "umask 077; cat > "+tmp, strings.NewReader(body)); err != nil {
+		return fmt.Errorf("upload failed")
+	}
+	if _, err := d.Runner.Run(c.Context(), target.HostSpec, fmt.Sprintf("chmod 600 %s && mv -f %s %s", tmp, tmp, remote)); err != nil {
+		return fmt.Errorf("atomic install failed (remote temp left at: %s)", tmp)
+	}
+	fmt.Fprintf(d.Stdout, "[env] installed %s (0600) on %s\n", remote, target.HostSpec.Host)
+	fmt.Fprintf(d.Stdout, "[env] restart to apply: ssh %s 'rc-service %s restart'   # or: kampodra deploy\n", target.HostSpec.Host, target.Project.Container)
+	return nil
+}
+
+// gitRepoRoot resolves the repo root via git (the shell's
+// `git rev-parse --show-toplevel`).
+func gitRepoRoot(ctx context.Context, dir string) (string, error) {
+	bin, err := exec.LookPath("git")
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command(bin, "-C", dir, "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// resolveEnvTarget is the env family's target resolution: the standard
+// flag > profile > env ladder over the three shared flags.
+func resolveEnvTarget(d Deps, c *cobra.Command) (Target, error) {
+	host, _ := c.Flags().GetString("host")
+	key, _ := c.Flags().GetString("ssh-key")
+	profile, _ := c.Flags().GetString("profile")
+	cfg, err := state.LoadConfig(d.Home)
+	if err != nil {
+		return Target{}, err
+	}
+	return ResolveTarget(cfg, host, key, profile, d.Env)
 }
 
 // requireHost is the shell scripts' require_host: a missing target is an

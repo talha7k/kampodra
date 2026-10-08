@@ -30,6 +30,7 @@ type Config struct {
 	Network         string   `json:"network"`         // the podman network shared with kamal-proxy
 	ShadowProbePort string   `json:"shadowProbePort"` // the shadow container's loopback-only probe port
 	DeployedShaFile string   `json:"deployedShaFile"` // the VM's deployed-sha stamp (rollback's fallback resolution)
+	EnvClearKeys    []string `json:"envClearKeys"`    // env keys OWNED by the init script — env from-schema drops them from varlock output
 }
 
 // LoadDefault returns today's values as NAMED DEFAULTS — the single file
@@ -52,6 +53,7 @@ func LoadDefault() Config {
 		Network:         "kamal",
 		ShadowProbePort: "18080",
 		DeployedShaFile: "/etc/kampodine/deployed-sha",
+		EnvClearKeys:    []string{"NODE_ENV", "PORT", "LIBSQL_TENANT_DIR", "LIBSQL_API_MOUNT", "STATIC_SPA_MOUNT"},
 	}
 }
 
@@ -72,6 +74,7 @@ type Overrides struct {
 	Network         string   `json:"network,omitempty"`
 	ShadowProbePort string   `json:"shadowProbePort,omitempty"`
 	DeployedShaFile string   `json:"deployedShaFile,omitempty"`
+	EnvClearKeys    []string `json:"envClearKeys,omitempty"`
 }
 
 // envBindings maps every Config field to its KAMPODRA_* env override.
@@ -95,6 +98,7 @@ var envBindings = []struct {
 	{"KAMPODRA_NETWORK", func(c *Config, v string) { c.Network = v }},
 	{"KAMPODRA_SHADOW_PROBE_PORT", func(c *Config, v string) { c.ShadowProbePort = v }},
 	{"KAMPODRA_DEPLOYED_SHA_FILE", func(c *Config, v string) { c.DeployedShaFile = v }},
+	{"KAMPODRA_ENV_CLEAR_KEYS", func(c *Config, v string) { c.EnvClearKeys = strings.Fields(v) }},
 }
 
 // Resolve layers the config: LoadDefault, then KAMPODRA_* env, then the
@@ -155,6 +159,9 @@ func Resolve(rawOverrides json.RawMessage, lookup func(string) (string, bool)) C
 			}
 			if o.DeployedShaFile != "" {
 				cfg.DeployedShaFile = o.DeployedShaFile
+			}
+			if len(o.EnvClearKeys) > 0 {
+				cfg.EnvClearKeys = o.EnvClearKeys
 			}
 		}
 	}

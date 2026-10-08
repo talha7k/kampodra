@@ -249,12 +249,15 @@ func TestDeployPipelineHappyPathSequencePinned(t *testing.T) {
 	mustContain(t, inv, "http://127.0.0.1:8080/api/auth/ok")
 	mustContain(t, inv, pipelineProxyCmd+" --host app.example.com --target "+deployContainer+":8080 --tls --health-check-path /api/auth/ok")
 
-	// ORDER pins: gate before build; save before load; retag after load;
-	// restart after retag; health after restart; proxy after health;
-	// cleanup rmi after the proxy switch; stamp after cleanup.
+	// ORDER pins: gate before build; both stream legs after the build (save
+	// and load are CONCURRENT — a pipe — so their log lines race and may
+	// legitimately land in either order); retag after the stream; restart
+	// after retag; health after restart; proxy after health; cleanup rmi
+	// after the proxy switch; stamp after cleanup.
 	order := [][]string{
 		{"git status --porcelain", "podman build"},
-		{"podman save --format docker-archive", "podman load"},
+		{"podman build", "podman save --format docker-archive"},
+		{"podman build", "podman load"},
 		{"podman load", "podman tag " + pipelineImageTag},
 		{"podman tag " + pipelineImageTag, "rc-service " + deployContainer + " restart"},
 		{"rc-service " + deployContainer + " restart", "http://127.0.0.1:8080"},
