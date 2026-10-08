@@ -1,0 +1,19 @@
+{
+  "name": "@kampodra/linux-x64",
+  "version": "0.7.0-alpha.1",
+  "description": "kampodine native binary for linux-x64 (placeholder \u2014 make release fills bin/kampodine from dist/)",
+  "license": "AGPL-3.0",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/talha7k/kampodra.git"
+  }
+}

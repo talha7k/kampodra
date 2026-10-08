@@ -7,7 +7,7 @@ package main
 import (
 	"os"
 
-	"github.com/talha7k/kampodine-go/internal/command"
+	"github.com/talha7k/kampodra/internal/command"
 )
 
 // version is stamped at release time via -ldflags "-X main.version=…"; the

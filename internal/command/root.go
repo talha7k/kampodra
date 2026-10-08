@@ -13,8 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/talha7k/kampodine-go/internal/adapter/probe"
-	"github.com/talha7k/kampodine-go/internal/adapter/transport"
+	"github.com/talha7k/kampodra/internal/adapter/probe"
+	"github.com/talha7k/kampodra/internal/adapter/transport"
 )
 
 // rootIndex is the vercel-style command index — byte-equal to the committed

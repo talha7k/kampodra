@@ -1,4 +1,4 @@
-module github.com/talha7k/kampodine-go
+module github.com/talha7k/kampodra
 
 go 1.27.1
 

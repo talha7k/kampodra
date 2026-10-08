@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/talha7k/kampodine-go/internal/adapter/probe"
-	"github.com/talha7k/kampodine-go/internal/command"
+	"github.com/talha7k/kampodra/internal/adapter/probe"
+	"github.com/talha7k/kampodra/internal/command"
 )
 
 // Port of the shell repo's fixture pattern (test/status-ops.test.ts): a
