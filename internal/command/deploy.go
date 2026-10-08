@@ -137,7 +137,7 @@ func newDeployCommand(d Deps) *cobra.Command {
 	cmd.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODRA_HOST and any profile")
 	cmd.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
 	cmd.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
-	cmd.Flags().String("dockerfile", "Dockerfile", "Containerfile/Dockerfile to build (pipeline; context = the repo root)")
+	cmd.Flags().String("dockerfile", "", "Containerfile/Dockerfile to build (pipeline; context = the repo root) — default: the project config's dockerfile (kampodra.json/env/profile, else Dockerfile)")
 	cmd.Flags().String("version", "", "stream an existing local build of this sha (required, never inferred)")
 	cmd.Flags().String("rollback", "", "instant image-tag rollback: explicit sha, else the VM's deployed-sha stamp, else die (never HEAD)")
 	cmd.Flags().Lookup("rollback").NoOptDefVal = "-" // bare --rollback = stamp-resolved
@@ -167,7 +167,11 @@ func newDeployCommand(d Deps) *cobra.Command {
 		if err != nil {
 			return Target{}, err
 		}
-		return ResolveTarget(cfg, host, key, profile, d.Env)
+		mf, err := d.manifestFor()
+		if err != nil {
+			return Target{}, err
+		}
+		return ResolveTarget(cfg, host, key, profile, mf, d.Env)
 	}
 
 	// --- converge -------------------------------------------------------------
@@ -388,13 +392,20 @@ func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	target, err := ResolveTarget(cfg, host, key, profile, d.Env)
+	mf, err := d.manifestFor()
+	if err != nil {
+		return err
+	}
+	target, err := ResolveTarget(cfg, host, key, profile, mf, d.Env)
 	if err != nil {
 		return err
 	}
 	if err := requireHost(target); err != nil {
 		return err
 	}
+	// The --dockerfile ladder: explicit flag > project config (whose value
+	// already merged env > profile block > kampodra.json > "Dockerfile").
+	dockerfile = firstNonEmpty(dockerfile, target.Project.Dockerfile)
 
 	opts := deployOpts{
 		dockerfile:   dockerfile,

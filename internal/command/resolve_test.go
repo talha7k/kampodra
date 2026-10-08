@@ -3,8 +3,10 @@ package command
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/talha7k/kampodra/internal/adapter/project"
 	"github.com/talha7k/kampodra/internal/adapter/state"
 )
 
@@ -100,7 +102,7 @@ func TestResolveTarget(t *testing.T) {
 				v, ok := tt.env[key]
 				return v, ok
 			}
-			got, err := ResolveTarget(cfg, tt.flagHost, tt.flagKey, tt.flagProfile, lookup)
+			got, err := ResolveTarget(cfg, tt.flagHost, tt.flagKey, tt.flagProfile, nil, lookup)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("want error")
@@ -121,4 +123,99 @@ func TestResolveTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveTargetManifestShapesProject(t *testing.T) {
+	// The repo manifest slots into the ladder between the defaults and the
+	// profile block: profile project block > manifest > defaults.
+	cfg := mustCfg(t, `{
+	  "defaultProfile": "def",
+	  "profiles": {
+	    "def": {"project": {"container": "pf-container"}},
+	    "bare": {}
+	  }
+	}`)
+	manifest := &project.Manifest{
+		Path:   "/repo/kampodra.json",
+		Fields: project.ManifestFields{Container: "mf-container", DataDir: "/mf/data", Dockerfile: "mf/Containerfile"},
+	}
+
+	t.Run("manifest beats defaults where the profile is silent", func(t *testing.T) {
+		got, err := ResolveTarget(cfg, "", "", "bare", manifest, func(string) (string, bool) { return "", false })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Project.Container != "mf-container" {
+			t.Errorf("container = %q, want the manifest value", got.Project.Container)
+		}
+		if got.Project.DataDir != "/mf/data" {
+			t.Errorf("dataDir = %q, want the manifest value", got.Project.DataDir)
+		}
+	})
+	t.Run("profile project block beats the manifest", func(t *testing.T) {
+		got, err := ResolveTarget(cfg, "", "", "def", manifest, func(string) (string, bool) { return "", false })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Project.Container != "pf-container" {
+			t.Errorf("container = %q, want the profile block value", got.Project.Container)
+		}
+		if got.Project.DataDir != "/mf/data" {
+			t.Errorf("dataDir = %q, want the manifest value (profile silent)", got.Project.DataDir)
+		}
+	})
+	t.Run("no manifest keeps defaults + profile", func(t *testing.T) {
+		got, err := ResolveTarget(cfg, "", "", "def", nil, func(string) (string, bool) { return "", false })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Project.Container != "pf-container" {
+			t.Errorf("container = %q, want the profile block value", got.Project.Container)
+		}
+		if got.Project.DataDir != project.LoadDefault().DataDir {
+			t.Errorf("dataDir = %q, want the default", got.Project.DataDir)
+		}
+	})
+}
+
+func TestDepsManifestForDiscoversAndFailsClosed(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "kampodra.json"), []byte(`{"dataDir": "/repo/data"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(repo, "apps", "api")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("discovers from a nested cwd", func(t *testing.T) {
+		d := Deps{Dir: nested}
+		mf, err := d.manifestFor()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mf == nil || mf.Fields.DataDir != "/repo/data" {
+			t.Fatalf("manifestFor() = %+v, want the repo manifest", mf)
+		}
+	})
+	t.Run("no manifest in tree is nil, not an error", func(t *testing.T) {
+		d := Deps{Dir: t.TempDir()}
+		mf, err := d.manifestFor()
+		if err != nil || mf != nil {
+			t.Fatalf("manifestFor() = (%v, %v), want (nil, nil)", mf, err)
+		}
+	})
+	t.Run("malformed manifest fails closed", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(repo, "kampodra.json"), []byte(`{"dataDir": `), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		d := Deps{Dir: nested}
+		_, err := d.manifestFor()
+		if err == nil {
+			t.Fatal("malformed manifest must fail closed")
+		}
+		if !strings.Contains(err.Error(), "kampodra.json") {
+			t.Errorf("error = %v, want it to name the manifest", err)
+		}
+	})
 }

@@ -25,12 +25,13 @@ type Target struct {
 //	key:   --ssh-key flag > profile sshKey > KAMPODRA_SSH_KEY
 //	proxy: profile project.proxyHost > KAMPODRA_PROXY_HOST > project default
 //	       (the profile's legacy flat proxyHost field still wins when set)
-//	project: project.Resolve(profile "project" block, env)
+//	project: flags > KAMPODRA_* env > profile "project" block >
+//	         kampodra.json manifest (nil = none) > project defaults
 //
-// An explicit per-invocation flag always wins; the profile beats the legacy
-// env it replaces. An unknown profile name fails closed naming the known
+// An explicit per-invocation flag always wins; session env beats the
+// persisted layers. An unknown profile name fails closed naming the known
 // set.
-func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, lookup func(string) (string, bool)) (Target, error) {
+func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, manifest *project.Manifest, lookup func(string) (string, bool)) (Target, error) {
 	name, err := state.SelectProfileName(cfg, flagProfile, lookup)
 	if err != nil {
 		return Target{}, err
@@ -43,7 +44,7 @@ func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, loo
 		}
 	}
 
-	pc := project.Resolve(profile.Project, lookup)
+	pc := project.Resolve(manifest, profile.Project, lookup)
 	proxy := pc.ProxyHost
 	if profile.ProxyHost != "" {
 		// The legacy flat field predates the project block; explicit config

@@ -464,5 +464,9 @@ func resolveAnyTarget(d Deps, c *cobra.Command) (Target, error) {
 	if err != nil {
 		return Target{}, err
 	}
-	return ResolveTarget(cfg, host, key, profile, d.Env)
+	mf, err := d.manifestFor()
+	if err != nil {
+		return Target{}, err
+	}
+	return ResolveTarget(cfg, host, key, profile, mf, d.Env)
 }

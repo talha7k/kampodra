@@ -15,12 +15,14 @@ lifecycle: env files, metrics, backups, DNS, and deployment history.
 - **Registry-free streaming deploys** — `podman save | ssh podman load`, sha-tagged images, served-sha health verification
 - **Zero-downtime rolling deploys** (roadmap: opt-in shadow-container swap through kamal-proxy's health-gated re-point)
 - **Instant rollback** — `deploy rollback [<sha>]` flips the running tag
+- **Tenant migrations** — `migrate` runs the app's own drizzle applier over every db file on the VM over SSH: root.db first, tenants bounded-parallel, stop-first guard
 - **Deployment ledger** — every deploy recorded locally + derived from the host's image tags (`deploy list`, total count)
 - **Disk guard + prune** — warns/fails over threshold; reclaims old images while protecting running/rollback tags
 - **Env management** — push/pull the remote env file; values are never printed (fingerprints only)
 - **Metrics** — one-shot CPU/memory/disk/container snapshot over SSH
 - **Backups** — list/download/verify object-storage backups; `restore-plan` prints (never executes) the recovery sequence
 - **Profiles** — per-instance config (`~/.kampodra/config.json`), flat and multi-host ready; auto-detects OpenRC vs systemd
+- **Repo manifest** — `kampodra.json`, committed per-project (the vercel.json pattern): project naming discovered upward from the working directory; `config print` renders the fully resolved effective config with per-field provenance
 - **Command-parity guard** — the shell-era CLI surface is a machine-checked ratchet (see `internal/command/parity_guard_test.go`)
 
 ## Requirements
@@ -67,7 +69,25 @@ kampodra deploy logs --lines 100
 kampodra metrics              # CPU/mem/disk/containers snapshot
 kampodra backup list          # object-storage backups
 kampodra deploy rollback      # flip to the previous sha
+kampodra migrate --repo-root /srv/app   # tenant db migrations over SSH
 ```
+
+## Project shape: the resolution ladder
+
+Every command resolves the deployed project's naming (container, env-file
+path, data dir, bucket, health endpoint, …) through ONE ladder:
+
+```
+flags > KAMPODRA_* env > profile "project" block > kampodra.json > built-in defaults
+```
+
+`kampodra.json` is the repo-level project manifest — committed per-project,
+discovered upward from the working directory like `package.json` (nearest
+file wins). It carries **project naming only**: hosts, ssh keys, and any
+secret material NEVER belong there (those stay in `~/.kampodra` profiles,
+0600). A malformed manifest fails closed. `kampodra config print` renders
+the fully resolved effective config with each field's provenance
+(flag/env/profile/repo-file/default) — the debugging tool for the ladder.
 
 ## Architecture
 
@@ -77,7 +97,7 @@ Ports-and-adapters, strictly layered (enforced by a static test):
 cmd/kampodra        thin CLI (Cobra)
 internal/command    orchestration — no OS knowledge
 internal/adapter    transport (ssh) · runtime (podman) · init (openrc/systemd)
-                    probe · osfacts · cloud (OCI) · project · state
+                    probe · osfacts · cloud (OCI) · migrate · project · state
 tools/paritygen     HISTORICAL: derived the frozen command-spec golden from
                     the shell predecessor (not a live step; kept auditable)
 npm/                per-platform packages + JS bin shim (esbuild pattern)
@@ -87,7 +107,8 @@ Remote shell snippets live only inside adapters as fixture-tested templates —
 the single place host-OS specifics (busybox vs GNU, OpenRC vs systemd) may
 exist. The deployed project's naming (container name, env-file path, bucket,
 health endpoint, …) lives in `internal/adapter/project` exactly once, with
-profile (`config.json` `"project"` block) and `KAMPODRA_*` env overrides.
+the repo manifest (`kampodra.json`), profile (`config.json` `"project"`
+block), and `KAMPODRA_*` env overrides layered above it.
 
 ## History
 
@@ -99,9 +120,9 @@ silent.
 
 ## Status
 
-**0.7.0-beta.1** — the INFRA surface (config, backup, metrics, dns,
-vm-prepare, vm-wipe) is ported and machine-checked against the frozen
-shell spec; bluegreen / image-import / migrate remain consciously
+**0.7.0-beta.2** — the INFRA surface (config, backup, metrics, dns,
+vm-prepare, vm-wipe) and **migrate** are ported and machine-checked against
+the frozen shell spec; bluegreen / image-import remain consciously
 NOT_YET_PORTED (`internal/parity/baseline.json`). See `CHANGELOG.md`.
 
 ## License

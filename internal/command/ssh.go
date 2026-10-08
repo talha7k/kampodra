@@ -35,7 +35,11 @@ func newSSHCommand(d Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			target, err := ResolveTarget(cfg, host, key, profile, d.Env)
+			mf, mfErr := d.manifestFor()
+			if mfErr != nil {
+				return mfErr
+			}
+			target, err := ResolveTarget(cfg, host, key, profile, mf, d.Env)
 			if err != nil {
 				return err
 			}

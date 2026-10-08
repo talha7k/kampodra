@@ -46,11 +46,11 @@ func TestResolveDeployShapePrecedence(t *testing.T) {
 			want:  "9090",
 		},
 		{
-			name:      "port: profile beats env",
+			name:      "port: env beats profile (0.7 ladder: env above the profile block)",
 			overrides: `{"port": "7070"}`,
 			env:       map[string]string{"KAMPODRA_PORT": "9090"},
 			field:     func(c Config) string { return c.Port },
-			want:      "7070",
+			want:      "9090",
 		},
 		{
 			name:  "network: env beats default",
@@ -79,7 +79,7 @@ func TestResolveDeployShapePrecedence(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Resolve([]byte(tc.overrides), env(tc.env))
+			got := Resolve(nil, []byte(tc.overrides), env(tc.env))
 			if have := tc.field(got); have != tc.want {
 				t.Errorf("Resolve() = %q, want %q", have, tc.want)
 			}
