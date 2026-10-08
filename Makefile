@@ -26,12 +26,16 @@ npm-test:
 	node --test npm/test/shim.test.mjs
 
 # cross-compile: every release target, staged into the npm platform
-# packages' bin/ (what `npm publish` ships).
+# packages' bin/ (what `npm publish` ships). GOOS/GOARCH are set EXPLICITLY
+# per triple — without them `go build` produces HOST binaries mislabeled as
+# other platforms (the CI matrix always did this right; the local target
+# now matches).
 cross-compile:
 	@mkdir -p dist
 	set -e; for triple in $(PLATFORMS); do \
 		os=$${triple%%-*}; arch=$${triple##*-}; \
-		$(GO) build -trimpath -ldflags "-s -w" -o dist/kampodra-$$triple ./cmd/kampodra; \
+		case $$arch in x64) arch=amd64 ;; esac; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "-s -w" -o dist/kampodra-$$triple ./cmd/kampodra; \
 		mkdir -p npm/platforms/$$triple/bin; \
 		cp dist/kampodra-$$triple npm/platforms/$$triple/bin/kampodra; \
 		echo "built $$os/$$arch -> dist/kampodra-$$triple"; \

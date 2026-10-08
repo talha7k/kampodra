@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -108,12 +109,24 @@ func TestRootNoCompletionSubcommand(t *testing.T) {
 
 func TestNpmPackageVersionMatchesBinary(t *testing.T) {
 	// The npm shim and the binary ship from the same release; their versions
-	// are pinned together.
+	// are pinned together. The expected version derives from main.go (the
+	// binary's source of truth) so the pin itself never drifts per release.
+	mainSrc, err := os.ReadFile(filepath.Join("..", "..", "cmd", "kampodra", "main.go"))
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	version := mainVersionRe.FindSubmatch(mainSrc)
+	if version == nil {
+		t.Fatalf("cannot find the version var in cmd/kampodra/main.go")
+	}
 	data, err := os.ReadFile(filepath.Join("..", "..", "npm", "package.json"))
 	if err != nil {
 		t.Skipf("npm packaging not present yet: %v", err)
 	}
-	if !strings.Contains(string(data), `"version": "0.7.0-alpha.3"`) {
-		t.Errorf("npm package.json version drifted from the binary version")
+	want := `"version": "` + string(version[1]) + `"`
+	if !strings.Contains(string(data), want) {
+		t.Errorf("npm package.json version drifted from the binary version — want %s", want)
 	}
 }
+
+var mainVersionRe = regexp.MustCompile(`var version = "([^"]+)"`)

@@ -42,28 +42,29 @@ DEPLOY LIFECYCLE
   deploy shell   interactive sh in the api container (exec -- <cmd> for one-shot)
 
 INFRA
-  vm-prepare     first-run bootstrap of a bare Alpine host (NOT_YET_PORTED)
+  vm-wipe        kampodra-native teardown: stop+disable services, remove project containers, prune images, delete env/stamps/state (--yes gated; --keep-data)
+  vm-prepare     first-run bootstrap of a bare Alpine host: gates, sshd hardening, podman stack, OpenRC services, kamal-proxy edge, anchor watcher; --pull-images; --ansible <playbook>
   image-import   golden qcow2 -> OCI custom image (NOT_YET_PORTED)
   status         live health + deployment count + VM disk/image/service state + metrics (--verbose) + the blue/green pair view; --all-profiles renders every profile
 
 DNS
-  dns            OCI DNS records, oci auth (NOT_YET_PORTED): records | add | rm
+  dns            OCI DNS records, oci auth only (never credential material): records | add | rm
 
 ENV
-  env            remote app env file (0600): list | push | pull | fingerprint | diff — values NEVER printed, fingerprints only
+  env            remote app env file (0600): list | push | pull | fingerprint | diff | from-schema — values NEVER printed, fingerprints only
 
 CONFIG
-  config         per-instance profiles (~/.kampodra/config.json, 0700/0600) (NOT_YET_PORTED; profiles already drive every command)
+  config         per-instance profiles (~/.kampodra/config.json, 0700/0600): init | list | show | set-default | remove
                  resolution everywhere: --profile flag > KAMPODRA_PROFILE env > defaultProfile
 
 HOST
   ssh            host-level ssh passthrough through the profile's host/key (no command = interactive login) — kampodra-native
 
 METRICS
-  metrics        one-shot VM snapshot over SSH (NOT_YET_PORTED): load, memory, disk, containers, top procs
+  metrics        one-shot VM snapshot over SSH: load, memory, disk, containers, top procs; --warn-disk gates
 
 BACKUP
-  backup         OCI Object Storage backups (NOT_YET_PORTED): list | download | verify | restore-plan
+  backup         OCI Object Storage backups: list | download | verify | restore-plan (restore-plan never executes)
 
 Every command supports --help with usage + examples.
 `
