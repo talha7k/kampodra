@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -120,7 +119,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 
 			// 0600 FROM CREATION remotely (umask 077) + atomic mv within the
 			// same directory — busybox-safe, byte-equal to the shell flow.
-			tmp := filepath.Join(filepath.Dir(remote), fmt.Sprintf("env.tmp.%d", os.Getpid()))
+			tmp := envfile.RemoteTmpPath(remote, os.Getpid())
 			if _, err := d.Runner.RunWithStdin(c.Context(), target.HostSpec, "umask 077; cat > "+tmp, strings.NewReader(string(data))); err != nil {
 				return fmt.Errorf("upload failed")
 			}

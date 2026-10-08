@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // LedgerDirName/LedgerFileName — the fixed ledger layout.
@@ -102,6 +104,84 @@ func LedgerEntries(path, host string) []LedgerEntry {
 	return out
 }
 
+// LedgerSubjectForTag ports ledger_subject_for_tag: the NEWEST recorded
+// subject for host+tag (the last non-empty matching line in append order),
+// "" when none. A rollback's ledger subject is the ORIGINAL deploy's
+// subject — git HEAD would name the wrong commit.
+func LedgerSubjectForTag(path, host, tag string) string {
+	subject := ""
+	for _, e := range LedgerEntries(path, host) {
+		if e.Tag == tag && e.Subject != "" {
+			subject = e.Subject
+		}
+	}
+	return subject
+}
+
+// ledgerResultRe / ledgerShaRe are ledger_append's field validators: the
+// ledger is append-only with NO repair, so every field is validated BEFORE
+// the write — a malformed line would poison every reader.
+var (
+	ledgerShaRe    = regexp.MustCompile(`^[0-9a-f]{4,40}$`)
+	ledgerHostRe   = regexp.MustCompile(`^[^[:space:]]+$`)
+	ledgerValidRes = map[string]bool{"success": true, "failed": true, "rollback": true}
+)
+
+// AppendEntry ports ledger_append: ONE validated JSONL line appended to the
+// ledger (0600 from creation, the directory created on demand). The line
+// shape is byte-compatible with the shell printf — fixed key order, JSON
+// escaped strings — which is the seam contract every reader matches on.
+// Invalid input returns an error and writes NOTHING.
+func AppendEntry(path string, e LedgerEntry) error {
+	if !ledgerHostRe.MatchString(e.Host) {
+		return fmt.Errorf("ledger: refusing to append — invalid host %q", e.Host)
+	}
+	if !ledgerShaRe.MatchString(e.Sha) || !ledgerShaRe.MatchString(e.Tag) {
+		return fmt.Errorf("ledger: refusing to append — sha/tag must be a 4-40 char hex fragment (sha=%q tag=%q)", e.Sha, e.Tag)
+	}
+	if !ledgerValidRes[e.Result] {
+		return fmt.Errorf("ledger: refusing to append — result must be success|failed|rollback (got %q)", e.Result)
+	}
+	if e.DurationMs < 0 {
+		return fmt.Errorf("ledger: refusing to append — negative duration_ms %d", e.DurationMs)
+	}
+	ts := e.Ts
+	if ts == "" {
+		ts = time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	}
+	line := fmt.Sprintf(`{"ts":"%s","host":"%s","sha":"%s","tag":"%s","result":"%s","duration_ms":%d,"subject":"%s"}`+"\n",
+		ts, jsonEscapeStr(e.Host), e.Sha, e.Tag, e.Result, e.DurationMs, jsonEscapeStr(e.Subject))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("ledger: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("ledger: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(line); err != nil {
+		return fmt.Errorf("ledger: %w", err)
+	}
+	_ = os.Chmod(path, 0o600) // best-effort (the create mode already says 0600)
+	return nil
+}
+
+// jsonEscapeStr ports json_escape_str: backslash and double quote escaped,
+// tab/newline/CR flattened to spaces (subjects are single-line by
+// construction — the flattening is defense, not an invitation).
+func jsonEscapeStr(s string) string {
+	r := strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		"\t", " ",
+		"\n", " ",
+		"\r", " ",
+	)
+	return r.Replace(s)
+}
+
+// Project is the raw "project" block — its shape belongs to the project
+// adapter (state never interprets it, keeping adapters sibling-clean).
 // Profile is one flat per-instance config entry — no inheritance (owner
 // decision): host/sshKey/proxyHost/group + the cached init verdict.
 // Project is the raw "project" block — its shape belongs to the project

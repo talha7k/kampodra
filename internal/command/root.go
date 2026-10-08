@@ -26,11 +26,15 @@ const rootIndex = `kampodra — kamal-alternative CLI for Alpine + Podman deploy
 Usage: kampodra <command> [args...]
 
 DEPLOY
-  deploy         lifecycle: list | logs | prune | restart | shell; the build/stream pipeline + --rollback are NOT_YET_PORTED
+  deploy         the full pipeline: build → save|load stream → env → restart → health gate → proxy re-point → smoke; --rollback [sha]; --rolling; converge
   bluegreen      reserved-IP blue/green pair (NOT_YET_PORTED): status | init | provision | flip | rollback
   migrate        tenant db migrations over SSH (NOT_YET_PORTED)
 
 DEPLOY LIFECYCLE
+  deploy          full build/stream pipeline with sha-verified health gate + kamal-proxy re-point + public smoke
+  deploy --rollback [<sha>]  instant image-tag rollback (explicit sha > the VM's deployed-sha stamp > die — never HEAD)
+  deploy --rolling        zero-downtime shadow-container double re-point (opt-in; failure paths keep the safer state)
+  deploy converge finish an interrupted --rolling deploy (repair: retag → restart → gate → re-point → rm shadow)
   deploy list    deployment history: VM sha-tagged images (running one marked) merged with the local ledger + total deployments count; --all-profiles renders every profile
   deploy prune   reclaim VM disk: remove old sha-tagged images (keeps running + ts-rollback + newest N); --dry-run prints exact commands
   deploy logs    tail the running api container's logs (--lines N); --follow streams until ctrl-c

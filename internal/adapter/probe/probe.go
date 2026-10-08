@@ -17,6 +17,7 @@ import (
 
 const (
 	buildPath = "/build-id.txt"
+	upPath    = "/up"
 	// timeout is curl -m 8 parity.
 	timeout = 8 * time.Second
 )
@@ -54,6 +55,27 @@ func (p *Prober) BuildID(ctx context.Context, host string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(body), true
+}
+
+// Up probes the kamal-proxy /up convention (the public smoke's second leg,
+// the shell's `curl -fsS https://<host>/up`): ok on a 2xx answer.
+func (p *Prober) Up(ctx context.Context, host string) bool {
+	_, err := p.fetch(ctx, "https://"+host+upPath)
+	return err == nil
+}
+
+// BodyServesSha is the deploy health gate's served-sha verdict — the shell's
+// client-side `grep -qE "\"(git|build)\":\"$VER"` on the fetched body. The
+// grep pattern has NO closing quote after the sha, so this is a PREFIX
+// match: a body serving the full 40-char stamp satisfies a 7-char tag gate.
+// The sha must sit in the git/build stamp position — prose occurrences
+// never count.
+func BodyServesSha(body, sha string) bool {
+	if sha == "" {
+		return false
+	}
+	return strings.Contains(body, `"git":"`+sha) ||
+		strings.Contains(body, `"build":"`+sha)
 }
 
 func (p *Prober) fetch(ctx context.Context, url string) (string, error) {

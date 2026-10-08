@@ -7,6 +7,7 @@ package envfile
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -127,6 +128,13 @@ func Table(content string) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// RemoteTmpPath is the env push's remote temp-file derivation — shared by
+// `env push` and the deploy pipeline's env step so BOTH upload through the
+// same 0600-from-creation temp (atomic mv installs it): <dir>/<base>.tmp.<pid>.
+func RemoteTmpPath(remote string, pid int) string {
+	return filepath.Join(filepath.Dir(remote), fmt.Sprintf("%s.tmp.%d", filepath.Base(remote), pid))
 }
 
 // CountKeyLines ports push's gate (grep -cE '^[A-Za-z_][A-Za-z0-9_]*='):

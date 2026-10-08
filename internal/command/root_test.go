@@ -113,7 +113,7 @@ func TestNpmPackageVersionMatchesBinary(t *testing.T) {
 	if err != nil {
 		t.Skipf("npm packaging not present yet: %v", err)
 	}
-	if !strings.Contains(string(data), `"version": "0.7.0-alpha.2"`) {
+	if !strings.Contains(string(data), `"version": "0.7.0-alpha.3"`) {
 		t.Errorf("npm package.json version drifted from the binary version")
 	}
 }

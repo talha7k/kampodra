@@ -16,16 +16,20 @@ import (
 
 // Config is the resolved project shape for one run.
 type Config struct {
-	Container    string   `json:"container"`    // the api container / service name
-	ShadowSuffix string   `json:"shadowSuffix"` // blue/green shadow container suffix
-	EnvFilePath  string   `json:"envFilePath"`  // remote env file (0600)
-	DataDir      string   `json:"dataDir"`      // tenant/app data dir on the VM
-	Bucket       string   `json:"bucket"`       // object-storage backup bucket
-	ObjectPrefix string   `json:"objectPrefix"` // backup object prefix
-	HealthPath   string   `json:"healthPath"`   // app health endpoint behind the proxy
-	ProxyHost    string   `json:"proxyHost"`    // public TLS edge hostname
-	Services     []string `json:"services"`     // the service roll call
-	ImagePrefix  string   `json:"imagePrefix"`  // VM-local registry path for deploy images
+	Container       string   `json:"container"`       // the api container / service name
+	ShadowSuffix    string   `json:"shadowSuffix"`    // blue/green shadow container suffix
+	EnvFilePath     string   `json:"envFilePath"`     // remote env file (0600)
+	DataDir         string   `json:"dataDir"`         // tenant/app data dir on the VM
+	Bucket          string   `json:"bucket"`          // object-storage backup bucket
+	ObjectPrefix    string   `json:"objectPrefix"`    // backup object prefix
+	HealthPath      string   `json:"healthPath"`      // app health endpoint behind the proxy
+	ProxyHost       string   `json:"proxyHost"`       // public TLS edge hostname
+	Services        []string `json:"services"`        // the service roll call
+	ImagePrefix     string   `json:"imagePrefix"`     // VM-local registry path for deploy images
+	Port            string   `json:"port"`            // the container's published/listening port (health gate + proxy target)
+	Network         string   `json:"network"`         // the podman network shared with kamal-proxy
+	ShadowProbePort string   `json:"shadowProbePort"` // the shadow container's loopback-only probe port
+	DeployedShaFile string   `json:"deployedShaFile"` // the VM's deployed-sha stamp (rollback's fallback resolution)
 }
 
 // LoadDefault returns today's values as NAMED DEFAULTS — the single file
@@ -34,32 +38,40 @@ type Config struct {
 // KAMPODRA_* env stays available without code changes.
 func LoadDefault() Config {
 	return Config{
-		Container:    "kampodine-api",
-		ShadowSuffix: "-shadow",
-		EnvFilePath:  "/etc/kampodine/env",
-		DataDir:      "/data/tenants",
-		Bucket:       "esellar-libsql-backups",
-		ObjectPrefix: "db",
-		HealthPath:   "/api/auth/ok",
-		ProxyHost:    "app.example.com",
-		Services:     []string{"kampodine-api", "kamal-proxy", "walshipper"},
-		ImagePrefix:  "127.0.0.1:5000/kampodine-api",
+		Container:       "kampodine-api",
+		ShadowSuffix:    "-shadow",
+		EnvFilePath:     "/etc/kampodine/env",
+		DataDir:         "/data/tenants",
+		Bucket:          "esellar-libsql-backups",
+		ObjectPrefix:    "db",
+		HealthPath:      "/api/auth/ok",
+		ProxyHost:       "app.example.com",
+		Services:        []string{"kampodine-api", "kamal-proxy", "walshipper"},
+		ImagePrefix:     "127.0.0.1:5000/kampodine-api",
+		Port:            "8080",
+		Network:         "kamal",
+		ShadowProbePort: "18080",
+		DeployedShaFile: "/etc/kampodine/deployed-sha",
 	}
 }
 
 // Overrides is the profile "project" block (config.json): every field
 // optional, empty = "not overridden".
 type Overrides struct {
-	Container    string   `json:"container,omitempty"`
-	ShadowSuffix string   `json:"shadowSuffix,omitempty"`
-	EnvFilePath  string   `json:"envFilePath,omitempty"`
-	DataDir      string   `json:"dataDir,omitempty"`
-	Bucket       string   `json:"bucket,omitempty"`
-	ObjectPrefix string   `json:"objectPrefix,omitempty"`
-	HealthPath   string   `json:"healthPath,omitempty"`
-	ProxyHost    string   `json:"proxyHost,omitempty"`
-	Services     []string `json:"services,omitempty"`
-	ImagePrefix  string   `json:"imagePrefix,omitempty"`
+	Container       string   `json:"container,omitempty"`
+	ShadowSuffix    string   `json:"shadowSuffix,omitempty"`
+	EnvFilePath     string   `json:"envFilePath,omitempty"`
+	DataDir         string   `json:"dataDir,omitempty"`
+	Bucket          string   `json:"bucket,omitempty"`
+	ObjectPrefix    string   `json:"objectPrefix,omitempty"`
+	HealthPath      string   `json:"healthPath,omitempty"`
+	ProxyHost       string   `json:"proxyHost,omitempty"`
+	Services        []string `json:"services,omitempty"`
+	ImagePrefix     string   `json:"imagePrefix,omitempty"`
+	Port            string   `json:"port,omitempty"`
+	Network         string   `json:"network,omitempty"`
+	ShadowProbePort string   `json:"shadowProbePort,omitempty"`
+	DeployedShaFile string   `json:"deployedShaFile,omitempty"`
 }
 
 // envBindings maps every Config field to its KAMPODRA_* env override.
@@ -79,6 +91,10 @@ var envBindings = []struct {
 		c.Services = strings.Fields(v)
 	}},
 	{"KAMPODRA_IMAGE_PREFIX", func(c *Config, v string) { c.ImagePrefix = v }},
+	{"KAMPODRA_PORT", func(c *Config, v string) { c.Port = v }},
+	{"KAMPODRA_NETWORK", func(c *Config, v string) { c.Network = v }},
+	{"KAMPODRA_SHADOW_PROBE_PORT", func(c *Config, v string) { c.ShadowProbePort = v }},
+	{"KAMPODRA_DEPLOYED_SHA_FILE", func(c *Config, v string) { c.DeployedShaFile = v }},
 }
 
 // Resolve layers the config: LoadDefault, then KAMPODRA_* env, then the
@@ -127,6 +143,18 @@ func Resolve(rawOverrides json.RawMessage, lookup func(string) (string, bool)) C
 			}
 			if o.ImagePrefix != "" {
 				cfg.ImagePrefix = o.ImagePrefix
+			}
+			if o.Port != "" {
+				cfg.Port = o.Port
+			}
+			if o.Network != "" {
+				cfg.Network = o.Network
+			}
+			if o.ShadowProbePort != "" {
+				cfg.ShadowProbePort = o.ShadowProbePort
+			}
+			if o.DeployedShaFile != "" {
+				cfg.DeployedShaFile = o.DeployedShaFile
 			}
 		}
 	}
