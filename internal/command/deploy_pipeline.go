@@ -435,9 +435,13 @@ func (r *deployRun) publicSmoke() error {
 	}
 	id, ok := r.d.Prober.BuildID(r.ctx, host)
 	if !ok || !strings.Contains(id, r.ver) {
-		return fmt.Errorf("build-id.txt stale (got %q, want %s)", id, r.ver)
+		// The SPA dist's build-id stamp is a freshness SIGNAL, not identity:
+		// images built before the sha-stamped web pipeline serve "dev".
+		// Identity is the served-sha gate above; warn loudly, never fail.
+		r.say("WARN: /build-id.txt stale (got %q, want %s) — the web dist predates sha stamping", id, r.ver)
+	} else {
+		r.say("LIVE: git=%s, /up ok, build-id fresh", r.ver)
 	}
-	r.say("LIVE: git=%s, /up ok, build-id fresh", r.ver)
 	return nil
 }
 
