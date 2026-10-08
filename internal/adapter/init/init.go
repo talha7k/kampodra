@@ -68,6 +68,22 @@ func StatusProbeCommand(sys System) (string, error) {
 	}
 }
 
+// ActionCommand ports svc_action: the init-aware service command. OpenRC
+// output is byte-identical to the historical strings (`rc-service <svc>
+// <action>`); systemd is verb-first (`systemctl <action> <svc>`). Fails
+// when no init was detected — callers decide whether that is fatal
+// (restart: yes, diagnostics: no).
+func ActionCommand(sys System, service, action string) (string, error) {
+	switch sys {
+	case SystemOpenRC:
+		return fmt.Sprintf("rc-service %s %s", service, action), nil
+	case SystemSystemd:
+		return fmt.Sprintf("systemctl %s %s", action, service), nil
+	default:
+		return "", fmt.Errorf("neither rc-service nor systemctl found — cannot %s %s (host init auto-detection detected neither; groundwork supports openrc + systemd)", action, service)
+	}
+}
+
 // ServiceState is one roll-call row.
 type ServiceState struct {
 	Name    string

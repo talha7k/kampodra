@@ -1,6 +1,7 @@
 package command
 
 import (
+	"regexp"
 	"sort"
 
 	"github.com/spf13/cobra"
@@ -31,11 +32,20 @@ func snapshotCommand(cmd *cobra.Command) parity.TreeCommand {
 		Subcommands: map[string]bool{},
 		Args:        map[string][]string{},
 	}
+	// The command's OWN positional args are command-level surface (e.g.
+	// `ssh [<cmd>...]`) and land under the "" key. Only the top command of
+	// this snapshot contributes there — subcommand args keep their own key.
+	if spec := positionalArgs(cmd); len(spec) > 0 {
+		tc.Args[""] = append(tc.Args[""], spec...)
+	}
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
 		c.Flags().VisitAll(func(f *pflag.Flag) {
-			if f.Name == "help" || f.Name == "version" {
-				return // universal cobra affordances, not shell surface
+			// help is cobra's universal affordance. version is NOT skipped:
+			// the auto --version lives on the root (never snapshotted), so a
+			// --version seen here is real shell surface (deploy --version).
+			if f.Name == "help" {
+				return
 			}
 			tc.Flags["--"+f.Name] = true
 		})
@@ -57,12 +67,15 @@ func snapshotCommand(cmd *cobra.Command) parity.TreeCommand {
 func positionalArgs(cmd *cobra.Command) []string {
 	use := cmd.Use
 	// cobra Use strings carry the positional shape after the name, e.g.
-	// `provision <color>` or `download <object>`.
+	// `provision <color>` or `download <object>`. Bracketed [--flag <value>]
+	// groups in a Use string are usage help, never positional specs — strip
+	// them first so `[--profile <name>]` does not read as a `<name>` arg.
 	name := cmd.Name()
 	rest := use
 	if len(use) > len(name) && use[:len(name)] == name {
 		rest = use[len(name):]
 	}
+	rest = flagHelpGroupRe.ReplaceAllString(rest, "")
 	fields := nonEmptyFields(rest)
 	args := make([]string, 0, len(fields))
 	for _, f := range fields {
@@ -72,6 +85,9 @@ func positionalArgs(cmd *cobra.Command) []string {
 	}
 	return args
 }
+
+// flagHelpGroupRe matches a bracketed flag group like `[--host root@<ip>]`.
+var flagHelpGroupRe = regexp.MustCompile(`\[--[^\]]*\]`)
 
 func nonEmptyFields(s string) []string {
 	var out []string

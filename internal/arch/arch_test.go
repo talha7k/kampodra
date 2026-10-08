@@ -11,7 +11,7 @@ import (
 
 // The ports-and-adapters layering rule, enforced statically:
 //
-//	cmd/kampodine        imports stdlib + internal/command ONLY
+//	cmd/kampodra         imports stdlib + internal/command ONLY
 //	internal/command     may import internal/adapter/* (and stdlib/libs)
 //	internal/adapter/*   may import stdlib + external libs ONLY — never
 //	                     internal/command, never the parent internal/adapter,
@@ -63,11 +63,11 @@ func TestAdapterLayering(t *testing.T) {
 }
 
 func TestEntrypointIsThin(t *testing.T) {
-	file := filepath.Join("../..", "cmd", "kampodine", "main.go")
+	file := filepath.Join("../..", "cmd", "kampodra", "main.go")
 	for _, imp := range imports(t, file) {
 		if strings.HasPrefix(imp, "github.com/talha7k/kampodra/internal/") &&
 			imp != "github.com/talha7k/kampodra/internal/command" {
-			t.Errorf("%s: cmd/kampodine must import internal/command only, found %s", file, imp)
+			t.Errorf("%s: cmd/kampodra must import internal/command only, found %s", file, imp)
 		}
 	}
 }

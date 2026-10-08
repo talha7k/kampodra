@@ -150,3 +150,16 @@ func TestSumSizesHuman(t *testing.T) {
 		})
 	}
 }
+
+func TestPruneSelectKeepExceedsImageCount(t *testing.T) {
+	// keep N larger than the image count must keep everything (the shell's
+	// `head -n N` semantics) — never panic on the slice bound.
+	images := ParseImages("aa11111|2026-10-08 10:00:00 +0000 UTC|936 MB\nbb22222|2026-10-07 09:00:00 +0000 UTC|936 MB\n")
+	removals, err := PruneSelect(images, "", 9)
+	if err != nil {
+		t.Fatalf("PruneSelect() error = %v", err)
+	}
+	if len(removals) != 0 {
+		t.Errorf("removals = %v, want none (keep 9 > 2 images)", removals)
+	}
+}

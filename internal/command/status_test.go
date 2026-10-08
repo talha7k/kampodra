@@ -277,3 +277,65 @@ func TestStatusHelpMatchesShellUsage(t *testing.T) {
 		}
 	}
 }
+
+func writeStatusProfiles(t *testing.T, home, cfg string) {
+	t.Helper()
+	dir := filepath.Join(home, ".kampodine")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStatusAllProfilesRendersPerProfileSections(t *testing.T) {
+	deps, _, stdout := setupStatus(t)
+	writeStatusProfiles(t, deps.Home, `{"defaultProfile": "prod", "profiles": {"staging": {"host": "root@198.51.100.7"}, "prod": {"host": "`+statusHost+`"}}}`)
+	if code := runStatus(t, deps, "--all-profiles"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"== profile: prod ==",
+		"== profile: staging ==",
+		"== VM (" + statusHost + ") ==",
+		"== VM (root@198.51.100.7) ==",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--all-profiles missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "== profile: prod ==") > strings.Index(out, "== profile: staging ==") {
+		t.Errorf("profiles must render in sorted order:\n%s", out)
+	}
+}
+
+func TestStatusAllProfilesWithoutProfilesFails(t *testing.T) {
+	deps, _, _, stderr := setupStatus(t)
+	deps.Stderr = stderr.(*bytes.Buffer)
+	code := runStatus(t, deps, "--all-profiles")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (fan-out over nothing is a config error, not an empty run)", code)
+	}
+	if !strings.Contains(stderr.(*bytes.Buffer).String(), "--all-profiles: no profiles configured") {
+		t.Errorf("stderr = %q", stderr.(*bytes.Buffer).String())
+	}
+}
+
+func TestStatusAllProfilesExplicitFlagStillWins(t *testing.T) {
+	// The fan-out resolves each profile, but an explicit --host still beats
+	// every profile's own host.
+	deps, _, stdout := setupStatus(t)
+	writeStatusProfiles(t, deps.Home, `{"profiles": {"prod": {"host": "root@198.51.100.7"}}}`)
+	if code := runStatus(t, deps, "--all-profiles", "--host", statusHost); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "== profile: prod ==") || !strings.Contains(out, "== VM ("+statusHost+") ==") {
+		t.Errorf("explicit --host must win inside the fan-out:\n%s", out)
+	}
+	if strings.Contains(out, "198.51.100.7") {
+		t.Errorf("profile host leaked past an explicit --host:\n%s", out)
+	}
+}

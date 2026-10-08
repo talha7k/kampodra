@@ -115,7 +115,13 @@ func PruneSelect(images []Image, psOutput string, keepN int) ([]Removal, error) 
 			}
 			return sorted[i].Tag < sorted[j].Tag
 		})
-		for _, img := range sorted[:keepN] {
+		// head -n N semantics: N larger than the candidate count keeps
+		// everything (never a slice panic).
+		n := keepN
+		if n > len(sorted) {
+			n = len(sorted)
+		}
+		for _, img := range sorted[:n] {
 			keepNewest[img.Tag] = true
 		}
 	}
