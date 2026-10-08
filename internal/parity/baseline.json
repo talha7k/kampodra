@@ -1,0 +1,14 @@
+{
+  "not_yet_ported": [
+    "backup",
+    "bluegreen",
+    "config",
+    "deploy",
+    "dns",
+    "env",
+    "image-import",
+    "metrics",
+    "migrate",
+    "vm-prepare"
+  ]
+}
