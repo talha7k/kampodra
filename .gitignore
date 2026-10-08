@@ -3,3 +3,7 @@
 # test scratch
 *.test
 coverage.out
+# local build outputs (make build / tools/paritygen)
+/kampodra
+/paritygen
+/npm/platforms/*/bin/
