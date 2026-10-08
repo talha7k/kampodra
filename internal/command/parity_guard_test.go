@@ -12,15 +12,21 @@ import (
 )
 
 // TestCommandParityGuard is THE ratchet: the Go cobra tree must cover the
-// committed shell golden under the explicit NOT_YET_PORTED baseline.
-//   - a command the shell gains without Go coverage fails here until it is
+// FROZEN shell spec under the explicit NOT_YET_PORTED baseline.
+//   - a frozen-spec command without Go coverage fails here until it is
 //     ported or consciously baselined
 //   - a baseline entry whose command has landed fails (delete it)
-//   - a ported command with missing or invented flags/subcommands fails
+//   - a ported command missing frozen-spec surface fails
+//
+// The reverse direction (kampodra-native commands/flags beyond the frozen
+// spec) is review-flagged as warnings — printed here, never blocking.
 func TestCommandParityGuard(t *testing.T) {
 	golden, err := parity.LoadGolden(filepath.Join("..", "parity", "golden.json"))
 	if err != nil {
 		t.Fatalf("load golden: %v", err)
+	}
+	if !golden.Frozen {
+		t.Fatal("golden is not marked frozen — the spec must stay pinned as final")
 	}
 	baseline, err := parity.LoadBaseline(filepath.Join("..", "parity", "baseline.json"))
 	if err != nil {
@@ -29,7 +35,13 @@ func TestCommandParityGuard(t *testing.T) {
 	root := command.NewRoot("test", command.Deps{})
 	snapshot := command.BuildSnapshot(root)
 
-	violations := parity.Check(golden, baseline, snapshot)
+	violations, warnings := parity.Check(golden, baseline, snapshot)
+	for _, w := range warnings {
+		t.Logf("parity warning (review-flagged, non-blocking): %s", w)
+	}
+	if len(warnings) > 0 {
+		t.Logf("== %d kampodra-native addition(s) beyond the frozen spec — review each against the README changelog ==", len(warnings))
+	}
 	if len(violations) != 0 {
 		var sb strings.Builder
 		sb.WriteString("command-parity guard failed:\n")

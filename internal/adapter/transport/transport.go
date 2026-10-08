@@ -1,11 +1,11 @@
-// Package transport is the ssh seam: kampodine shells out to the ssh BINARY
+// Package transport is the ssh seam: kampodra shells out to the ssh BINARY
 // (no SSH library) with exactly the shell version's invocation semantics —
 // `-o ConnectTimeout=10 -o BatchMode=yes [-i <key>] <host> <remote-cmd>` —
 // and its host/key resolution ladders:
 //
-//	host: --host flag > KAMPODINE_HOST (profile resolution happens above
+//	host: --host flag > KAMPODRA_HOST (profile resolution happens above
 //	      this seam; profiles FEED the flag/env values)
-//	key:  --ssh-key flag > KAMPODINE_SSH_KEY > "" (agent and/or the
+//	key:  --ssh-key flag > KAMPODRA_SSH_KEY > "" (agent and/or the
 //	      operator's ~/.ssh/config Host block — the POSIX way)
 //
 // Never logs command output that could carry secret material; remote
@@ -40,25 +40,25 @@ type Runner interface {
 	Stream(ctx context.Context, sshArgs []string) (int, error)
 }
 
-// ResolveHost resolves the target host: explicit flag > KAMPODINE_HOST.
+// ResolveHost resolves the target host: explicit flag > KAMPODRA_HOST.
 // Fails closed (a missing target is an error, never an implicit default).
 func ResolveHost(flagHost string, lookup func(string) (string, bool)) (string, error) {
 	if flagHost != "" {
 		return flagHost, nil
 	}
-	if v, ok := lookup("KAMPODINE_HOST"); ok && v != "" {
+	if v, ok := lookup("KAMPODRA_HOST"); ok && v != "" {
 		return v, nil
 	}
-	return "", errors.New("no target host: pass --host root@<ip> or set KAMPODINE_HOST")
+	return "", errors.New("no target host: pass --host root@<ip> or set KAMPODRA_HOST")
 }
 
-// ResolveKey resolves the identity file: explicit flag > KAMPODINE_SSH_KEY >
+// ResolveKey resolves the identity file: explicit flag > KAMPODRA_SSH_KEY >
 // "" (agent / ssh config).
 func ResolveKey(flagKey string, lookup func(string) (string, bool)) string {
 	if flagKey != "" {
 		return flagKey
 	}
-	if v, ok := lookup("KAMPODINE_SSH_KEY"); ok {
+	if v, ok := lookup("KAMPODRA_SSH_KEY"); ok {
 		return v
 	}
 	return ""

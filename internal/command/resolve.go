@@ -1,34 +1,35 @@
 package command
 
 import (
+	"github.com/talha7k/kampodra/internal/adapter/project"
 	"github.com/talha7k/kampodra/internal/adapter/state"
 	"github.com/talha7k/kampodra/internal/adapter/transport"
 )
 
-// defaultProxyHost is APP_HOST_HEADER's default (the shell scripts'
-// constant).
-const defaultProxyHost = "app.example.com"
-
 // Target is a fully resolved run target: where to ssh, what the public
-// edge hostname is, and the profile that contributed values.
+// edge hostname is, the profile that contributed values, and the resolved
+// project shape (project.Config — naming never referenced directly).
 type Target struct {
 	HostSpec    transport.HostSpec
 	ProxyHost   string
 	ProfileName string
 	ProfileInit string // cached init verdict from the profile (probe skip)
+	Project     project.Config
 }
 
 // ResolveTarget is the pure profile_resolve port shared by every host-aware
 // command:
 //
-//	profile selection: --profile > KAMPODINE_PROFILE > config defaultProfile
-//	host:  --host flag > profile host > KAMPODINE_HOST
-//	key:   --ssh-key flag > profile sshKey > KAMPODINE_SSH_KEY
-//	proxy: profile proxyHost > APP_HOST_HEADER > app.example.com
+//	profile selection: --profile > KAMPODRA_PROFILE > config defaultProfile
+//	host:  --host flag > profile host > KAMPODRA_HOST
+//	key:   --ssh-key flag > profile sshKey > KAMPODRA_SSH_KEY
+//	proxy: profile project.proxyHost > KAMPODRA_PROXY_HOST > project default
+//	       (the profile's legacy flat proxyHost field still wins when set)
+//	project: project.Resolve(profile "project" block, env)
 //
 // An explicit per-invocation flag always wins; the profile beats the legacy
-// env it replaces (the shell's documented contract). An unknown profile
-// name fails closed naming the known set.
+// env it replaces. An unknown profile name fails closed naming the known
+// set.
 func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, lookup func(string) (string, bool)) (Target, error) {
 	name, err := state.SelectProfileName(cfg, flagProfile, lookup)
 	if err != nil {
@@ -42,15 +43,23 @@ func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, loo
 		}
 	}
 
-	host := firstNonEmpty(flagHost, profile.Host, envValue(lookup, "KAMPODINE_HOST"))
-	key := firstNonEmpty(flagKey, profile.SSHKey, envValue(lookup, "KAMPODINE_SSH_KEY"))
-	proxy := firstNonEmpty(profile.ProxyHost, envValue(lookup, "APP_HOST_HEADER"), defaultProxyHost)
+	pc := project.Resolve(profile.Project, lookup)
+	proxy := pc.ProxyHost
+	if profile.ProxyHost != "" {
+		// The legacy flat field predates the project block; explicit config
+		// wins over the default either way.
+		proxy = profile.ProxyHost
+	}
+
+	host := firstNonEmpty(flagHost, profile.Host, envValue(lookup, "KAMPODRA_HOST"))
+	key := firstNonEmpty(flagKey, profile.SSHKey, envValue(lookup, "KAMPODRA_SSH_KEY"))
 
 	return Target{
 		HostSpec:    transport.HostSpec{Host: host, SSHKey: key},
 		ProxyHost:   proxy,
 		ProfileName: name,
 		ProfileInit: profile.Init,
+		Project:     pc,
 	}, nil
 }
 

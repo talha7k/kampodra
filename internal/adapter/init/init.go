@@ -1,7 +1,8 @@
 // Package init is the service-supervision adapter: one-shot init detection
-// (OpenRC vs systemd vs neither — groundwork for non-Alpine targets) and the
-// service roll call, ported from the committed kampodine scripts/common.sh
-// (init_detect, svc_action) and scripts/status.sh.
+// (OpenRC vs systemd vs neither — groundwork for non-Alpine targets) and
+// the service roll call, ported from the shell predecessor's scripts
+// (init_detect, svc_action). The roll-call LIST is project config
+// (project.Config.Services), never a constant here.
 package init
 
 import (
@@ -23,9 +24,6 @@ const (
 // it over the transport runner + resolved host; this adapter never imports
 // the transport adapter (layering).
 type RunFunc func(ctx context.Context, remoteCmd string) (string, error)
-
-// Services is the roll-call list (the shell's status.sh constant).
-var Services = []string{"kampodine-api", "kamal-proxy", "walshipper"}
 
 // DetectCommand is the one-shot probe: init system + remote http client in
 // a single ssh round-trip (the shell's init_detect probe, byte-equal).

@@ -1,8 +1,9 @@
-// Package command is kampodine's cobra command tree — the Go port of the
-// shell CLI (github.com/talha7k/kampodine). Commands orchestrate adapters
-// and render; every business decision lives in internal/adapter/* or in
-// pure helpers here, and the command-parity guard (parity_guard_test.go)
-// keeps this tree's surface pinned to the shell golden.
+// Package command is kampodra's cobra command tree — ported from the
+// frozen shell 0.6.0 spec (see internal/parity/golden.json). Commands
+// orchestrate adapters and render; every business decision lives in
+// internal/adapter/* or in pure helpers here, and the command-parity guard
+// (parity_guard_test.go) keeps the frozen spec covered while allowing
+// review-flagged kampodra-native additions.
 package command
 
 import (
@@ -17,46 +18,50 @@ import (
 	"github.com/talha7k/kampodra/internal/adapter/transport"
 )
 
-// rootIndex is the vercel-style command index — byte-equal to the committed
-// shell cli.js usage const (kampodine HEAD).
-const rootIndex = `kampodine — kamal-alternative CLI for Alpine + Podman deploys, built on kamal-proxy
+// rootIndex is the vercel-style command index: the frozen-spec surface,
+// marked "(not yet ported)" where only the spec entry exists, plus the
+// kampodra-native additions at the end.
+const rootIndex = `kampodra — kamal-alternative CLI for Alpine + Podman deploys, built on kamal-proxy
 
-Usage: kampodine <command> [args...]
+Usage: kampodra <command> [args...]
 
 DEPLOY
-  deploy         stream deploy (podman save | ssh podman load) with sha-verified health gate; --rollback [sha] = instant image-tag rollback
-  bluegreen      reserved-IP blue/green pair: status | init | provision | flip | rollback (each sub-step has --help)
-  migrate        tenant db migrations over SSH
+  deploy         lifecycle: list | logs | prune | restart | shell; the build/stream pipeline + --rollback are NOT_YET_PORTED
+  bluegreen      reserved-IP blue/green pair (NOT_YET_PORTED): status | init | provision | flip | rollback
+  migrate        tenant db migrations over SSH (NOT_YET_PORTED)
 
 DEPLOY LIFECYCLE
-  deploy list    deployment history: VM sha-tagged images (running one marked) merged with the local ledger + total deployments count
+  deploy list    deployment history: VM sha-tagged images (running one marked) merged with the local ledger + total deployments count; --all-profiles renders every profile
   deploy prune   reclaim VM disk: remove old sha-tagged images (keeps running + ts-rollback + newest N); --dry-run prints exact commands
-  deploy logs    tail the running api container's logs (--lines N)
+  deploy logs    tail the running api container's logs (--lines N); --follow streams until ctrl-c
   deploy restart restart the api service (init-aware: rc-service on Alpine, systemctl on systemd hosts)
   deploy shell   interactive sh in the api container (exec -- <cmd> for one-shot)
 
 INFRA
-  vm-prepare     first-run bootstrap of a bare Alpine host (OpenRC + podman stack)
-  image-import   golden qcow2 -> OCI custom image
-  status         live health + deployment count + VM disk/image/service state + metrics (--verbose) + the blue/green pair view
+  vm-prepare     first-run bootstrap of a bare Alpine host (NOT_YET_PORTED)
+  image-import   golden qcow2 -> OCI custom image (NOT_YET_PORTED)
+  status         live health + deployment count + VM disk/image/service state + metrics (--verbose) + the blue/green pair view; --all-profiles renders every profile
 
 DNS
-  dns            OCI DNS records (oci config-file / instance-principal auth ONLY): records | add | rm
+  dns            OCI DNS records, oci auth (NOT_YET_PORTED): records | add | rm
 
 ENV
-  env            remote app env file (/etc/kampodine/env, 0600): list | push | pull — values NEVER printed, fingerprints only
+  env            remote app env file (0600): list | push | pull | fingerprint | diff — values NEVER printed, fingerprints only
 
 CONFIG
-  config         per-instance profiles (~/.kampodine/config.json, 0700/0600): init | list | show | set-default | remove
-                 resolution everywhere: --profile flag > KAMPODINE_PROFILE env > defaultProfile > legacy env
+  config         per-instance profiles (~/.kampodra/config.json, 0700/0600) (NOT_YET_PORTED; profiles already drive every command)
+                 resolution everywhere: --profile flag > KAMPODRA_PROFILE env > defaultProfile
+
+HOST
+  ssh            host-level ssh passthrough through the profile's host/key (no command = interactive login) — kampodra-native
 
 METRICS
-  metrics        one-shot VM snapshot over SSH: load, memory, disk (images/data/other), containers, top procs; --watch N; --warn-disk exits 1
+  metrics        one-shot VM snapshot over SSH (NOT_YET_PORTED): load, memory, disk, containers, top procs
 
 BACKUP
-  backup         OCI Object Storage backups (config-file / instance-principal auth ONLY): list | download | verify | restore-plan
+  backup         OCI Object Storage backups (NOT_YET_PORTED): list | download | verify | restore-plan
 
-Every command supports --help with usage + examples. All further args pass through to the underlying script.
+Every command supports --help with usage + examples.
 `
 
 // Deps are the injectable boundaries of the CLI (tests never touch the real
@@ -105,11 +110,11 @@ type exitError struct{ code int }
 
 func (e *exitError) Error() string { return fmt.Sprintf("exit %d", e.code) }
 
-// NewRoot builds the kampodine command tree.
+// NewRoot builds the kampodra command tree.
 func NewRoot(version string, deps Deps) *cobra.Command {
 	d := deps.withDefaults()
 	root := &cobra.Command{
-		Use:           "kampodine",
+		Use:           "kampodra",
 		Short:         "kamal-alternative CLI for Alpine + Podman deploys, built on kamal-proxy",
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -122,7 +127,7 @@ func NewRoot(version string, deps Deps) *cobra.Command {
 			}
 			// cli.js parity: unknown command names the offender, reprints
 			// the index on stderr, exits 2.
-			fmt.Fprintf(d.Stderr, "kampodine: unknown command: %s\n\n%s", args[0], rootIndex)
+			fmt.Fprintf(d.Stderr, "kampodra: unknown command: %s\n\n%s", args[0], rootIndex)
 			return &exitError{code: 2}
 		},
 	}
@@ -154,7 +159,7 @@ func Execute(version string, deps Deps, args []string) int {
 		if errors.As(err, &ee) {
 			return ee.code
 		}
-		fmt.Fprintf(d.Stderr, "kampodine: %v\n", err)
+		fmt.Fprintf(d.Stderr, "kampodra: %v\n", err)
 		return 1
 	}
 	return 0

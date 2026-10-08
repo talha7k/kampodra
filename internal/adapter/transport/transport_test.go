@@ -19,13 +19,13 @@ func TestResolveHostLadder(t *testing.T) {
 		{
 			name:     "explicit flag beats every env",
 			flagHost: "root@203.0.113.9",
-			env:      map[string]string{"KAMPODINE_HOST": "root@from-env", "ESPELLAR_HOST": "root@legacy"},
+			env:      map[string]string{"KAMPODRA_HOST": "root@from-env", "ESPELLAR_HOST": "root@legacy"},
 			want:     "root@203.0.113.9",
 		},
 		{
-			name:     "KAMPODINE_HOST when no flag",
+			name:     "KAMPODRA_HOST when no flag",
 			flagHost: "",
-			env:      map[string]string{"KAMPODINE_HOST": "root@from-env"},
+			env:      map[string]string{"KAMPODRA_HOST": "root@from-env"},
 			want:     "root@from-env",
 		},
 		{
@@ -74,7 +74,7 @@ func TestResolveKeyLadder(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			lookup := func(key string) (string, bool) {
-				if key == "KAMPODINE_SSH_KEY" && tt.envKey != "" {
+				if key == "KAMPODRA_SSH_KEY" && tt.envKey != "" {
 					return tt.envKey, true
 				}
 				return "", false

@@ -75,8 +75,9 @@ func TestDetectPrefersProfileCache(t *testing.T) {
 }
 
 func TestServiceStatesRemoteCommand(t *testing.T) {
+	rollCall := []string{"kampodine-api", "kamal-proxy", "walshipper"} // the project default roll call
 	run := &recordingRun{output: "kampodine-api: running\nkamal-proxy: not-running\nwalshipper: not-running\n"}
-	states, err := ServiceStates(context.Background(), run.run, SystemOpenRC, Services)
+	states, err := ServiceStates(context.Background(), run.run, SystemOpenRC, rollCall)
 	if err != nil {
 		t.Fatalf("ServiceStates() error = %v", err)
 	}
@@ -100,8 +101,9 @@ func TestServiceStatesRemoteCommand(t *testing.T) {
 }
 
 func TestServiceStatesSystemdProbe(t *testing.T) {
+	rollCall := []string{"kampodine-api", "kamal-proxy", "walshipper"}
 	run := &recordingRun{output: "kampodine-api: running\nkamal-proxy: not-running\nwalshipper: not-running\n"}
-	states, err := ServiceStates(context.Background(), run.run, SystemSystemd, Services)
+	states, err := ServiceStates(context.Background(), run.run, SystemSystemd, rollCall)
 	if err != nil {
 		t.Fatalf("ServiceStates() error = %v", err)
 	}
@@ -114,15 +116,17 @@ func TestServiceStatesSystemdProbe(t *testing.T) {
 }
 
 func TestServiceStatesFailsClosedOnSSHFailure(t *testing.T) {
+	rollCall := []string{"kampodine-api", "kamal-proxy", "walshipper"}
 	run := &recordingRun{err: errors.New("ssh down")}
-	if _, err := ServiceStates(context.Background(), run.run, SystemOpenRC, Services); err == nil {
+	if _, err := ServiceStates(context.Background(), run.run, SystemOpenRC, rollCall); err == nil {
 		t.Fatal("ServiceStates() must fail closed when the VM is unreachable (caller prints '(service roll call failed)')")
 	}
 }
 
 func TestServiceStatesUnknownInitFailsClosed(t *testing.T) {
+	rollCall := []string{"kampodine-api", "kamal-proxy", "walshipper"}
 	run := &recordingRun{}
-	if _, err := ServiceStates(context.Background(), run.run, System(""), Services); err == nil {
+	if _, err := ServiceStates(context.Background(), run.run, System(""), rollCall); err == nil {
 		t.Fatal("no detected init must fail (svc_action parity) — callers degrade")
 	}
 	if len(run.commands) != 0 {

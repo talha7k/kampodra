@@ -196,24 +196,24 @@ func TestMetricsTopProcs(t *testing.T) {
 
 func TestRenderMetrics(t *testing.T) {
 	raw := strings.Join([]string{
-		"%%KAMPODINE:LOAD%%",
+		"%%KAMPODRA:LOAD%%",
 		"0.52 0.58 0.59 2/123 4567",
-		"%%KAMPODINE:CPU%%",
+		"%%KAMPODRA:CPU%%",
 		"4",
-		"%%KAMPODINE:MEM%%",
+		"%%KAMPODRA:MEM%%",
 		meminfo,
-		"%%KAMPODINE:UPTIME%%",
+		"%%KAMPODRA:UPTIME%%",
 		"1046160.5 2.36",
-		"%%KAMPODINE:DISK%%",
+		"%%KAMPODRA:DISK%%",
 		dfOK,
-		"%%KAMPODINE:DU%%",
+		"%%KAMPODRA:DU%%",
 		"4096\t/var/lib/containers",
 		"512\t/data",
-		"%%KAMPODINE:PODMAN%%",
+		"%%KAMPODRA:PODMAN%%",
 		"kampodine-api|2.10%|512MiB / 2GiB",
-		"%%KAMPODINE:TOP%%",
+		"%%KAMPODRA:TOP%%",
 		"root       123  0.5  1.2 123456 65432 ?        Sl   10:00   0:01 podman serve",
-		"%%KAMPODINE:END%%",
+		"%%KAMPODRA:END%%",
 	}, "\n")
 
 	want := strings.Join([]string{
@@ -238,9 +238,9 @@ func TestMetricsRemoteCommandShape(t *testing.T) {
 	// The remote one-shot must carry every section marker the renderer
 	// consumes — a drift here silently blanks the snapshot.
 	for _, marker := range []string{
-		"%%KAMPODINE:LOAD%%", "%%KAMPODINE:CPU%%", "%%KAMPODINE:MEM%%",
-		"%%KAMPODINE:UPTIME%%", "%%KAMPODINE:DISK%%", "%%KAMPODINE:DU%%",
-		"%%KAMPODINE:PODMAN%%", "%%KAMPODINE:TOP%%", "%%KAMPODINE:END%%",
+		"%%KAMPODRA:LOAD%%", "%%KAMPODRA:CPU%%", "%%KAMPODRA:MEM%%",
+		"%%KAMPODRA:UPTIME%%", "%%KAMPODRA:DISK%%", "%%KAMPODRA:DU%%",
+		"%%KAMPODRA:PODMAN%%", "%%KAMPODRA:TOP%%", "%%KAMPODRA:END%%",
 	} {
 		if !strings.Contains(MetricsRemoteCmd, marker) {
 			t.Errorf("MetricsRemoteCmd missing marker %s", marker)

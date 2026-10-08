@@ -18,12 +18,16 @@ type Command struct {
 	Args        map[string][]string `json:"args,omitempty"`
 }
 
-// Golden is the committed, generated description of the shell CLI's command
-// surface (github.com/talha7k/kampodine, COMMITTED HEAD only).
+// Golden is the committed, FROZEN description of the shell CLI's command
+// surface — the spec kampodra ports against. Nothing regenerates it from
+// the shell repo anymore: the shell line is retired, and this file is
+// final (frozen_note records the provenance).
 type Golden struct {
 	Generator   string    `json:"generator"`
 	SourceShell string    `json:"source_shell_repo"`
 	SourceHead  string    `json:"source_shell_head"`
+	Frozen      bool      `json:"frozen"`
+	FrozenNote  string    `json:"frozen_note"`
 	SourceFiles []string  `json:"source_files"`
 	Commands    []Command `json:"commands"`
 }

@@ -2,35 +2,37 @@ package parity
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// The committed golden is an artifact: this pin locks the hand-reviewed
-// surface (derived from kampodine's committed HEAD by reading the scripts)
-// so a parser regression cannot silently rewrite it. When the shell moves
-// and the golden is regenerated CONSCIOUSLY, update these expectations in
-// the same commit — that review is the point of the guard.
-//
-// kampodra-native additions (surface the shell never had, reviewed here and
-// enforced by the guard once landed):
-//   - status/deploy `--all-profiles` — per-profile fan-out
-//   - deploy `--follow` — stream container logs until ctrl-c
-//   - the `ssh` command — host-level ssh passthrough (script
-//     "kampodra-native": no shell equivalent exists)
-//   - env `diff <local-file>` — fingerprint-level local-vs-remote env diff
+// The committed golden is the FROZEN SPEC of the shell 0.6.0 surface (the
+// shell line is retired; nothing regenerates this file). This pin locks the
+// hand-reviewed surface so a parser regression cannot silently rewrite the
+// spec. The golden's kampodra-native additions (ssh, --all-profiles,
+// --follow, env diff) are NOT in here — the guard flags them as
+// warning-only native additions instead of spec entries.
 func TestCommittedGoldenMatchesHandReviewedSurface(t *testing.T) {
 	g, err := LoadGolden(filepath.Join("golden.json"))
 	if err != nil {
 		t.Fatalf("load committed golden: %v", err)
 	}
-	if n := len(g.Commands); n != 12 {
-		t.Fatalf("committed golden has %d commands, want 12 (kampodine HEAD + the kampodra-native ssh command)", n)
+	if n := len(g.Commands); n != 11 {
+		t.Fatalf("committed golden has %d commands, want 11 (the frozen shell 0.6.0 surface)", n)
 	}
 	if g.SourceShell != "github.com/talha7k/kampodine" {
 		t.Errorf("source_shell_repo = %q, want the canonical repo name (never a local path)", g.SourceShell)
 	}
 	if len(g.SourceHead) != 40 {
 		t.Errorf("source_shell_head = %q, want a full commit sha", g.SourceHead)
+	}
+	if !g.Frozen {
+		t.Errorf("golden is not marked frozen — the spec must be pinned as final")
+	}
+	for _, fragment := range []string{"v0.6.0", "5bf07fe", "retired 2026-10-08"} {
+		if !strings.Contains(g.FrozenNote, fragment) {
+			t.Errorf("frozen_note %q missing %q", g.FrozenNote, fragment)
+		}
 	}
 
 	byName := map[string]Command{}
@@ -42,10 +44,8 @@ func TestCommittedGoldenMatchesHandReviewedSurface(t *testing.T) {
 	if !ok {
 		t.Fatalf("golden has no status command")
 	}
-	// --all-profiles is kampodra-native (per-profile fan-out), consciously
-	// added on top of the shell HEAD surface.
-	if eqStrings(status.Flags, "--all-profiles", "--host", "--profile", "--ssh-key", "--verbose") == false {
-		t.Errorf("status flags = %v, want [--all-profiles --host --profile --ssh-key --verbose]", status.Flags)
+	if eqStrings(status.Flags, "--host", "--profile", "--ssh-key", "--verbose") == false {
+		t.Errorf("status flags = %v, want [--host --profile --ssh-key --verbose]", status.Flags)
 	}
 	if len(status.Subcommands) != 0 {
 		t.Errorf("status subcommands = %v, want none (the tail exec is bluegreen's surface, not status's)", status.Subcommands)
@@ -54,27 +54,12 @@ func TestCommittedGoldenMatchesHandReviewedSurface(t *testing.T) {
 		t.Errorf("status tail execs = %v, want [bluegreen.sh]", status.TailExecs)
 	}
 
-	ssh, ok := byName["ssh"]
-	if !ok {
-		t.Fatalf("golden has no ssh command (kampodra-native passthrough)")
-	}
-	if ssh.Script != "kampodra-native" {
-		t.Errorf("ssh script = %q, want the kampodra-native marker (no shell equivalent)", ssh.Script)
-	}
-	if eqStrings(ssh.Flags, "--host", "--profile", "--ssh-key") == false {
-		t.Errorf("ssh flags = %v, want [--host --profile --ssh-key]", ssh.Flags)
-	}
-	if got := ssh.Args[""]; len(got) != 1 || got[0] != "<cmd>..." {
-		t.Errorf("ssh args = %v, want [<cmd>...] under the command-level key", got)
-	}
-
 	deploy := byName["deploy"]
 	if eqStrings(deploy.Subcommands, "list", "logs", "prune", "restart", "shell") == false {
 		t.Errorf("deploy subcommands = %v", deploy.Subcommands)
 	}
-	// 12 shell flags + the kampodra-native --all-profiles and --follow.
-	if len(deploy.Flags) != 14 {
-		t.Errorf("deploy flags = %v, want 14 (deploy.sh + deploy-lifecycle.sh union + kampodra-native additions)", deploy.Flags)
+	if len(deploy.Flags) != 12 {
+		t.Errorf("deploy flags = %v, want 12 (deploy.sh + deploy-lifecycle.sh union)", deploy.Flags)
 	}
 	if deploy.Args["shell"] == nil || deploy.Args["shell"][0] != "<cmd>..." {
 		t.Errorf("deploy shell args = %v, want [<cmd>...]", deploy.Args["shell"])
@@ -100,12 +85,8 @@ func TestCommittedGoldenMatchesHandReviewedSurface(t *testing.T) {
 	}
 
 	env := byName["env"]
-	// diff is kampodra-native: a fingerprint-level local-vs-remote env diff.
-	if eqStrings(env.Subcommands, "diff", "fingerprint", "list", "pull", "push") == false {
+	if eqStrings(env.Subcommands, "fingerprint", "list", "pull", "push") == false {
 		t.Errorf("env subcommands = %v", env.Subcommands)
-	}
-	if got := env.Args["diff"]; len(got) != 1 || got[0] != "<local-file>" {
-		t.Errorf("env diff args = %v, want [<local-file>]", got)
 	}
 
 	migrate := byName["migrate"]

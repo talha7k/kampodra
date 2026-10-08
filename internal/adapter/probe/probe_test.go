@@ -37,13 +37,15 @@ func index(s, sub string) int {
 }
 
 func TestLiveStatusOK(t *testing.T) {
+	// The health path is project config handed in by the caller — the
+	// prober must request exactly the path it was given.
 	srv, p := newTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/auth/ok" {
-			t.Errorf("probe path = %q, want /api/auth/ok", r.URL.Path)
+		if r.URL.Path != "/healthz" {
+			t.Errorf("probe path = %q, want /healthz (the configured HealthPath)", r.URL.Path)
 		}
 		w.Write([]byte(`{"ok":true,"git":"ccc3333"}`))
 	})
-	got, ok := p.LiveStatus(context.Background(), hostOf(t, srv))
+	got, ok := p.LiveStatus(context.Background(), hostOf(t, srv), "/healthz")
 	if !ok {
 		t.Fatal("LiveStatus() not ok")
 	}
@@ -56,14 +58,14 @@ func TestLiveStatusFailsOnHTTPError(t *testing.T) {
 	srv, p := newTLSServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 	})
-	if _, ok := p.LiveStatus(context.Background(), hostOf(t, srv)); ok {
+	if _, ok := p.LiveStatus(context.Background(), hostOf(t, srv), "/healthz"); ok {
 		t.Error("LiveStatus() on 502 must not be ok (curl -sf parity)")
 	}
 }
 
 func TestLiveStatusFailsClosedOnUnreachable(t *testing.T) {
 	p := &Prober{HTTPClient: &http.Client{}}
-	if _, ok := p.LiveStatus(context.Background(), "127.0.0.1:1"); ok {
+	if _, ok := p.LiveStatus(context.Background(), "127.0.0.1:1", "/healthz"); ok {
 		t.Error("LiveStatus() on a closed port must not be ok")
 	}
 }

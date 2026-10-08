@@ -30,15 +30,15 @@ const (
 )
 
 var statusMetrics = strings.Join([]string{
-	"%%KAMPODINE:LOAD%%", "0.52 0.58 0.59 2/123 4567",
-	"%%KAMPODINE:CPU%%", "4",
-	"%%KAMPODINE:MEM%%", "MemTotal: 1573248 kB\nMemAvailable: 1048576 kB",
-	"%%KAMPODINE:UPTIME%%", "1046160.5 2.36",
-	"%%KAMPODINE:DISK%%", statusDFRoot,
-	"%%KAMPODINE:DU%%", statusDU,
-	"%%KAMPODINE:PODMAN%%", "kampodine-api|2.10%|512MiB / 2GiB",
-	"%%KAMPODINE:TOP%%", "root 123 0.5 1.2 123456 65432 ? Sl 10:00 0:01 podman serve",
-	"%%KAMPODINE:END%%",
+	"%%KAMPODRA:LOAD%%", "0.52 0.58 0.59 2/123 4567",
+	"%%KAMPODRA:CPU%%", "4",
+	"%%KAMPODRA:MEM%%", "MemTotal: 1573248 kB\nMemAvailable: 1048576 kB",
+	"%%KAMPODRA:UPTIME%%", "1046160.5 2.36",
+	"%%KAMPODRA:DISK%%", statusDFRoot,
+	"%%KAMPODRA:DU%%", statusDU,
+	"%%KAMPODRA:PODMAN%%", "kampodine-api|2.10%|512MiB / 2GiB",
+	"%%KAMPODRA:TOP%%", "root 123 0.5 1.2 123456 65432 ? Sl 10:00 0:01 podman serve",
+	"%%KAMPODRA:END%%",
 }, "\n")
 
 const statusLedger = `{"ts":"2026-10-08T10:05:00Z","host":"root@203.0.113.9","sha":"aaa1111000000000000000000000000000000000","tag":"aaa1111","result":"success","duration_ms":182000,"subject":"feat: ledger merge"}
@@ -53,7 +53,7 @@ func systemLookup(key string) (string, bool) { return os.LookupEnv(key) }
 func setupStatus(t *testing.T) (deps command.Deps, stubDir string, stdout *bytes.Buffer) {
 	t.Helper()
 	home := t.TempDir()
-	dir := filepath.Join(home, ".kampodine")
+	dir := filepath.Join(home, ".kampodra")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func setupStatus(t *testing.T) (deps command.Deps, stubDir string, stdout *bytes
 		"  *\"podman ps --format\"*) cat '" + fPS + "'; exit 0 ;;\n" +
 		"  *\"df -P /var/lib/containers\"*) cat '" + fDF + "'; exit 0 ;;\n" +
 		"  *\"for s in\"*) cat '" + fSVC + "'; exit 0 ;;\n" +
-		"  *\"%%KAMPODINE:LOAD%%\"*) cat '" + fMetrics + "'; exit 0 ;;\n" +
+		"  *\"%%KAMPODRA:LOAD%%\"*) cat '" + fMetrics + "'; exit 0 ;;\n" +
 		"  *\"command -v rc-service\"*) printf 'openrc\\nhttpc=wget\\n'; exit 0 ;;\n" +
 		"  *) cat >/dev/null 2>&1; exit 0 ;;\n" +
 		"esac\n"
@@ -93,7 +93,7 @@ func setupStatus(t *testing.T) (deps command.Deps, stubDir string, stdout *bytes
 	}
 
 	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
-	for _, k := range []string{"KAMPODINE_HOST", "KAMPODINE_SSH_KEY", "KAMPODINE_PROFILE", "APP_HOST_HEADER"} {
+	for _, k := range []string{"KAMPODRA_HOST", "KAMPODRA_SSH_KEY", "KAMPODRA_PROFILE", "KAMPODRA_PROXY_HOST"} {
 		t.Setenv(k, "")
 	}
 
@@ -149,7 +149,7 @@ func TestStatusWithHost(t *testing.T) {
 		"UNREACHABLE or unhealthy — check the VM (ssh) and kamal-proxy",
 		"== VM (" + statusHost + ")",
 		"disk    : 62% used on /var/lib/containers",
-		"images  : 4 sha-tagged deploy image(s); prune would remove 1 ddd4444 (~936 MB): kampodine deploy prune --dry-run",
+		"images  : 4 sha-tagged deploy image(s); prune would remove 1 ddd4444 (~936 MB): kampodra deploy prune --dry-run",
 		"services:",
 		"kampodine-api: running",
 		"kamal-proxy: running",
@@ -214,7 +214,7 @@ func TestStatusDiskWarningAbove90(t *testing.T) {
 	out := stdout.String()
 	for _, w := range []string{
 		"disk    : 96% used on /var/lib/containers",
-		"WARNING : VM disk above 90% — old sha-tagged deploy images pile up (~1GB each); reclaim: kampodine deploy prune --dry-run",
+		"WARNING : VM disk above 90% — old sha-tagged deploy images pile up (~1GB each); reclaim: kampodra deploy prune --dry-run",
 	} {
 		if !strings.Contains(out, w) {
 			t.Errorf("missing %q:\n%s", w, out)
@@ -224,8 +224,10 @@ func TestStatusDiskWarningAbove90(t *testing.T) {
 
 func TestStatusSSHFailureDegrades(t *testing.T) {
 	deps, stubDir, stdout := setupStatus(t)
-	// Remove the ssh shim entirely: every VM read must degrade, not crash.
-	if err := os.Remove(filepath.Join(stubDir, "ssh")); err != nil {
+	// Fail-fast ssh (exit 255 = ssh's own connection failure): every VM read
+	// degrades instantly — no test time on the unroutable host.
+	shim := "#!/bin/sh\nexit 255\n"
+	if err := os.WriteFile(filepath.Join(stubDir, "ssh"), []byte(shim), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if code := runStatus(t, deps, "--host", statusHost); code != 0 {
@@ -235,7 +237,7 @@ func TestStatusSSHFailureDegrades(t *testing.T) {
 	for _, w := range []string{
 		"Total deployments: 2 · deployments to " + statusHost,
 		"disk    : unknown (df unreadable)",
-		"images  : 0 sha-tagged deploy image(s); prune would remove 0 (none) (~0 MB): kampodine deploy prune --dry-run",
+		"images  : 0 sha-tagged deploy image(s); prune would remove 0 (none) (~0 MB): kampodra deploy prune --dry-run",
 		"(service roll call failed)",
 	} {
 		if !strings.Contains(out, w) {
@@ -264,12 +266,13 @@ func TestStatusHelpMatchesShellUsage(t *testing.T) {
 	out := stdout.String()
 	want := []string{
 		"Usage:",
-		"kampodine status [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--verbose]",
+		"kampodra status [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--verbose] [--all-profiles]",
 		"Examples:",
-		"kampodine status                          # deployments (ledger) + live health + blue/green pair",
-		"kampodine status --host root@203.0.113.10 # + VM disk usage, image/prune estimate, service states",
-		"kampodine status --profile prod           # resolve host/key from a config profile",
-		"Env: APP_HOST_HEADER (default app.example.com), KAMPODINE_HOST,",
+		"kampodra status                          # deployments (ledger) + live health + blue/green pair",
+		"kampodra status --host root@203.0.113.10 # + VM disk usage, image/prune estimate, service states",
+		"kampodra status --profile prod           # resolve host/key from a config profile",
+		"kampodra status --all-profiles           # one full section per configured profile",
+		"Env: KAMPODRA_PROXY_HOST, KAMPODRA_HOST,",
 	}
 	for _, w := range want {
 		if !strings.Contains(out, w) {
@@ -280,7 +283,7 @@ func TestStatusHelpMatchesShellUsage(t *testing.T) {
 
 func writeStatusProfiles(t *testing.T, home, cfg string) {
 	t.Helper()
-	dir := filepath.Join(home, ".kampodine")
+	dir := filepath.Join(home, ".kampodra")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -312,14 +315,14 @@ func TestStatusAllProfilesRendersPerProfileSections(t *testing.T) {
 }
 
 func TestStatusAllProfilesWithoutProfilesFails(t *testing.T) {
-	deps, _, _, stderr := setupStatus(t)
-	deps.Stderr = stderr.(*bytes.Buffer)
+	deps, _, _ := setupStatus(t)
+	stderr := deps.Stderr.(*bytes.Buffer)
 	code := runStatus(t, deps, "--all-profiles")
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1 (fan-out over nothing is a config error, not an empty run)", code)
 	}
-	if !strings.Contains(stderr.(*bytes.Buffer).String(), "--all-profiles: no profiles configured") {
-		t.Errorf("stderr = %q", stderr.(*bytes.Buffer).String())
+	if !strings.Contains(stderr.String(), "--all-profiles: no profiles configured") {
+		t.Errorf("stderr = %q", stderr.String())
 	}
 }
 

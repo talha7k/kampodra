@@ -1,16 +1,17 @@
-// Command paritygen derives kampodine's command-surface golden JSON from the
-// shell repo's COMMITTED files (github.com/talha7k/kampodine, HEAD only —
-// never the working tree) and writes it to internal/parity/golden.json.
+// Command paritygen — HISTORICAL UTILITY. It derived the command-surface
+// golden JSON from the shell predecessor's committed files. The golden is
+// now FROZEN (internal/parity/golden.json records the provenance); nothing
+// regenerates it, and this tool is not wired into CI or the docs as a live
+// step. Kept only so the derivation remains auditable.
 //
 // Usage:
 //
 //	go run ./tools/paritygen [-shell <path>] [-out <file>] [-check]
 //
-// -shell defaults to $KAMPODINE_SHELL_REPO, else the sibling directory
-// `kampodine` next to this repo. -check regenerates and exits 1 when the
-// committed golden differs (the CI ratchet: a new shell command without Go
-// coverage must fail CI until the golden is consciously regenerated and the
-// baseline updated).
+// -shell defaults to $KAMPODRA_SHELL_REPO, else the sibling shell checkout
+// next to this repo. -check regenerates and exits 1 when the committed
+// golden differs. OBSOLETE since the freeze: the committed golden is final;
+// do not run this against the retired shell repo expecting updates.
 package main
 
 import (
@@ -30,11 +31,11 @@ const (
 	generatorVersion = "paritygen/1"
 	// The shell behavioral spec's canonical identity — recorded in the
 	// golden instead of a machine-local path so CI comparisons are stable.
-	shellRepoName = "github.com/talha7k/kampodine"
+	shellRepoName = "github.com/talha7k/kampodine" // the retired shell repo (spec provenance only)
 )
 
 func main() {
-	defaultShell := os.Getenv("KAMPODINE_SHELL_REPO")
+	defaultShell := os.Getenv("KAMPODRA_SHELL_REPO")
 	if defaultShell == "" {
 		self, err := os.Executable()
 		if err == nil {
@@ -45,7 +46,7 @@ func main() {
 			defaultShell = filepath.Join(filepath.Dir(wd), "kampodine")
 		}
 	}
-	shell := flag.String("shell", defaultShell, "path to the shell kampodine repo (read-only; COMMITTED files only)")
+	shell := flag.String("shell", defaultShell, "path to the retired shell repo checkout (read-only; COMMITTED files only)")
 	out := flag.String("out", "internal/parity/golden.json", "golden output path")
 	check := flag.Bool("check", false, "regenerate and fail when the committed golden differs")
 	flag.Parse()
@@ -97,7 +98,7 @@ func run(shellRepo, outPath string, checkOnly bool) error {
 		if !bytes.Equal(committed, buf) {
 			return fmt.Errorf("-check: %s is stale — regenerate with `go run ./tools/paritygen -shell %s` and commit", outPath, absShell)
 		}
-		fmt.Printf("paritygen: %s matches kampodine HEAD %s (%d commands)\n", outPath, head[:10], len(golden.Commands))
+		fmt.Printf("paritygen: %s matches shell HEAD %s (%d commands)\n", outPath, head[:10], len(golden.Commands))
 		return nil
 	}
 
@@ -107,7 +108,7 @@ func run(shellRepo, outPath string, checkOnly bool) error {
 	if err := os.WriteFile(outPath, buf, 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("paritygen: wrote %s from kampodine HEAD %s (%d commands)\n", outPath, head[:10], len(golden.Commands))
+	fmt.Printf("paritygen: wrote %s from shell HEAD %s (%d commands)\n", outPath, head[:10], len(golden.Commands))
 	return nil
 }
 

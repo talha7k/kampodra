@@ -1,17 +1,17 @@
 {
   "name": "kampodra",
-  "version": "0.7.0-alpha.1",
+  "version": "0.7.0-alpha.2",
   "description": "Kamal-style deploys for Alpine + Podman hosts, built on kamal-proxy \u2014 the Go implementation; owns the npm name going forward (shell 0.6 is the last shell version)",
   "license": "AGPL-3.0",
   "type": "module",
   "bin": {
-    "kampodine": "bin/kampodine.js"
+    "kampodra": "bin/kampodra.js"
   },
   "optionalDependencies": {
-    "@kampodine/darwin-arm64": "0.7.0-alpha.1",
-    "@kampodine/darwin-x64": "0.7.0-alpha.1",
-    "@kampodine/linux-arm64": "0.7.0-alpha.1",
-    "@kampodine/linux-x64": "0.7.0-alpha.1"
+    "@kampodra/darwin-arm64": "0.7.0-alpha.2",
+    "@kampodra/darwin-x64": "0.7.0-alpha.2",
+    "@kampodra/linux-arm64": "0.7.0-alpha.2",
+    "@kampodra/linux-x64": "0.7.0-alpha.2"
   },
   "engines": {
     "node": ">=20"

@@ -17,42 +17,31 @@ import (
 // envHelp is the shell env.sh usage heredoc (byte-equal for the shell-era
 // lines); the kampodra-native diff line documents the added surface.
 const envHelp = `Usage:
-  kampodine env list [--host <user@ip>] [--profile <name>] [--ssh-key <path>]             # KEY + fingerprint table (NEVER values)
-  kampodine env push --file <local-env-file> [...] [--profile <name>]                     # upload: 0600 temp + atomic mv + restart hint
-  kampodine env pull [--out <file>] [...] [--profile <name>]                              # raw payload to stdout/--out (0600); masked summary follows
-  kampodine env fingerprint [--file <f>]                                                  # preview the masking for a LOCAL file / stdin (never values)
+  kampodra env list [--host <user@ip>] [--profile <name>] [--ssh-key <path>]             # KEY + fingerprint table (NEVER values)
+  kampodra env push --file <local-env-file> [...] [--profile <name>]                     # upload: 0600 temp + atomic mv + restart hint
+  kampodra env pull [--out <file>] [...] [--profile <name>]                              # raw payload to stdout/--out (0600); masked summary follows
+  kampodra env fingerprint [--file <f>]                                                  # preview the masking for a LOCAL file / stdin (never values)
   kampodra env diff <local-file> [--host <user@ip>] [--profile <name>] [--ssh-key <path>] # fingerprint-level local vs remote (exit 1 = differs)
 
 Fingerprints NEVER leak values: every line is KEY + value length + first 2 chars.
 Raw values move only in push's upload stream and pull's stdout/--out payload.
 Host/key resolution matches deploy.sh: --host | --profile <name> |
-KAMPODINE_PROFILE | config defaultProfile | KAMPODINE_HOST; --ssh-key |
-profile sshKey | KAMPODINE_SSH_KEY | ssh-agent / ~/.ssh/config.
+KAMPODRA_PROFILE | config defaultProfile | KAMPODRA_HOST; --ssh-key |
+profile sshKey | KAMPODRA_SSH_KEY | ssh-agent / ~/.ssh/config.
 
 Examples:
-  kampodine env list --host root@203.0.113.10
-  kampodine env push --file ./ops/env.production --host root@203.0.113.10
-  kampodine env pull --out ./env.snapshot --host root@203.0.113.10   # written 0600
-  kampodine env pull --host root@203.0.113.10 | wc -l                # raw payload on stdout, summary on stderr
-  kampodine env fingerprint --file ./.env.local                      # preview masking, values never leave stdin
+  kampodra env list --host root@203.0.113.10
+  kampodra env push --file ./ops/env.production --host root@203.0.113.10
+  kampodra env pull --out ./env.snapshot --host root@203.0.113.10   # written 0600
+  kampodra env pull --host root@203.0.113.10 | wc -l                # raw payload on stdout, summary on stderr
+  kampodra env fingerprint --file ./.env.local                      # preview masking, values never leave stdin
   kampodra env diff ./ops/env.production --host root@203.0.113.10    # what would this push change?
 `
-
-// envDefaultRemotePath is ENV_FILE_REMOTE's default (/etc/kampodine/env,
-// 0600 root — the shell's constant); KAMPODINE_ENV_REMOTE overrides.
-const envDefaultRemotePath = "/etc/kampodine/env"
-
-func envRemotePath(lookup func(string) (string, bool)) string {
-	if v, ok := lookup("KAMPODINE_ENV_REMOTE"); ok && v != "" {
-		return v
-	}
-	return envDefaultRemotePath
-}
 
 func newEnvCommand(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "env",
-		Short: "remote app env file (/etc/kampodine/env, 0600): list | push | pull | fingerprint | diff — values NEVER printed, fingerprints only",
+		Short: "remote app env file (/etc/kampodra/env, 0600): list | push | pull | fingerprint | diff — values NEVER printed, fingerprints only",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, args []string) error {
 			fmt.Fprint(c.OutOrStdout(), envHelp)
@@ -64,9 +53,9 @@ func newEnvCommand(d Deps) *cobra.Command {
 	})
 
 	envFlags := func(c *cobra.Command) {
-		c.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODINE_HOST and any profile")
-		c.Flags().String("profile", "", "per-instance profile (~/.kampodine/config.json) — beats KAMPODINE_PROFILE / defaultProfile")
-		c.Flags().String("ssh-key", "", "identity file — beats KAMPODINE_SSH_KEY; empty = agent / ssh config")
+		c.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODRA_HOST and any profile")
+		c.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
+		c.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
 	}
 	resolve := func(c *cobra.Command) (Target, error) {
 		host, _ := c.Flags().GetString("host")
@@ -91,7 +80,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 			if err := requireHost(target); err != nil {
 				return err
 			}
-			raw, err := fetchRemoteEnv(d, c.Context(), target, envRemotePath(d.Env))
+			raw, err := fetchRemoteEnv(d, c.Context(), target, target.Project.EnvFilePath)
 			if err != nil {
 				return err
 			}
@@ -124,7 +113,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 			if err := requireHost(target); err != nil {
 				return err
 			}
-			remote := envRemotePath(d.Env)
+			remote := target.Project.EnvFilePath
 			fmt.Fprintf(d.Stdout, "[env] pushing %s -> %s:%s (fingerprint summary below; values are NEVER printed)\n",
 				file, target.HostSpec.Host, remote)
 			fmt.Fprint(d.Stdout, envfile.Table(string(data)))
@@ -139,7 +128,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 				return fmt.Errorf("atomic install failed (remote temp left at: %s)", tmp)
 			}
 			fmt.Fprintf(d.Stdout, "[env] installed %s (0600) on %s\n", remote, target.HostSpec.Host)
-			fmt.Fprintf(d.Stdout, "[env] restart to apply: ssh %s 'rc-service kampodine-api restart'   # or: kampodra deploy\n", target.HostSpec.Host)
+			fmt.Fprintf(d.Stdout, "[env] restart to apply: ssh %s 'rc-service %s restart'   # or: kampodra deploy\n", target.HostSpec.Host, target.Project.Container)
 			return nil
 		},
 	}
@@ -158,7 +147,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 			if err := requireHost(target); err != nil {
 				return err
 			}
-			remote := envRemotePath(d.Env)
+			remote := target.Project.EnvFilePath
 			raw, err := fetchRemoteEnv(d, c.Context(), target, remote)
 			if err != nil {
 				return err
@@ -241,7 +230,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 			if err := requireHost(target); err != nil {
 				return err
 			}
-			remote := envRemotePath(d.Env)
+			remote := target.Project.EnvFilePath
 			raw, err := fetchRemoteEnv(d, c.Context(), target, remote)
 			if err != nil {
 				return err
@@ -268,7 +257,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 // error naming every resolution route.
 func requireHost(target Target) error {
 	if target.HostSpec.Host == "" {
-		return fmt.Errorf("target required: --host root@<ip>, --profile <name>, KAMPODINE_PROFILE, config defaultProfile, or KAMPODINE_HOST=root@<ip> (resolution matches deploy.sh)")
+		return fmt.Errorf("target required: --host root@<ip>, --profile <name>, KAMPODRA_PROFILE, config defaultProfile, or KAMPODRA_HOST=root@<ip> (resolution matches deploy.sh)")
 	}
 	return nil
 }
@@ -278,7 +267,7 @@ func requireHost(target Target) error {
 func fetchRemoteEnv(d Deps, ctx context.Context, target Target, remote string) (string, error) {
 	raw, err := d.Runner.Run(ctx, target.HostSpec, "cat "+remote)
 	if err != nil {
-		return "", fmt.Errorf("cannot read %s on %s (no env file yet? run: kampodine env push --file <env>, or kampodra deploy)", remote, target.HostSpec.Host)
+		return "", fmt.Errorf("cannot read %s on %s (no env file yet? run: kampodra env push --file <env>, or kampodra deploy)", remote, target.HostSpec.Host)
 	}
 	return raw, nil
 }
