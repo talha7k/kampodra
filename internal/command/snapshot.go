@@ -40,7 +40,7 @@ func snapshotCommand(cmd *cobra.Command) parity.TreeCommand {
 	}
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
-		c.Flags().VisitAll(func(f *pflag.Flag) {
+		visit := func(f *pflag.Flag) {
 			// help is cobra's universal affordance. version is NOT skipped:
 			// the auto --version lives on the root (never snapshotted), so a
 			// --version seen here is real shell surface (deploy --version).
@@ -48,7 +48,11 @@ func snapshotCommand(cmd *cobra.Command) parity.TreeCommand {
 				return
 			}
 			tc.Flags["--"+f.Name] = true
-		})
+		}
+		c.Flags().VisitAll(visit)
+		// Persistent flags are inherited by every subcommand — real public
+		// surface; cobra only merges them into Flags() at execution time.
+		c.PersistentFlags().VisitAll(visit)
 		for _, sub := range c.Commands() {
 			if sub.Hidden {
 				continue
