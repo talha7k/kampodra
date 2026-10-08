@@ -73,12 +73,16 @@ func runStatus(d Deps, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	mf, err := d.manifestFor()
+	if err != nil {
+		return err
+	}
 	for _, name := range names {
 		profileParam := name
 		if name == "" {
 			profileParam = flagProfile
 		}
-		target, err := ResolveTarget(cfg, flagHost, flagKey, profileParam, d.Env)
+		target, err := ResolveTarget(cfg, flagHost, flagKey, profileParam, mf, d.Env)
 		if err != nil {
 			return err
 		}

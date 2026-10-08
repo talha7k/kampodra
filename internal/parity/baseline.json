@@ -1,7 +1,6 @@
 {
   "not_yet_ported": [
     "bluegreen",
-    "image-import",
-    "migrate"
+    "image-import"
   ]
 }

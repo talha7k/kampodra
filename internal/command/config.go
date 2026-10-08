@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/talha7k/kampodra/internal/adapter/project"
 	"github.com/talha7k/kampodra/internal/adapter/state"
 )
 
@@ -16,6 +17,7 @@ const configHelp = `Usage:
   kampodra config init --name <name> --host <user@ip> --ssh-key <path> [--proxy-host <host>] [--group <g>] [--set-default] [--force]
   kampodra config list [--group <g>]
   kampodra config show [--profile <name>]
+  kampodra config print [--profile <name>]
   kampodra config set-default <name>
   kampodra config remove <name> [--force]
 
@@ -28,12 +30,25 @@ Re-init (--force) refreshes the flat fields and keeps the tooling-owned
 cached init verdict unless host/ssh-key changed (the project block always
 survives — config init never manages it).
 
+Project shape resolution (the FULL ladder, every command):
+
+  flags > KAMPODRA_* env > profile "project" block > kampodra.json > defaults
+
+kampodra.json is the repo-level project manifest (the vercel.json pattern):
+discovered upward from the working directory like package.json, nearest
+file wins. It is COMMITTED PER-PROJECT and carries project naming only —
+NEVER hosts, ssh keys, or any secret material (those stay in ~/.kampodra
+profiles, 0600). A malformed manifest FAILS CLOSED.
+` + "`" + `config print` + "`" + ` renders the fully resolved effective config with
+per-field provenance — the debugging tool for the ladder.
+
 Examples:
   kampodra config init --name prod --host root@203.0.113.10 --ssh-key ~/.ssh/id_ed25519 --proxy-host app.example.com --set-default
   kampodra config init --name staging --host root@203.0.113.8 --ssh-key ~/.ssh/id_ed25519 --group preview
   kampodra config list                 # all profiles (default marked *)
   kampodra config list --group main    # cosmetic group filter
   kampodra config show --profile prod
+  kampodra config print                # effective project config + per-field provenance
   kampodra config set-default staging
   kampodra config remove staging
   kampodra deploy --profile prod       # profiles feed every subcommand
@@ -87,6 +102,14 @@ func newConfigCommand(d Deps) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(c *cobra.Command, _ []string) error {
 				return runConfigShow(d, c)
+			},
+		},
+		&cobra.Command{
+			Use:   "print",
+			Short: "the fully resolved effective project config with per-field provenance (flag/env/profile/repo-file/default)",
+			Args:  cobra.NoArgs,
+			RunE: func(c *cobra.Command, _ []string) error {
+				return runConfigPrint(d, c)
 			},
 		},
 		&cobra.Command{
@@ -351,6 +374,68 @@ func runConfigRemove(d Deps, c *cobra.Command, args []string) error {
 	fmt.Fprintf(d.Stdout, "[config] removed profile '%s' (%d remaining)\n", target, len(cfg.Profiles))
 	if cfg.DefaultProfile != "" && cfg.DefaultProfile != target {
 		fmt.Fprintf(d.Stdout, "[config] default profile is now: %s\n", cfg.DefaultProfile)
+	}
+	return nil
+}
+
+// provenanceTag renders one field's winning layer for config print: the
+// source plus, where meaningful, exactly where it came from.
+func provenanceTag(tr project.FieldTrace) string {
+	switch tr.Source {
+	case project.SourceEnv:
+		return string(tr.Source) + " (" + tr.Origin + ")"
+	case project.SourceRepoFile:
+		return string(tr.Source) + " (" + tr.Origin + ")"
+	case project.SourceProfile:
+		return string(project.SourceProfile)
+	case project.SourceFlag:
+		return string(project.SourceFlag)
+	default:
+		return string(project.SourceDefault)
+	}
+}
+
+// runConfigPrint renders the fully resolved effective project config with
+// per-field provenance — the debugging tool for the resolution ladder.
+func runConfigPrint(d Deps, c *cobra.Command) error {
+	cfg, err := state.LoadConfig(d.Home)
+	if err != nil {
+		return err
+	}
+	profileFlag, _ := c.Flags().GetString("profile")
+	name, err := state.SelectProfileName(cfg, profileFlag, d.Env)
+	if err != nil {
+		return err
+	}
+	var profile state.Profile
+	if name != "" {
+		if profile, err = cfg.Profile(name); err != nil {
+			return err
+		}
+	}
+
+	// Fail closed on a malformed manifest BEFORE rendering anything.
+	mf, err := d.manifestFor()
+	if err != nil {
+		return err
+	}
+
+	pc, traces := project.ResolveTraced(nil, d.Env, profile.Project, mf)
+
+	label := "<none>"
+	if name != "" {
+		label = name
+		if name == cfg.DefaultProfile {
+			label = name + " (default)"
+		}
+	}
+	if mf != nil {
+		fmt.Fprintf(d.Stdout, "[config] effective project config (profile: %s, manifest: %s)\n", label, mf.Path)
+	} else {
+		fmt.Fprintf(d.Stdout, "[config] effective project config (profile: %s, no kampodra.json in this tree)\n", label)
+	}
+	for _, v := range project.FieldViews(pc, traces) {
+		fmt.Fprintf(d.Stdout, "%-16s %-30s (%s)\n", v.Key, v.Value, provenanceTag(v.Trace))
 	}
 	return nil
 }

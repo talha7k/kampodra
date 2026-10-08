@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/talha7k/kampodra/internal/adapter/probe"
+	"github.com/talha7k/kampodra/internal/adapter/project"
 	"github.com/talha7k/kampodra/internal/adapter/transport"
 )
 
@@ -28,7 +29,7 @@ Usage: kampodra <command> [args...]
 DEPLOY
   deploy         the full pipeline: build → save|load stream → env → restart → health gate → proxy re-point → smoke; --rollback [sha]; --rolling; converge
   bluegreen      reserved-IP blue/green pair (NOT_YET_PORTED): status | init | provision | flip | rollback
-  migrate        tenant db migrations over SSH (NOT_YET_PORTED)
+  migrate        tenant db migrations over SSH: root.db first, then tenants bounded-parallel; stop-first guard; --allow-running
 
 DEPLOY LIFECYCLE
   deploy          full build/stream pipeline with sha-verified health gate + kamal-proxy re-point + public smoke
@@ -73,6 +74,7 @@ Every command supports --help with usage + examples.
 // network, filesystem, or environment).
 type Deps struct {
 	Home   string
+	Dir    string // the working directory (repo-manifest upward discovery)
 	Env    func(string) (string, bool)
 	Stdout io.Writer
 	Stderr io.Writer
@@ -106,7 +108,24 @@ func (d Deps) withDefaults() Deps {
 			d.Home = home
 		}
 	}
+	if d.Dir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			d.Dir = wd
+		}
+	}
 	return d
+}
+
+// manifestFor discovers the repo-level kampodra.json project manifest from
+// the run directory (upward walk, nearest wins). No manifest in the tree is
+// (nil, nil); an existing but malformed one FAILS CLOSED — a committed
+// config typo must error, never silently resolve to defaults.
+func (d Deps) manifestFor() (*project.Manifest, error) {
+	mf, err := project.DiscoverManifest(d.Dir)
+	if err != nil || mf.Path == "" {
+		return nil, err
+	}
+	return &mf, nil
 }
 
 // exitError carries a specific process exit code (cli.js parity: unknown
@@ -157,6 +176,7 @@ func NewRoot(version string, deps Deps) *cobra.Command {
 	root.AddCommand(newVMPrepareCommand(d))
 	root.AddCommand(newMetricsCommand(d))
 	root.AddCommand(newDNSCommand(d))
+	root.AddCommand(newMigrateCommand(d))
 	return root
 }
 

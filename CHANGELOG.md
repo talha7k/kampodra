@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.7.0-beta.2 — 2026-10-09
+
+- **`migrate` ported (the last small frozen-spec family)** — tenant db
+  migrations over SSH: per-db-file drizzle apply via the repo on the VM
+  (the app's own `scripts/libsql-migrate/migrate-db.ts` — the same code
+  path as local seeding, no parallel implementation). Order: root.db first
+  (auth/org plane; `root/root.db` preferred, legacy flat `root.db`
+  honored), then `tenant_*.db` sorted, bounded-parallel (`--jobs`,
+  default 4 / `MIGRATE_JOBS`; the shell's VM-side `xargs -P` moved to a
+  bounded client pool — busybox-safe, same ordering + all-or-nothing
+  gate). Per-file failures are COLLECTED (one bad tenant never blocks the
+  others) → exit 1 with the do-NOT-start-the-API summary. The stop-first
+  guard is init-aware via `ProjectConfig.Services` (rc-service on OpenRC,
+  systemctl on systemd; neither → loud warning, never blocks local runs)
+  and refuses while the api service serves, `--allow-running` for
+  deliberate rolling contexts. The VM repo checkout resolves
+  `--repo-root` > `KAMPODRA_REPO_ROOT`, fail-closed when neither names
+  one. The NOT_YET_PORTED baseline shrinks to bluegreen + image-import.
+- **Repo-level project manifest `kampodra.json` (kampodra-native, the
+  vercel.json pattern)** — committed per-project, discovered upward from
+  the working directory like package.json (nearest wins); schema = the
+  ProjectConfig fields (plus the new `dockerfile` field, default
+  `Dockerfile`). Parsed STRICTLY: malformed JSON and unknown keys FAIL
+  CLOSED — a committed config typo must error, never silently resolve to
+  defaults (unlike the profile block, which stays fail-open). NEVER hosts/
+  keys/secrets — those stay in ~/.kampodra profiles; documented in
+  `config --help` + README. The resolution ladder is now
+  `flags > KAMPODRA_* env > profile "project" block > kampodra.json >
+  defaults` everywhere (env moves above the persisted profile layer).
+  `--dockerfile` on deploy resolves through the ladder (flag > project
+  config); every host-aware command consults the manifest.
+- **`config print` (kampodra-native)** — the fully resolved effective
+  project config with per-field provenance
+  (flag/env/profile/repo-file/default, naming the env var or manifest
+  path) — the debugging tool for the ladder. Covers all 16 fields.
+
 ## 0.7.0-beta.1 — 2026-10-09
 
 - **Wave 4 — the INFRA families** (the frozen-spec port is complete except

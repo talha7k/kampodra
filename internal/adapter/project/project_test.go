@@ -51,9 +51,16 @@ func TestResolvePrecedence(t *testing.T) {
 			want:  "from-env",
 		},
 		{
-			name:      "profile beats env",
+			name:      "env beats profile (0.7 ladder: env above the profile block)",
 			overrides: `{"container": "from-profile"}`,
 			env:       map[string]string{"KAMPODRA_CONTAINER": "from-env"},
+			field:     func(c Config) string { return c.Container },
+			want:      "from-env",
+		},
+		{
+			name:      "profile still beats the repo manifest + default",
+			overrides: `{"container": "from-profile"}`,
+			env:       map[string]string{"KAMPODRA_UNRELATED": "x"},
 			field:     func(c Config) string { return c.Container },
 			want:      "from-profile",
 		},
@@ -88,16 +95,16 @@ func TestResolvePrecedence(t *testing.T) {
 			want:  "edge.other.tld",
 		},
 		{
-			name:      "profile proxy host beats env",
+			name:      "env beats profile proxy host (0.7 ladder)",
 			overrides: `{"proxyHost": "edge.profile.tld"}`,
 			env:       map[string]string{"KAMPODRA_PROXY_HOST": "edge.other.tld"},
 			field:     func(c Config) string { return c.ProxyHost },
-			want:      "edge.profile.tld",
+			want:      "edge.other.tld",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Resolve([]byte(tt.overrides), func(k string) (string, bool) {
+			got := Resolve(nil, []byte(tt.overrides), func(k string) (string, bool) {
 				v, ok := tt.env[k]
 				return v, ok
 			})
@@ -109,7 +116,7 @@ func TestResolvePrecedence(t *testing.T) {
 }
 
 func TestResolveServicesEnvIsSpaceSeparated(t *testing.T) {
-	got := Resolve(nil, func(k string) (string, bool) {
+	got := Resolve(nil, nil, func(k string) (string, bool) {
 		if k == "KAMPODRA_SERVICES" {
 			return "api web worker", true
 		}
@@ -121,7 +128,7 @@ func TestResolveServicesEnvIsSpaceSeparated(t *testing.T) {
 }
 
 func TestResolveProfileServicesOverride(t *testing.T) {
-	got := Resolve([]byte(`{"services": ["solo"]}`), func(string) (string, bool) { return "", false })
+	got := Resolve(nil, []byte(`{"services": ["solo"]}`), func(string) (string, bool) { return "", false })
 	if len(got.Services) != 1 || got.Services[0] != "solo" {
 		t.Errorf("Services = %v, want [solo]", got.Services)
 	}
@@ -130,7 +137,7 @@ func TestResolveProfileServicesOverride(t *testing.T) {
 func TestResolveCorruptOverridesFallOpenToEnvAndDefaults(t *testing.T) {
 	// A corrupt profile project block must not crash the CLI: env/defaults
 	// still apply (the block is an override layer, not a data file).
-	got := Resolve([]byte(`{"container": `), func(k string) (string, bool) {
+	got := Resolve(nil, []byte(`{"container": `), func(k string) (string, bool) {
 		if k == "KAMPODRA_CONTAINER" {
 			return "env-value", true
 		}
@@ -142,8 +149,8 @@ func TestResolveCorruptOverridesFallOpenToEnvAndDefaults(t *testing.T) {
 }
 
 func TestResolveNilLookupAndNilRaw(t *testing.T) {
-	got := Resolve(nil, nil)
+	got := Resolve(nil, nil, nil)
 	if got.Container != LoadDefault().Container {
-		t.Errorf("Resolve(nil, nil) = %+v, want the defaults", got)
+		t.Errorf("Resolve(nil, nil, nil) = %+v, want the defaults", got)
 	}
 }
