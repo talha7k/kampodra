@@ -155,6 +155,7 @@ func NewRoot(version string, deps Deps) *cobra.Command {
 	root.AddCommand(newVMWipeCommand(d))
 	root.AddCommand(newVMPrepareCommand(d))
 	root.AddCommand(newMetricsCommand(d))
+	root.AddCommand(newDNSCommand(d))
 	return root
 }
 
