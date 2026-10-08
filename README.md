@@ -78,18 +78,29 @@ cmd/kampodra        thin CLI (Cobra)
 internal/command    orchestration — no OS knowledge
 internal/adapter    transport (ssh) · runtime (podman) · init (openrc/systemd)
                     probe · osfacts · cloud (OCI) · project · state
-tools/paritygen     generates the command-parity golden from a reference CLI
+tools/paritygen     HISTORICAL: derived the frozen command-spec golden from
+                    the shell predecessor (not a live step; kept auditable)
 npm/                per-platform packages + JS bin shim (esbuild pattern)
 ```
 
 Remote shell snippets live only inside adapters as fixture-tested templates —
 the single place host-OS specifics (busybox vs GNU, OpenRC vs systemd) may
-exist.
+exist. The deployed project's naming (container name, env-file path, bucket,
+health endpoint, …) lives in `internal/adapter/project` exactly once, with
+profile (`config.json` `"project"` block) and `KAMPODRA_*` env overrides.
+
+## History
+
+kampodra is the Go successor of the shell-era **kampodine** CLI; the shell
+line is retired (last release 0.6.0) and its command surface lives on as the
+frozen spec in `internal/parity/golden.json` — the parity guard tracks that
+spec, and kampodra-native additions beyond it are review-flagged, never
+silent.
 
 ## Status
 
-Pre-0.7 alpha — the command surface is being ported from the shell-era
-predecessor under a machine-checked parity ratchet. See `CHANGELOG.md`.
+Pre-0.7 alpha — the command surface is being ported from the frozen shell
+spec under a machine-checked parity ratchet. See `CHANGELOG.md`.
 
 ## License
 
