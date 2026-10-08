@@ -1,0 +1,224 @@
+{
+  "generator": "paritygen/1",
+  "source_shell_repo": "github.com/talha7k/kampodine",
+  "source_shell_head": "5bf07feaccf903667f1b0517a00184fba64f9885",
+  "source_files": [
+    "cli.js",
+    "scripts/backup.sh",
+    "scripts/bluegreen.sh",
+    "scripts/config.sh",
+    "scripts/deploy-lifecycle.sh",
+    "scripts/deploy.sh",
+    "scripts/dns.sh",
+    "scripts/env.sh",
+    "scripts/image-import.sh",
+    "scripts/metrics.sh",
+    "scripts/migrate.sh",
+    "scripts/status.sh",
+    "scripts/vm-prepare.sh"
+  ],
+  "commands": [
+    {
+      "name": "deploy",
+      "script": "deploy.sh",
+      "delegated_scripts": [
+        "deploy-lifecycle.sh"
+      ],
+      "subcommands": [
+        "list",
+        "logs",
+        "prune",
+        "restart",
+        "shell"
+      ],
+      "flags": [
+        "--dockerfile",
+        "--dry-run",
+        "--host",
+        "--keep",
+        "--lines",
+        "--profile",
+        "--refresh-config",
+        "--require-disk",
+        "--rollback",
+        "--skip-smoke",
+        "--ssh-key",
+        "--version"
+      ],
+      "args": {
+        "shell": [
+          "\u003ccmd\u003e..."
+        ]
+      }
+    },
+    {
+      "name": "status",
+      "script": "status.sh",
+      "tail_execs": [
+        "bluegreen.sh"
+      ],
+      "flags": [
+        "--host",
+        "--profile",
+        "--ssh-key",
+        "--verbose"
+      ]
+    },
+    {
+      "name": "bluegreen",
+      "script": "bluegreen.sh",
+      "subcommands": [
+        "flip",
+        "init",
+        "provision",
+        "rollback",
+        "status"
+      ],
+      "flags": [
+        "--force",
+        "--profile",
+        "--to"
+      ],
+      "args": {
+        "provision": [
+          "\u003ccolor\u003e"
+        ]
+      }
+    },
+    {
+      "name": "vm-prepare",
+      "script": "vm-prepare.sh",
+      "flags": [
+        "--host",
+        "--profile",
+        "--pull-images",
+        "--ssh-key"
+      ]
+    },
+    {
+      "name": "image-import",
+      "script": "image-import.sh",
+      "flags": [
+        "--bucket",
+        "--compartment",
+        "--from-pass",
+        "--image",
+        "--keep-object",
+        "--name-prefix",
+        "--profile"
+      ]
+    },
+    {
+      "name": "migrate",
+      "script": "migrate.sh",
+      "flags": [
+        "--allow-running",
+        "--profile"
+      ]
+    },
+    {
+      "name": "env",
+      "script": "env.sh",
+      "subcommands": [
+        "fingerprint",
+        "list",
+        "pull",
+        "push"
+      ],
+      "flags": [
+        "--file",
+        "--host",
+        "--out",
+        "--profile",
+        "--ssh-key"
+      ]
+    },
+    {
+      "name": "dns",
+      "script": "dns.sh",
+      "subcommands": [
+        "add",
+        "records",
+        "rm"
+      ],
+      "flags": [
+        "--instance-principal",
+        "--name",
+        "--profile",
+        "--ttl",
+        "--type",
+        "--value",
+        "--zone"
+      ]
+    },
+    {
+      "name": "config",
+      "script": "config.sh",
+      "subcommands": [
+        "init",
+        "list",
+        "remove",
+        "set-default",
+        "show"
+      ],
+      "flags": [
+        "--force",
+        "--group",
+        "--host",
+        "--name",
+        "--profile",
+        "--proxy-host",
+        "--set-default",
+        "--ssh-key"
+      ],
+      "args": {
+        "remove": [
+          "\u003cname\u003e"
+        ],
+        "set-default": [
+          "\u003cname\u003e"
+        ]
+      }
+    },
+    {
+      "name": "metrics",
+      "script": "metrics.sh",
+      "flags": [
+        "--count",
+        "--host",
+        "--profile",
+        "--ssh-key",
+        "--warn-disk",
+        "--watch"
+      ]
+    },
+    {
+      "name": "backup",
+      "script": "backup.sh",
+      "subcommands": [
+        "download",
+        "list",
+        "restore-plan",
+        "verify"
+      ],
+      "flags": [
+        "--bucket",
+        "--host",
+        "--instance-principal",
+        "--kampodine-profile",
+        "--out",
+        "--prefix",
+        "--profile",
+        "--ssh-key"
+      ],
+      "args": {
+        "download": [
+          "\u003cobject\u003e"
+        ],
+        "restore-plan": [
+          "\u003cobject\u003e"
+        ]
+      }
+    }
+  ]
+}
