@@ -25,14 +25,13 @@ import (
 // the pipeline invocation degrades to an honest NOT_YET_PORTED message
 // (fail closed: nothing was deployed).
 const (
-	deployContainer = "kampodine-api" // the VM-side service/container name
-	deployDiskPath  = "/var/lib/containers"
-	deployKeepN     = 2 // prune's --keep default
-	deployLogLines  = "100"
+	deployDiskPath = "/var/lib/containers"
+	deployKeepN    = 2 // prune's --keep default
+	deployLogLines = "100"
 )
 
 const deployHelp = `Usage:
-  kampodine deploy [--host root@<ip>] [--profile <name>] [--version <sha7>] [--rollback [<sha7>]]
+  kampodra deploy [--host root@<ip>] [--profile <name>] [--version <sha7>] [--rollback [<sha7>]]
                    [--dockerfile <path>] [--ssh-key <path>] [--skip-smoke] [--refresh-config]
                    [--require-disk <pct>]
   kampodra deploy list   [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--all-profiles]
@@ -42,12 +41,12 @@ const deployHelp = `Usage:
   kampodra deploy shell  [--host root@<ip>] [--profile <name>] [exec -- <cmd>...]
 
 Lifecycle subcommands are --host-aware with the SAME resolution as deploy:
---host | --profile <name> | KAMPODINE_PROFILE | config defaultProfile |
-KAMPODINE_HOST; --ssh-key | profile sshKey | KAMPODINE_SSH_KEY | ssh-agent /
+--host | --profile <name> | KAMPODRA_PROFILE | config defaultProfile |
+KAMPODRA_HOST; --ssh-key | profile sshKey | KAMPODRA_SSH_KEY | ssh-agent /
 ~/.ssh/config.
 
   list     deployment history: the VM's sha-tagged images (running one marked)
-           merged with the local ledger (~/.kampodine/deployments.jsonl) with a
+           merged with the local ledger (~/.kampodra/deployments.jsonl) with a
            "Total deployments" footer. VM unreachable degrades to a
            ledger-only view. --all-profiles renders one section per profile.
   prune    reclaim VM disk: removes OLD sha-tagged deploy images. ALWAYS kept:
@@ -86,9 +85,9 @@ func newDeployCommand(d Deps) *cobra.Command {
 			return fmt.Errorf("the deploy build/stream pipeline is NOT_YET_PORTED in kampodra — the lifecycle subcommands are live: kampodra deploy list | logs | prune | restart | shell")
 		},
 	}
-	cmd.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODINE_HOST and any profile")
-	cmd.Flags().String("profile", "", "per-instance profile (~/.kampodine/config.json) — beats KAMPODINE_PROFILE / defaultProfile")
-	cmd.Flags().String("ssh-key", "", "identity file — beats KAMPODINE_SSH_KEY; empty = agent / ssh config")
+	cmd.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODRA_HOST and any profile")
+	cmd.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
+	cmd.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
 	cmd.Flags().String("dockerfile", "", "Dockerfile to build (pipeline)")
 	cmd.Flags().String("version", "", "deploy a specific version (git sha fragment) (pipeline)")
 	cmd.Flags().String("rollback", "", "instant image-tag rollback to the previous (or given) sha (pipeline)")
@@ -100,9 +99,9 @@ func newDeployCommand(d Deps) *cobra.Command {
 	})
 
 	deployTargetFlags := func(c *cobra.Command) {
-		c.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODINE_HOST and any profile")
-		c.Flags().String("profile", "", "per-instance profile (~/.kampodine/config.json) — beats KAMPODINE_PROFILE / defaultProfile")
-		c.Flags().String("ssh-key", "", "identity file — beats KAMPODINE_SSH_KEY; empty = agent / ssh config")
+		c.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODRA_HOST and any profile")
+		c.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
+		c.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
 	}
 	resolveDeploy := func(c *cobra.Command, profileOverride string) (Target, error) {
 		host, _ := c.Flags().GetString("host")
@@ -272,7 +271,7 @@ func runDeployList(d Deps, ctx context.Context, target Target) error {
 	fmt.Fprintf(d.Stdout, "== deployment history for %s (ledger: %s) ==\n", host, ledgerPath)
 
 	imagesRaw, imagesErr := d.Runner.Run(ctx, target.HostSpec,
-		fmt.Sprintf("podman images --format '{{.Tag}}|{{.CreatedAt}}|{{.Size}}' %s 2>/dev/null", runtime.DeployImageRepo))
+		fmt.Sprintf("podman images --format '{{.Tag}}|{{.CreatedAt}}|{{.Size}}' %s 2>/dev/null", target.Project.ImagePrefix))
 	runningRaw, runningErr := d.Runner.Run(ctx, target.HostSpec, "podman ps --format '{{.Image}}' 2>/dev/null")
 	if imagesErr != nil && runningErr != nil {
 		// Reachable-but-empty is NOT unreachable: probe once more, and only
@@ -301,7 +300,7 @@ const headerDeployList = "TAG       CREATED           STATE     RESULT    SUBJEC
 // re-reads the disk guard.
 func runDeployPrune(d Deps, ctx context.Context, target Target, keepN int, dryRun bool) error {
 	imagesRaw, err := d.Runner.Run(ctx, target.HostSpec,
-		fmt.Sprintf("podman images --format '{{.Tag}}|{{.CreatedAt}}|{{.Size}}' %s 2>/dev/null", runtime.DeployImageRepo))
+		fmt.Sprintf("podman images --format '{{.Tag}}|{{.CreatedAt}}|{{.Size}}' %s 2>/dev/null", target.Project.ImagePrefix))
 	if err != nil {
 		return fmt.Errorf("cannot list images on %s (ssh failed — refusing to prune blind)", target.HostSpec.Host)
 	}
@@ -321,16 +320,16 @@ func runDeployPrune(d Deps, ctx context.Context, target Target, keepN int, dryRu
 	fmt.Fprintf(d.Stdout, "plan: %d image(s), %s reclaimed (keep: running + ts-rollback + newest %d)\n",
 		len(removals), runtime.SumSizesHuman(sizes), keepN)
 	for _, r := range removals {
-		fmt.Fprintf(d.Stdout, "  podman rmi %s:%s   # %s\n", runtime.DeployImageRepo, r.Tag, r.Size)
+		fmt.Fprintf(d.Stdout, "  podman rmi %s:%s   # %s\n", target.Project.ImagePrefix, r.Tag, r.Size)
 	}
 	if dryRun {
 		fmt.Fprintln(d.Stdout, "dry-run: nothing removed — re-run without --dry-run to apply")
 		return nil
 	}
 	for _, r := range removals {
-		fmt.Fprintf(d.Stdout, "removing %s:%s\n", runtime.DeployImageRepo, r.Tag)
-		if _, err := d.Runner.Run(ctx, target.HostSpec, fmt.Sprintf("podman rmi %s:%s", runtime.DeployImageRepo, r.Tag)); err != nil {
-			return fmt.Errorf("podman rmi %s:%s failed (in use? remove manually after checking podman ps)", runtime.DeployImageRepo, r.Tag)
+		fmt.Fprintf(d.Stdout, "removing %s:%s\n", target.Project.ImagePrefix, r.Tag)
+		if _, err := d.Runner.Run(ctx, target.HostSpec, fmt.Sprintf("podman rmi %s:%s", target.Project.ImagePrefix, r.Tag)); err != nil {
+			return fmt.Errorf("podman rmi %s:%s failed (in use? remove manually after checking podman ps)", target.Project.ImagePrefix, r.Tag)
 		}
 	}
 	if dfOut, err := d.Runner.Run(ctx, target.HostSpec, fmt.Sprintf("df -P %s 2>/dev/null", deployDiskPath)); err == nil {
@@ -348,10 +347,10 @@ func runDeployPrune(d Deps, ctx context.Context, target Target, keepN int, dryRu
 // clean-exit ctrl-c contract (signal-cancelled context, exit 0).
 func runDeployLogs(d Deps, cmd *cobra.Command, target Target, lines string, follow bool) error {
 	host := target.HostSpec.Host
-	verb, tail := "", fmt.Sprintf("--tail %s %s", lines, deployContainer)
+	verb, tail := "", fmt.Sprintf("--tail %s %s", lines, target.Project.Container)
 	if follow {
 		verb = "-f "
-		fmt.Fprintf(d.Stdout, "[deploy logs] streaming %s on %s (last %s lines) — ctrl-c to stop\n", deployContainer, host, lines)
+		fmt.Fprintf(d.Stdout, "[deploy logs] streaming %s on %s (last %s lines) — ctrl-c to stop\n", target.Project.Container, host, lines)
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		code, err := d.Runner.Stream(ctx, transport.SSHArgs(target.HostSpec, fmt.Sprintf("podman logs %s%s", verb, tail)))
@@ -363,7 +362,7 @@ func runDeployLogs(d Deps, cmd *cobra.Command, target Target, lines string, foll
 		}
 		return nil
 	}
-	fmt.Fprintf(d.Stdout, "[deploy logs] tailing %s on %s (last %s lines)\n", deployContainer, host, lines)
+	fmt.Fprintf(d.Stdout, "[deploy logs] tailing %s on %s (last %s lines)\n", target.Project.Container, host, lines)
 	out, err := d.Runner.Run(cmd.Context(), target.HostSpec, fmt.Sprintf("podman logs %s%s", verb, tail))
 	if err != nil {
 		return err
@@ -379,7 +378,7 @@ func runDeployRestart(d Deps, ctx context.Context, target Target) error {
 		return d.Runner.Run(ctx, target.HostSpec, remote)
 	}
 	initSys, _, _ := initadapter.Detect(ctx, runErr, target.ProfileInit)
-	restartCmd, err := initadapter.ActionCommand(initSys, deployContainer, "restart")
+	restartCmd, err := initadapter.ActionCommand(initSys, target.Project.Container, "restart")
 	if err != nil {
 		return err
 	}
@@ -387,7 +386,7 @@ func runDeployRestart(d Deps, ctx context.Context, target Target) error {
 	if _, err := d.Runner.Run(ctx, target.HostSpec, restartCmd); err != nil {
 		return fmt.Errorf("%s failed: %w", restartCmd, err)
 	}
-	statusCmd, err := initadapter.ActionCommand(initSys, deployContainer, "status")
+	statusCmd, err := initadapter.ActionCommand(initSys, target.Project.Container, "status")
 	if err == nil {
 		fmt.Fprintln(d.Stdout, "service status:")
 		if out, err := d.Runner.Run(ctx, target.HostSpec, statusCmd); err != nil {
@@ -406,9 +405,9 @@ func runDeployRestart(d Deps, ctx context.Context, target Target) error {
 // ArgsLenAtDash — the same contract the shell parser implements by hand.
 func runDeployShell(d Deps, c *cobra.Command, target Target, args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(d.Stdout, "[deploy shell] interactive sh in %s on %s (exit to leave)\n", deployContainer, target.HostSpec.Host)
+		fmt.Fprintf(d.Stdout, "[deploy shell] interactive sh in %s on %s (exit to leave)\n", target.Project.Container, target.HostSpec.Host)
 		fmt.Fprintln(d.Stdout, "[deploy shell] one-shot instead: kampodra deploy shell exec -- <cmd>")
-		code, err := d.Runner.Stream(c.Context(), transport.SSHInteractiveArgs(target.HostSpec, fmt.Sprintf("podman exec -it %s sh", deployContainer)))
+		code, err := d.Runner.Stream(c.Context(), transport.SSHInteractiveArgs(target.HostSpec, fmt.Sprintf("podman exec -it %s sh", target.Project.Container)))
 		if err != nil {
 			return err
 		}
@@ -429,7 +428,7 @@ func runDeployShell(d Deps, c *cobra.Command, target Target, args []string) erro
 		return fmt.Errorf("shell exec -- requires a command")
 	}
 	code, err := d.Runner.Stream(c.Context(), transport.SSHArgs(target.HostSpec,
-		fmt.Sprintf("podman exec %s %s", deployContainer, shQuoteArgs(argv))))
+		fmt.Sprintf("podman exec %s %s", target.Project.Container, shQuoteArgs(argv))))
 	if err != nil {
 		return err
 	}

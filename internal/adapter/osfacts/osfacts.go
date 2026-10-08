@@ -1,7 +1,7 @@
 // Package osfacts reads and renders remote OS facts over the transport
 // seam: df -P disk usage, the disk-guard verdicts, and the one-shot metrics
 // snapshot (load, memory, uptime, disk breakdown, containers, top procs).
-// Every renderer is a byte-exact port of the committed kampodine
+// Every renderer is a byte-exact port of the retired shell predecessor's
 // scripts/common.sh awk implementations — output parity is the contract.
 package osfacts
 
@@ -63,7 +63,7 @@ func DiskVerdict(pct, require string) Verdict {
 // MetricsRemoteCmd is the one-shot remote snapshot command — byte-equal to
 // the committed common.sh METRICS_REMOTE_CMD (section markers + probes).
 // Section buffers are consumed by RenderMetrics.
-const MetricsRemoteCmd = "echo '%%KAMPODINE:LOAD%%'; cat /proc/loadavg 2>/dev/null; echo '%%KAMPODINE:CPU%%'; nproc 2>/dev/null; echo '%%KAMPODINE:MEM%%'; cat /proc/meminfo 2>/dev/null; echo '%%KAMPODINE:UPTIME%%'; cat /proc/uptime 2>/dev/null; echo '%%KAMPODINE:DISK%%'; df -P / 2>/dev/null; echo '%%KAMPODINE:DU%%'; du -sm /var/lib/containers /data 2>/dev/null; echo '%%KAMPODINE:PODMAN%%'; podman stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null; echo '%%KAMPODINE:TOP%%'; ps aux 2>/dev/null | grep -v '^USER' | sort -k6 -rn | head -n 5; echo '%%KAMPODINE:END%%'"
+const MetricsRemoteCmd = "echo '%%KAMPODRA:LOAD%%'; cat /proc/loadavg 2>/dev/null; echo '%%KAMPODRA:CPU%%'; nproc 2>/dev/null; echo '%%KAMPODRA:MEM%%'; cat /proc/meminfo 2>/dev/null; echo '%%KAMPODRA:UPTIME%%'; cat /proc/uptime 2>/dev/null; echo '%%KAMPODRA:DISK%%'; df -P / 2>/dev/null; echo '%%KAMPODRA:DU%%'; du -sm /var/lib/containers /data 2>/dev/null; echo '%%KAMPODRA:PODMAN%%'; podman stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null; echo '%%KAMPODRA:TOP%%'; ps aux 2>/dev/null | grep -v '^USER' | sort -k6 -rn | head -n 5; echo '%%KAMPODRA:END%%'"
 
 // MetricsUptimeHuman ports metrics_uptime_human: "<N>d <N>h <N>m" from a
 // /proc/uptime first field; "" when absent/garbage.
@@ -300,13 +300,13 @@ type MetricsSnapshot struct {
 func (s MetricsSnapshot) Section(name string) string { return s.sections[name] }
 
 // ParseMetrics slices the raw snapshot into section buffers on the
-// %%KAMPODINE:*%% markers (the metrics_render loop, made reusable). Marker
+// %%KAMPODRA:*%% markers (the metrics_render loop, made reusable). Marker
 // names are UPPERCASE in the wire format and lowercase in the section map.
 func ParseMetrics(raw string) MetricsSnapshot {
 	sections := map[string][]string{}
 	section := ""
 	for _, line := range strings.Split(raw, "\n") {
-		if marker, ok := strings.CutPrefix(line, "%%KAMPODINE:"); ok && strings.HasSuffix(marker, "%%") {
+		if marker, ok := strings.CutPrefix(line, "%%KAMPODRA:"); ok && strings.HasSuffix(marker, "%%") {
 			name := strings.ToLower(strings.TrimSuffix(marker, "%%"))
 			if _, known := knownSections[name]; !known {
 				section = ""

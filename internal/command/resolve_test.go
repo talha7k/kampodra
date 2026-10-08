@@ -11,7 +11,7 @@ import (
 func mustCfg(t *testing.T, json string) *state.Config {
 	t.Helper()
 	home := t.TempDir()
-	dir := filepath.Join(home, ".kampodine")
+	dir := filepath.Join(home, ".kampodra")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -27,10 +27,10 @@ func mustCfg(t *testing.T, json string) *state.Config {
 
 func TestResolveTarget(t *testing.T) {
 	// The shell's profile_resolve ladder, as one pure decision:
-	//   profile selection: --profile > KAMPODINE_PROFILE > config default
-	//   host:  --host flag > profile host > KAMPODINE_HOST
-	//   key:   --ssh-key flag > profile sshKey > KAMPODINE_SSH_KEY
-	//   proxy: profile proxyHost > APP_HOST_HEADER > app.example.com
+	//   profile selection: --profile > KAMPODRA_PROFILE > config default
+	//   host:  --host flag > profile host > KAMPODRA_HOST
+	//   key:   --ssh-key flag > profile sshKey > KAMPODRA_SSH_KEY
+	//   proxy: profile proxyHost > KAMPODRA_PROXY_HOST > app.example.com
 	cfg := mustCfg(t, `{
 	  "defaultProfile": "def",
 	  "profiles": {
@@ -55,7 +55,7 @@ func TestResolveTarget(t *testing.T) {
 			name:          "explicit flags beat everything",
 			flagHost:      "root@1.1.1.1",
 			flagKey:       "/k1",
-			env:           map[string]string{"KAMPODINE_HOST": "root@2.2.2.2", "KAMPODINE_SSH_KEY": "/k2"},
+			env:           map[string]string{"KAMPODRA_HOST": "root@2.2.2.2", "KAMPODRA_SSH_KEY": "/k2"},
 			wantHost:      "root@1.1.1.1",
 			wantKey:       "/k1",
 			wantProxyHost: "app.example.com",
@@ -70,14 +70,14 @@ func TestResolveTarget(t *testing.T) {
 		{
 			name:          "env fills what the profile leaves open",
 			flagProfile:   "staging",
-			env:           map[string]string{"KAMPODINE_SSH_KEY": "/env-key", "APP_HOST_HEADER": "staging.example.com"},
+			env:           map[string]string{"KAMPODRA_SSH_KEY": "/env-key", "KAMPODRA_PROXY_HOST": "staging.example.com"},
 			wantHost:      "root@10.0.0.1",
 			wantKey:       "/env-key",
 			wantProxyHost: "staging.example.com",
 		},
 		{
 			name:          "no profile no flags falls to env",
-			env:           map[string]string{"KAMPODINE_HOST": "root@3.3.3.3", "KAMPODINE_SSH_KEY": "/k3"},
+			env:           map[string]string{"KAMPODRA_HOST": "root@3.3.3.3", "KAMPODRA_SSH_KEY": "/k3"},
 			wantHost:      "root@3.3.3.3",
 			wantKey:       "/k3",
 			wantProxyHost: "app.example.com",

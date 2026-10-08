@@ -1,7 +1,7 @@
 {
   "name": "@kampodra/darwin-x64",
-  "version": "0.7.0-alpha.1",
-  "description": "kampodine native binary for darwin-x64 (placeholder \u2014 make release fills bin/kampodine from dist/)",
+  "version": "0.7.0-alpha.2",
+  "description": "kampodra native binary for darwin-x64 (placeholder \u2014 make release fills bin/kampodra from dist/)",
   "license": "AGPL-3.0",
   "os": [
     "darwin"

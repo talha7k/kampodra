@@ -11,21 +11,38 @@ type Violation string
 
 func (v Violation) Error() string { return string(v) }
 
-// Check compares the shell golden against the Go tree snapshot under the
-// NOT_YET_PORTED baseline ratchet:
+// Warning is one non-blocking parity observation: kampodra-native surface
+// (commands/flags/subcommands beyond the frozen shell spec). Native
+// additions are review-flagged, never blocked — the frozen spec governs
+// what must EXIST, not what may be added.
+type Warning string
+
+func (w Warning) Error() string { return string(w) }
+
+// Check compares the frozen golden (the shell 0.6.0 spec) against the Go
+// tree snapshot under the NOT_YET_PORTED baseline ratchet:
 //
+// Blocking violations:
 //   - every golden command must be ported (in the tree) or baselined;
-//     neither = violation (a new shell command landed without Go coverage)
+//     neither = violation (frozen-spec coverage gap)
 //   - a baseline entry whose command IS ported = stale = violation (delete
 //     the baseline entry as the port lands)
-//   - a baseline entry with no such shell command = stale = violation
-//   - a ported command's flags/subcommands/args must cover the golden
-//     exactly — missing AND invented surface both violate
-//   - a Go command with no golden entry = invented surface = violation
-func Check(golden *Golden, baseline *Baseline, tree *TreeSnapshot) []Violation {
+//   - a baseline entry with no such golden command = stale = violation
+//   - a ported command's flags/subcommands/args must COVER the golden —
+//     missing surface violates
+//
+// Warnings (review-flagged, non-blocking):
+//   - a Go command with no golden entry = kampodra-native addition
+//   - a ported command with surface beyond the golden = kampodra-native
+//     addition (flag/subcommand/arg)
+func Check(golden *Golden, baseline *Baseline, tree *TreeSnapshot) ([]Violation, []Warning) {
 	var violations []Violation
+	var warnings []Warning
 	add := func(format string, args ...any) {
 		violations = append(violations, Violation(fmt.Sprintf(format, args...)))
+	}
+	warn := func(format string, args ...any) {
+		warnings = append(warnings, Warning(fmt.Sprintf(format, args...)))
 	}
 
 	baselined := map[string]bool{}
@@ -38,7 +55,7 @@ func Check(golden *Golden, baseline *Baseline, tree *TreeSnapshot) []Violation {
 	}
 	for _, name := range baseline.NotYetPorted {
 		if !goldenNames[name] {
-			add("stale NOT_YET_PORTED baseline entry %q — no such shell command (kampodine HEAD); delete it from internal/parity/baseline.json", name)
+			add("stale NOT_YET_PORTED baseline entry %q — no such frozen-spec command; delete it from internal/parity/baseline.json", name)
 		}
 	}
 
@@ -48,11 +65,13 @@ func Check(golden *Golden, baseline *Baseline, tree *TreeSnapshot) []Violation {
 		case baselined[cmd.Name] && ported:
 			add("stale NOT_YET_PORTED baseline entry %q — already ported, delete it from internal/parity/baseline.json", cmd.Name)
 		case !baselined[cmd.Name] && !ported:
-			add("command %q is in the shell golden (scripts/%s) but neither ported nor in the NOT_YET_PORTED baseline — port it or add it to internal/parity/baseline.json", cmd.Name, cmd.Script)
+			add("frozen-spec command %q is neither ported nor in the NOT_YET_PORTED baseline — port it or add it to internal/parity/baseline.json", cmd.Name)
 		case !ported:
 			continue // deliberately not yet ported
 		default:
-			violations = append(violations, checkSurface(cmd, tc)...)
+			vs, ws := checkSurface(cmd, tc)
+			violations = append(violations, vs...)
+			warnings = append(warnings, ws...)
 		}
 	}
 
@@ -63,20 +82,29 @@ func Check(golden *Golden, baseline *Baseline, tree *TreeSnapshot) []Violation {
 	sort.Strings(treeNames)
 	for _, name := range treeNames {
 		if !goldenNames[name] {
-			add("command %q exists in the Go tree but not in the shell golden — inventing surface is a parity violation", name)
+			warn("kampodra-native command %q (beyond the frozen spec) — reviewed addition, untracked by the golden", name)
 		}
 	}
 
 	sort.Slice(violations, func(i, j int) bool {
 		return strings.Compare(string(violations[i]), string(violations[j])) < 0
 	})
-	return violations
+	sort.Slice(warnings, func(i, j int) bool {
+		return strings.Compare(string(warnings[i]), string(warnings[j])) < 0
+	})
+	return violations, warnings
 }
 
-func checkSurface(cmd Command, tc TreeCommand) []Violation {
+// checkSurface: the forward direction (frozen spec coverage) is blocking;
+// the reverse direction (native additions) is warning-only.
+func checkSurface(cmd Command, tc TreeCommand) ([]Violation, []Warning) {
 	var violations []Violation
+	var warnings []Warning
 	add := func(format string, args ...any) {
 		violations = append(violations, Violation(fmt.Sprintf(format, args...)))
+	}
+	note := func(format string, args ...any) {
+		warnings = append(warnings, Warning(fmt.Sprintf(format, args...)))
 	}
 
 	for _, flag := range cmd.Flags {
@@ -86,7 +114,7 @@ func checkSurface(cmd Command, tc TreeCommand) []Violation {
 	}
 	for flag := range tc.Flags {
 		if !contains(cmd.Flags, flag) {
-			add("command %q: flag %q is not in the shell golden — inventing surface is a parity violation", cmd.Name, flag)
+			note("kampodra-native flag %q on command %q (beyond the frozen spec) — reviewed addition", flag, cmd.Name)
 		}
 	}
 	for _, sub := range cmd.Subcommands {
@@ -96,7 +124,7 @@ func checkSurface(cmd Command, tc TreeCommand) []Violation {
 	}
 	for sub := range tc.Subcommands {
 		if !contains(cmd.Subcommands, sub) {
-			add("command %q: subcommand %q is not in the shell golden — inventing surface is a parity violation", cmd.Name, sub)
+			note("kampodra-native subcommand %q on command %q (beyond the frozen spec) — reviewed addition", sub, cmd.Name)
 		}
 	}
 	for sub, args := range cmd.Args {
@@ -113,7 +141,7 @@ func checkSurface(cmd Command, tc TreeCommand) []Violation {
 			}
 		}
 	}
-	return violations
+	return violations, warnings
 }
 
 func contains(list []string, s string) bool {

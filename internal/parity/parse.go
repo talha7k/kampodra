@@ -1,10 +1,10 @@
-// Package parity is kampodine's command-parity guard: it derives the shell
-// CLI's command surface from the shell repo's COMMITTED files (cli.js
-// dispatch + scripts' case statements + header usage lines) into a committed
-// golden JSON, and checks the Go cobra tree against it with an explicit
-// NOT_YET_PORTED baseline. A command appearing in the shell without Go
-// coverage fails CI; a baseline entry whose command is already ported fails
-// too, forcing deletion as ports land.
+// Package parity is kampodra's command-parity guard: it derives the shell
+// predecessor's command surface from committed script files (the historical
+// generator mechanics), and compares the FROZEN golden against the Go
+// tree under the NOT_YET_PORTED baseline ratchet. Missing frozen-spec
+// coverage fails; a baseline entry whose command is already ported fails
+// too, forcing deletion as ports land. Kampodra-native additions beyond the
+// frozen spec are warning-only, review-flagged.
 package parity
 
 import (
@@ -56,6 +56,8 @@ var (
 	delegateRe = regexp.MustCompile(`exec bash "\$HERE/([a-z0-9-]+\.sh)"[^"]*"\$@"`)
 	tailExecRe = regexp.MustCompile(`exec bash "\$HERE/([a-z0-9-]+\.sh)"`)
 	// header usage line: `#   kampodine deploy --version <sha7>  # note`
+	// (the regex matches the RETIRED shell scripts' literal text — that
+	// spelling is the parsed artifact, not kampodra naming).
 	usageLineRe = regexp.MustCompile(`^#   kampodine ([a-z][a-z0-9-]*)(?:\s+(.*))?$`)
 	// a bracket group that OPENS with a flag: `[--host …]`, `[--ttl 300]`
 	flagBracketOpenRe = regexp.MustCompile(`^\[.*--[a-z]`)

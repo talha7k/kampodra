@@ -2,6 +2,8 @@
   "generator": "paritygen/1",
   "source_shell_repo": "github.com/talha7k/kampodine",
   "source_shell_head": "5bf07feaccf903667f1b0517a00184fba64f9885",
+  "frozen": true,
+  "frozen_note": "spec frozen from kampodine v0.6.0 @ commit 5bf07fe; kampodine retired 2026-10-08",
   "source_files": [
     "cli.js",
     "scripts/backup.sh",
@@ -32,10 +34,8 @@
         "shell"
       ],
       "flags": [
-        "--all-profiles",
         "--dockerfile",
         "--dry-run",
-        "--follow",
         "--host",
         "--keep",
         "--lines",
@@ -60,26 +60,11 @@
         "bluegreen.sh"
       ],
       "flags": [
-        "--all-profiles",
         "--host",
         "--profile",
         "--ssh-key",
         "--verbose"
       ]
-    },
-    {
-      "name": "ssh",
-      "script": "kampodra-native",
-      "flags": [
-        "--host",
-        "--profile",
-        "--ssh-key"
-      ],
-      "args": {
-        "": [
-          "<cmd>..."
-        ]
-      }
     },
     {
       "name": "bluegreen",
@@ -137,7 +122,6 @@
       "name": "env",
       "script": "env.sh",
       "subcommands": [
-        "diff",
         "fingerprint",
         "list",
         "pull",
@@ -149,12 +133,7 @@
         "--out",
         "--profile",
         "--ssh-key"
-      ],
-      "args": {
-        "diff": [
-          "<local-file>"
-        ]
-      }
+      ]
     },
     {
       "name": "dns",

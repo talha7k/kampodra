@@ -9,7 +9,7 @@ import (
 
 func TestSSHInteractiveArgs(t *testing.T) {
 	// deploy shell interactive parity: the shell runs
-	//   ssh "${SSH_ARGS[@]}" -t "$KAMPODINE_HOST" "podman exec -it $CONTAINER sh"
+	//   ssh "${SSH_ARGS[@]}" -t "$KAMPODRA_HOST" "podman exec -it $CONTAINER sh"
 	tests := []struct {
 		name string
 		host HostSpec

@@ -1,7 +1,9 @@
 // Package probe probes the public edge through kamal-proxy: the app health
-// endpoint (/api/auth/ok) and the served build id (/build-id.txt), with the
-// shell version's 8s timeout and tolerant degradation (curl -sf -m 8
-// semantics, ported to net/http — no curl subprocess).
+// endpoint (project config HealthPath) and the served build id
+// (/build-id.txt — the kamal-proxy convention), with the shell version's
+// 8s timeout and tolerant degradation (curl -sf -m 8 semantics, ported to
+// net/http — no curl subprocess). The health path is project config passed
+// in by the command layer — never a constant here.
 package probe
 
 import (
@@ -14,8 +16,7 @@ import (
 )
 
 const (
-	healthPath = "/api/auth/ok"
-	buildPath  = "/build-id.txt"
+	buildPath = "/build-id.txt"
 	// timeout is curl -m 8 parity.
 	timeout = 8 * time.Second
 )
@@ -34,10 +35,10 @@ func (p *Prober) client() *http.Client {
 	return p.HTTPClient
 }
 
-// LiveStatus GETs https://<host>/api/auth/ok and returns the body when the
+// LiveStatus GETs https://<host><healthPath> and returns the body when the
 // endpoint answers 2xx (curl -sf parity: any HTTP error or transport
 // failure reads as unreachable).
-func (p *Prober) LiveStatus(ctx context.Context, host string) (string, bool) {
+func (p *Prober) LiveStatus(ctx context.Context, host, healthPath string) (string, bool) {
 	body, err := p.fetch(ctx, "https://"+host+healthPath)
 	if err != nil {
 		return "", false

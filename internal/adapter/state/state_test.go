@@ -20,7 +20,7 @@ func sha40(tag string) string { return (tag + strings.Repeat("0", 40))[:40] }
 func writeLedger(t *testing.T, content string) string {
 	t.Helper()
 	home := t.TempDir()
-	dir := filepath.Join(home, ".kampodine")
+	dir := filepath.Join(home, ".kampodra")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func writeLedger(t *testing.T, content string) string {
 
 func TestLedgerPath(t *testing.T) {
 	home := t.TempDir()
-	want := filepath.Join(home, ".kampodine", "deployments.jsonl")
+	want := filepath.Join(home, ".kampodra", "deployments.jsonl")
 	if got := LedgerPath(home); got != want {
 		t.Errorf("LedgerPath() = %q, want %q", got, want)
 	}
@@ -75,7 +75,7 @@ func TestLedgerCountMalformedLinesStillCount(t *testing.T) {
 
 func TestLoadConfig(t *testing.T) {
 	home := t.TempDir()
-	dir := filepath.Join(home, ".kampodine")
+	dir := filepath.Join(home, ".kampodra")
 	os.MkdirAll(dir, 0o700)
 	cfgJSON := `{
 	  "defaultProfile": "prod",
@@ -114,7 +114,7 @@ func TestLoadConfigMissingFileIsEmpty(t *testing.T) {
 
 func TestLoadConfigBadJSONFailsClosed(t *testing.T) {
 	home := t.TempDir()
-	dir := filepath.Join(home, ".kampodine")
+	dir := filepath.Join(home, ".kampodra")
 	os.MkdirAll(dir, 0o700)
 	os.WriteFile(filepath.Join(dir, "config.json"), []byte("{nope"), 0o600)
 	if _, err := LoadConfig(home); err == nil {

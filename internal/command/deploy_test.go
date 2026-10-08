@@ -31,7 +31,7 @@ const deployLedger = `{"ts":"2026-10-08T10:05:00Z","host":"root@203.0.113.9","sh
 func setupDeploy(t *testing.T) (deps command.Deps, stubDir string, stdout, stderr *bytes.Buffer) {
 	t.Helper()
 	home := t.TempDir()
-	dir := filepath.Join(home, ".kampodine")
+	dir := filepath.Join(home, ".kampodra")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func setupDeploy(t *testing.T) (deps command.Deps, stubDir string, stdout, stder
 	}
 
 	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
-	for _, k := range []string{"KAMPODINE_HOST", "KAMPODINE_SSH_KEY", "KAMPODINE_PROFILE", "APP_HOST_HEADER"} {
+	for _, k := range []string{"KAMPODRA_HOST", "KAMPODRA_SSH_KEY", "KAMPODRA_PROFILE", "KAMPODRA_PROXY_HOST"} {
 		t.Setenv(k, "")
 	}
 
@@ -171,7 +171,7 @@ func TestDeployListWithoutTargetFails(t *testing.T) {
 
 func TestDeployListAllProfilesRendersPerProfileSections(t *testing.T) {
 	deps, _, stdout, _ := setupDeploy(t)
-	cfgDir := filepath.Join(deps.Home, ".kampodine")
+	cfgDir := filepath.Join(deps.Home, ".kampodra")
 	cfg := `{"defaultProfile": "prod", "profiles": {"prod": {"host": "` + statusHost + `", "group": "edge"}, "staging": {"host": "root@198.51.100.7"}}}`
 	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)

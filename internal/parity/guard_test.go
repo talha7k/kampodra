@@ -21,10 +21,12 @@ func goldenFixture() *Golden {
 
 func TestCheck(t *testing.T) {
 	tests := []struct {
-		name     string
-		baseline []string
-		tree     func() *TreeSnapshot
-		wantErrs []string // substrings; empty = no violations
+		name        string
+		baseline    []string
+		tree        func() *TreeSnapshot
+		wantErrs    []string // blocking violations; empty = none
+		wantWarns   []string // native-addition warnings; empty = none
+		wantNoWarns bool     // assert the warning list is empty
 	}{
 		{
 			name:     "fully covered tree passes",
@@ -35,6 +37,7 @@ func TestCheck(t *testing.T) {
 					"dns":    {Flags: set("--name"), Subcommands: set("add", "records", "rm")},
 				}}
 			},
+			wantNoWarns: true,
 		},
 		{
 			name:     "unported command without baseline entry fails with guidance",
@@ -43,10 +46,10 @@ func TestCheck(t *testing.T) {
 				return &TreeSnapshot{Commands: map[string]TreeCommand{}}
 			},
 			wantErrs: []string{
-				`command "deploy" is in the shell golden (scripts/deploy.sh) but neither ported nor in the NOT_YET_PORTED baseline`,
-				`command "status" is in the shell golden (scripts/status.sh) but neither ported`,
-				`command "dns" is in the shell golden (scripts/dns.sh) but neither ported`,
-				`command "bluegreen" is in the shell golden (scripts/bluegreen.sh) but neither ported`,
+				`frozen-spec command "deploy" is neither ported nor in the NOT_YET_PORTED baseline`,
+				`frozen-spec command "status" is neither ported nor in the NOT_YET_PORTED baseline`,
+				`frozen-spec command "dns" is neither ported nor in the NOT_YET_PORTED baseline`,
+				`frozen-spec command "bluegreen" is neither ported nor in the NOT_YET_PORTED baseline`,
 			},
 		},
 		{
@@ -65,7 +68,7 @@ func TestCheck(t *testing.T) {
 			tree: func() *TreeSnapshot {
 				return &TreeSnapshot{Commands: map[string]TreeCommand{}}
 			},
-			wantErrs: []string{`stale NOT_YET_PORTED baseline entry "metrics" — no such shell command`},
+			wantErrs: []string{`stale NOT_YET_PORTED baseline entry "metrics" — no such frozen-spec command`},
 		},
 		{
 			name:     "ported command with missing flag fails",
@@ -78,28 +81,28 @@ func TestCheck(t *testing.T) {
 			wantErrs: []string{`command "status": missing flag "--verbose"`},
 		},
 		{
-			name:     "ported command with extra flag fails (invented surface)",
+			name:     "native flag beyond the frozen spec is warning-only",
 			baseline: []string{"deploy", "dns", "bluegreen"},
 			tree: func() *TreeSnapshot {
 				return &TreeSnapshot{Commands: map[string]TreeCommand{
 					"status": {Flags: set("--host", "--verbose", "--json")},
 				}}
 			},
-			wantErrs: []string{`command "status": flag "--json" is not in the shell golden — inventing surface is a parity violation`},
+			wantWarns: []string{`kampodra-native flag "--json" on command "status" (beyond the frozen spec) — reviewed addition`},
 		},
 		{
-			name:     "ported command missing subcommands fails",
+			name:     "native subcommand beyond the frozen spec is warning-only",
 			baseline: []string{"deploy", "bluegreen"},
 			tree: func() *TreeSnapshot {
 				return &TreeSnapshot{Commands: map[string]TreeCommand{
 					"status": {Flags: set("--host", "--verbose")},
-					"dns":    {Flags: set("--name"), Subcommands: set("add", "records")},
+					"dns":    {Flags: set("--name"), Subcommands: set("add", "records", "rm", "poke")},
 				}}
 			},
-			wantErrs: []string{`command "dns": missing subcommand "rm"`},
+			wantWarns: []string{`kampodra-native subcommand "poke" on command "dns" (beyond the frozen spec) — reviewed addition`},
 		},
 		{
-			name:     "invented Go command fails",
+			name:     "native Go command is warning-only",
 			baseline: []string{"deploy", "dns", "bluegreen"},
 			tree: func() *TreeSnapshot {
 				return &TreeSnapshot{Commands: map[string]TreeCommand{
@@ -107,7 +110,7 @@ func TestCheck(t *testing.T) {
 					"frobnicate": {Flags: set("--hard")},
 				}}
 			},
-			wantErrs: []string{`command "frobnicate" exists in the Go tree but not in the shell golden — inventing surface is a parity violation`},
+			wantWarns: []string{`kampodra-native command "frobnicate" (beyond the frozen spec) — reviewed addition`},
 		},
 		{
 			name:     "golden positional arg not declared fails",
@@ -128,41 +131,90 @@ func TestCheck(t *testing.T) {
 				}}
 			},
 		},
+		{
+			name:     "native arg declaration is warning-only",
+			baseline: []string{"deploy", "dns", "status"},
+			tree: func() *TreeSnapshot {
+				return &TreeSnapshot{Commands: map[string]TreeCommand{
+					"bluegreen": {Flags: set("--to"), Subcommands: set("provision", "status"), Args: map[string][]string{"provision": {"<color>"}, "status": {"<extra>"}}},
+				}}
+			},
+			// Forward coverage satisfied; the tree-invented arg key produces
+			// no warning (args flow one way, golden→tree).
+			wantNoWarns: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			violations := Check(goldenFixture(), &Baseline{NotYetPorted: tt.baseline}, tt.tree())
-			if len(tt.wantErrs) == 0 {
-				if len(violations) != 0 {
-					t.Fatalf("Check() = %v, want none", violations)
-				}
-				return
-			}
+			violations, warnings := Check(goldenFixture(), &Baseline{NotYetPorted: tt.baseline}, tt.tree())
 			got := make([]string, 0, len(violations))
 			for _, v := range violations {
 				got = append(got, fmt.Sprint(v))
 			}
-			for _, want := range tt.wantErrs {
-				found := false
-				for _, g := range got {
-					if strings.Contains(g, want) {
-						found = true
-						break
+			if len(tt.wantErrs) == 0 {
+				if len(violations) != 0 {
+					t.Fatalf("Check() violations = %v, want none", violations)
+				}
+			} else {
+				for _, want := range tt.wantErrs {
+					if !containsSubstring(got, want) {
+						t.Errorf("Check() violations %v — missing substring %q", got, want)
 					}
 				}
-				if !found {
-					t.Errorf("Check() violations %v — missing substring %q", got, want)
+			}
+			gotWarns := make([]string, 0, len(warnings))
+			for _, w := range warnings {
+				gotWarns = append(gotWarns, fmt.Sprint(w))
+			}
+			if tt.wantNoWarns && len(warnings) != 0 {
+				t.Errorf("Check() warnings = %v, want none", warnings)
+			}
+			for _, want := range tt.wantWarns {
+				if !containsSubstring(gotWarns, want) {
+					t.Errorf("Check() warnings %v — missing substring %q", gotWarns, want)
 				}
 			}
 		})
 	}
 }
 
+func containsSubstring(list []string, want string) bool {
+	for _, s := range list {
+		if strings.Contains(s, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCheckWarningsAreSortedAndDeterministic(t *testing.T) {
+	baseline := []string{"deploy", "dns", "bluegreen"}
+	tree := &TreeSnapshot{Commands: map[string]TreeCommand{
+		"status": {Flags: set("--host", "--verbose", "--json")},
+		"zz":     {Flags: set("--x")},
+		"aa":     {Flags: nil},
+	}}
+	a := warningsOf(Check(goldenFixture(), &Baseline{NotYetPorted: baseline}, tree))
+	b := warningsOf(Check(goldenFixture(), &Baseline{NotYetPorted: baseline}, tree))
+	if fmt.Sprint(a) != fmt.Sprint(b) {
+		t.Fatalf("Check() warnings nondeterministic:\n%v\n%v", a, b)
+	}
+	sorted := append([]Warning(nil), a...)
+	sort.Slice(sorted, func(i, j int) bool { return fmt.Sprint(sorted[i]) < fmt.Sprint(sorted[j]) })
+	for i := range a {
+		if fmt.Sprint(a[i]) != fmt.Sprint(sorted[i]) {
+			t.Fatalf("Check() warnings not sorted: %v", a)
+		}
+	}
+}
+
+func warningsOf(_ []Violation, w []Warning) []Warning { return w }
+
 func TestCheckViolationsAreSortedAndDeterministic(t *testing.T) {
 	baseline := []string{}
 	tree := &TreeSnapshot{Commands: map[string]TreeCommand{}}
-	a := Check(goldenFixture(), &Baseline{NotYetPorted: baseline}, tree)
-	b := Check(goldenFixture(), &Baseline{NotYetPorted: baseline}, tree)
+	a, _ := Check(goldenFixture(), &Baseline{NotYetPorted: baseline}, tree)
+	b, _ := Check(goldenFixture(), &Baseline{NotYetPorted: baseline}, tree)
 	if fmt.Sprint(a) != fmt.Sprint(b) {
 		t.Fatalf("Check() is nondeterministic:\n%v\n%v", a, b)
 	}

@@ -1,7 +1,9 @@
 // Package runtime is the podman adapter: the VM's container/image surface
 // (sha-tagged deploy images, running containers) and the prune keep-set
-// math — byte-exact ports of the committed kampodine scripts/common.sh
+// math — exact ports of the shell predecessor's scripts/common.sh
 // (sha_tagged_lines, running_tags_from_ps, prune_select, sum_sizes_human).
+// The deploy image repository path is project config (project.Config.
+// ImagePrefix) passed in by the command layer — never a constant here.
 package runtime
 
 import (
@@ -28,10 +30,6 @@ type Removal struct {
 // shaTagRe is THE single rule keeping latest / ts-rollback / <none> out of
 // every removal candidate: only sha-like tags are deploy images.
 var shaTagRe = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
-
-// DeployImageRepo is the VM-local registry path the deploy pipeline retags
-// to (the shell scripts' IMAGE constant).
-const DeployImageRepo = "127.0.0.1:5000/kampodine-api"
 
 // ParseImages parses the images listing (tolerant of empty input).
 func ParseImages(imagesOutput string) []Image {

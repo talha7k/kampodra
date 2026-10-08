@@ -1,6 +1,6 @@
 // Package state owns local (deploy-machine) state: the append-only
-// deployment ledger (~/.kampodine/deployments.jsonl — the deployment
-// HISTORY) and the per-instance profile config (~/.kampodine/config.json).
+// deployment ledger (~/.kampodra/deployments.jsonl — the deployment
+// HISTORY) and the per-instance profile config (~/.kampodra/config.json).
 // The file never holds secrets: sshKey is a PATH.
 package state
 
@@ -14,14 +14,14 @@ import (
 	"strings"
 )
 
-// LedgerDirName/LedgerFileName — the shell's fixed ledger layout.
+// LedgerDirName/LedgerFileName — the fixed ledger layout.
 const (
-	LedgerDirName  = ".kampodine"
+	LedgerDirName  = ".kampodra"
 	LedgerFileName = "deployments.jsonl"
 	ConfigFileName = "config.json"
 )
 
-// LedgerPath returns <home>/.kampodine/deployments.jsonl.
+// LedgerPath returns <home>/.kampodra/deployments.jsonl.
 func LedgerPath(home string) string {
 	return filepath.Join(home, LedgerDirName, LedgerFileName)
 }
@@ -104,21 +104,24 @@ func LedgerEntries(path, host string) []LedgerEntry {
 
 // Profile is one flat per-instance config entry — no inheritance (owner
 // decision): host/sshKey/proxyHost/group + the cached init verdict.
+// Project is the raw "project" block — its shape belongs to the project
+// adapter (state never interprets it, keeping adapters sibling-clean).
 type Profile struct {
-	Host      string `json:"host"`
-	SSHKey    string `json:"sshKey"`
-	ProxyHost string `json:"proxyHost"`
-	Group     string `json:"group"`
-	Init      string `json:"init"`
+	Host      string          `json:"host"`
+	SSHKey    string          `json:"sshKey"`
+	ProxyHost string          `json:"proxyHost"`
+	Group     string          `json:"group"`
+	Init      string          `json:"init"`
+	Project   json.RawMessage `json:"project,omitempty"`
 }
 
-// Config is ~/.kampodine/config.json.
+// Config is ~/.kampodra/config.json.
 type Config struct {
 	DefaultProfile string             `json:"defaultProfile"`
 	Profiles       map[string]Profile `json:"profiles"`
 }
 
-// ConfigPath returns <home>/.kampodine/config.json.
+// ConfigPath returns <home>/.kampodra/config.json.
 func ConfigPath(home string) string {
 	return filepath.Join(home, LedgerDirName, ConfigFileName)
 }
@@ -159,12 +162,12 @@ func (c *Config) Profile(name string) (Profile, error) {
 }
 
 // SelectProfileName ports profile_resolve's selection: explicit flag >
-// KAMPODINE_PROFILE > config defaultProfile > "" (nothing configured).
+// KAMPODRA_PROFILE > config defaultProfile > "" (nothing configured).
 // A selected name that does not exist is an error naming the known set.
 func SelectProfileName(cfg *Config, explicit string, lookup func(string) (string, bool)) (string, error) {
 	name := explicit
 	if name == "" {
-		if v, ok := lookup("KAMPODINE_PROFILE"); ok {
+		if v, ok := lookup("KAMPODRA_PROFILE"); ok {
 			name = v
 		}
 	}

@@ -28,7 +28,7 @@ func setupSSH(t *testing.T) (deps command.Deps, stubDir string, stdout, stderr *
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
-	for _, k := range []string{"KAMPODINE_HOST", "KAMPODINE_SSH_KEY", "KAMPODINE_PROFILE", "APP_HOST_HEADER"} {
+	for _, k := range []string{"KAMPODRA_HOST", "KAMPODRA_SSH_KEY", "KAMPODRA_PROFILE", "KAMPODRA_PROXY_HOST"} {
 		t.Setenv(k, "")
 	}
 	stdout, stderr = &bytes.Buffer{}, &bytes.Buffer{}
@@ -77,7 +77,7 @@ func TestSSHPassthroughArgvVerbatim(t *testing.T) {
 
 func TestSSHResolvesThroughProfile(t *testing.T) {
 	deps, stubDir, _, _ := setupSSH(t)
-	cfgDir := filepath.Join(deps.Home, ".kampodine")
+	cfgDir := filepath.Join(deps.Home, ".kampodra")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		t.Fatal(err)
 	}

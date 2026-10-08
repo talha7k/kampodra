@@ -13,42 +13,45 @@ import (
 	"github.com/talha7k/kampodra/internal/adapter/state"
 )
 
-// Constants from the shell scripts (status.sh / deploy-lifecycle.sh).
-const (
-	diskPath = "/var/lib/containers"
-	// pruneKeepN is status's estimate window (status.sh calls prune_select
-	// with 2 — the same default as deploy prune).
-	pruneKeepN = 2
-)
+// diskPath is the container engine's storage path (infra constant, not
+// project config).
+const diskPath = "/var/lib/containers"
 
-// statusHelp is the shell usage() heredoc, byte-equal (kampodine HEAD).
+// pruneKeepN is status's estimate window (the shell calls prune_select
+// with 2 — the same default as deploy prune).
+const pruneKeepN = 2
+
+// statusHelp is the shell usage() heredoc, extended with the
+// kampodra-native --all-profiles and kampodra naming.
 const statusHelp = `Usage:
-  kampodine status [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--verbose]
+  kampodra status [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--verbose] [--all-profiles]
 
 Examples:
-  kampodine status                          # deployments (ledger) + live health + blue/green pair
-  kampodine status --host root@203.0.113.10 # + VM disk usage, image/prune estimate, service states
-  kampodine status --profile prod           # resolve host/key from a config profile
-  kampodine status --host root@203.0.113.10 --verbose  # + the full metrics snapshot
+  kampodra status                          # deployments (ledger) + live health + blue/green pair
+  kampodra status --host root@203.0.113.10 # + VM disk usage, image/prune estimate, service states
+  kampodra status --profile prod           # resolve host/key from a config profile
+  kampodra status --all-profiles           # one full section per configured profile
+  kampodra status --host root@203.0.113.10 --verbose  # + the full metrics snapshot
                                             #   (load, memory, disk breakdown, containers, top procs)
 
-Env: APP_HOST_HEADER (default app.example.com), KAMPODINE_HOST,
-KAMPODINE_SSH_KEY, KAMPODINE_PROFILE, OCI_PROFILE, OCI_COMPARTMENT.
+Env: KAMPODRA_PROXY_HOST, KAMPODRA_HOST, KAMPODRA_SSH_KEY, KAMPODRA_PROFILE,
+KAMPODRA_SERVICES, KAMPODRA_IMAGE_PREFIX, KAMPODRA_HEALTH_PATH.
 `
 
 func newStatusCommand(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "status [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--verbose]",
+		Use:   "status [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--verbose] [--all-profiles]",
 		Short: "live health + deployment count + VM disk/image/service state + metrics (--verbose) + the blue/green pair view",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			return runStatus(d, c)
 		},
 	}
-	cmd.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODINE_HOST and any profile")
-	cmd.Flags().String("profile", "", "per-instance profile (~/.kampodine/config.json) — beats KAMPODINE_PROFILE / defaultProfile")
-	cmd.Flags().String("ssh-key", "", "identity file — beats KAMPODINE_SSH_KEY; empty = agent / ssh config")
+	cmd.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODRA_HOST and any profile")
+	cmd.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
+	cmd.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
 	cmd.Flags().Bool("verbose", false, "add the full metrics snapshot (needs a target)")
+	cmd.Flags().Bool("all-profiles", false, "render one full status section per configured profile")
 	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
 		fmt.Fprint(c.OutOrStdout(), statusHelp)
 	})
@@ -60,18 +63,39 @@ func runStatus(d Deps, cmd *cobra.Command) error {
 	flagKey, _ := cmd.Flags().GetString("ssh-key")
 	flagProfile, _ := cmd.Flags().GetString("profile")
 	verbose, _ := cmd.Flags().GetBool("verbose")
+	allProfiles, _ := cmd.Flags().GetBool("all-profiles")
 
 	cfg, err := state.LoadConfig(d.Home)
 	if err != nil {
 		return err
 	}
-	target, err := ResolveTarget(cfg, flagHost, flagKey, flagProfile, d.Env)
+	names, err := fanOutProfileNames(cfg, allProfiles, state.ConfigPath(d.Home))
 	if err != nil {
 		return err
 	}
+	for _, name := range names {
+		profileParam := name
+		if name == "" {
+			profileParam = flagProfile
+		}
+		target, err := ResolveTarget(cfg, flagHost, flagKey, profileParam, d.Env)
+		if err != nil {
+			return err
+		}
+		if name != "" {
+			fmt.Fprintf(d.Stdout, "== profile: %s ==\n", name)
+		}
+		if err := statusBody(d, cmd.Context(), target, verbose); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
+// statusBody renders one target's full status view (deployments header,
+// live edge, VM state, blue/green pair).
+func statusBody(d Deps, ctx context.Context, target Target, verbose bool) error {
 	out := d.Stdout
-	ctx := cmd.Context()
 	ledgerPath := state.LedgerPath(d.Home)
 
 	// --- deployment count (the owner's "total deployments", always visible)
@@ -90,7 +114,7 @@ func runStatus(d Deps, cmd *cobra.Command) error {
 
 	// --- live (through the proxy)
 	fmt.Fprintf(out, "== live (through the proxy: https://%s) ==\n", target.ProxyHost)
-	if body, ok := d.Prober.LiveStatus(ctx, target.ProxyHost); ok {
+	if body, ok := d.Prober.LiveStatus(ctx, target.ProxyHost, target.Project.HealthPath); ok {
 		fmt.Fprintf(out, "HEALTH OK: %s\n", body)
 		buildID := "unreachable"
 		if id, ok := d.Prober.BuildID(ctx, target.ProxyHost); ok {
@@ -120,7 +144,7 @@ func runStatus(d Deps, cmd *cobra.Command) error {
 		case osfacts.VerdictOK, osfacts.VerdictWarn:
 			fmt.Fprintf(out, "disk    : %d%% used on %s\n", pct, diskPath)
 			if pct > 90 {
-				fmt.Fprintln(out, "WARNING : VM disk above 90% — old sha-tagged deploy images pile up (~1GB each); reclaim: kampodine deploy prune --dry-run")
+				fmt.Fprintln(out, "WARNING : VM disk above 90% — old sha-tagged deploy images pile up (~1GB each); reclaim: kampodra deploy prune --dry-run")
 			}
 		default:
 			fmt.Fprintln(out, "disk    : unknown (df unreadable)")
@@ -128,7 +152,7 @@ func runStatus(d Deps, cmd *cobra.Command) error {
 
 		// images + prune estimate
 		images := runtime.ShaTagged(runtime.ParseImages(
-			run(fmt.Sprintf("podman images --format '{{.Tag}}|{{.CreatedAt}}|{{.Size}}' %s 2>/dev/null", runtime.DeployImageRepo))))
+			run(fmt.Sprintf("podman images --format '{{.Tag}}|{{.CreatedAt}}|{{.Size}}' %s 2>/dev/null", target.Project.ImagePrefix))))
 		removals, pruneErr := runtime.PruneSelect(images, run("podman ps --format '{{.Image}}' 2>/dev/null"), pruneKeepN)
 		reclaimTags := "(none)"
 		sizes := make([]string, 0, len(removals))
@@ -140,13 +164,13 @@ func runStatus(d Deps, cmd *cobra.Command) error {
 			}
 			reclaimTags = strings.Join(tags, ",")
 		}
-		fmt.Fprintf(out, "images  : %d sha-tagged deploy image(s); prune would remove %d %s (%s): kampodine deploy prune --dry-run\n",
+		fmt.Fprintf(out, "images  : %d sha-tagged deploy image(s); prune would remove %d %s (%s): kampodra deploy prune --dry-run\n",
 			len(images), len(removals), reclaimTags, runtime.SumSizesHuman(sizes))
 
 		// services (init-aware: openrc keeps the historical shape)
 		fmt.Fprintln(out, "services:")
 		initSys, _, _ := initadapter.Detect(ctx, runErr, target.ProfileInit)
-		if states, err := initadapter.ServiceStates(ctx, runErr, initSys, initadapter.Services); err != nil {
+		if states, err := initadapter.ServiceStates(ctx, runErr, initSys, target.Project.Services); err != nil {
 			fmt.Fprintln(out, "(service roll call failed)")
 		} else {
 			for _, s := range states {
@@ -168,7 +192,7 @@ func runStatus(d Deps, cmd *cobra.Command) error {
 				snap := osfacts.ParseMetrics(raw)
 				fmt.Fprintln(out, osfacts.RenderMetricsSnapshot(snap))
 				if rootPct, ok := osfacts.RootDiskPct(snap); ok && rootPct > 90 {
-					fmt.Fprintln(out, "WARNING : root disk above 90% — reclaim: kampodine deploy prune --dry-run")
+					fmt.Fprintln(out, "WARNING : root disk above 90% — reclaim: kampodra deploy prune --dry-run")
 				}
 			}
 		}

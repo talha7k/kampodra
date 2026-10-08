@@ -38,11 +38,11 @@ func TestRootHelpFlagPrintsIndex(t *testing.T) {
 
 func assertIndexShape(t *testing.T, out string) {
 	t.Helper()
-	if !strings.Contains(out, "kampodine — kamal-alternative CLI for Alpine + Podman deploys, built on kamal-proxy") {
+	if !strings.Contains(out, "kampodra — kamal-alternative CLI for Alpine + Podman deploys, built on kamal-proxy") {
 		t.Errorf("index lost the mission line:\n%s", out)
 	}
-	// Groups in the shell's vercel-style order.
-	wantGroups := []string{"DEPLOY\n", "DEPLOY LIFECYCLE\n", "INFRA\n", "DNS\n", "ENV\n", "CONFIG\n", "METRICS\n", "BACKUP\n"}
+	// Groups in the frozen-spec order, with the kampodra-native HOST group.
+	wantGroups := []string{"DEPLOY\n", "DEPLOY LIFECYCLE\n", "INFRA\n", "DNS\n", "ENV\n", "CONFIG\n", "HOST\n", "METRICS\n", "BACKUP\n"}
 	last := -1
 	for _, g := range wantGroups {
 		i := strings.Index(out, g)
@@ -55,14 +55,18 @@ func assertIndexShape(t *testing.T, out string) {
 		}
 		last = i
 	}
-	// Every golden command appears.
-	for _, c := range []string{"deploy", "bluegreen", "migrate", "vm-prepare", "image-import", "status", "dns", "env", "config", "metrics", "backup"} {
+	// Every frozen-spec command appears, plus the kampodra-native ssh.
+	for _, c := range []string{"deploy", "bluegreen", "migrate", "vm-prepare", "image-import", "status", "dns", "env", "config", "metrics", "backup", "ssh"} {
 		if !strings.Contains(out, c) {
 			t.Errorf("index missing command %q:\n%s", c, out)
 		}
 	}
 	if !strings.Contains(out, "Every command supports --help with usage + examples.") {
 		t.Errorf("index lost its footer:\n%s", out)
+	}
+	// Unported spec surface is honestly marked in the index.
+	if !strings.Contains(out, "NOT_YET_PORTED") {
+		t.Errorf("index must mark unported commands:\n%s", out)
 	}
 }
 
@@ -81,10 +85,10 @@ func TestRootUnknownCommandExits2(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2 (cli.js parity)", code)
 	}
-	if !strings.Contains(stderr, "kampodine: unknown command: frobnicate") {
-		t.Errorf("stderr = %q, want the cli.js unknown-command shape", stderr)
+	if !strings.Contains(stderr, "kampodra: unknown command: frobnicate") {
+		t.Errorf("stderr = %q, want the unknown-command shape", stderr)
 	}
-	assertIndexShape(t, stderr) // cli.js prints the index after the error
+	assertIndexShape(t, stderr) // the index prints after the error
 }
 
 func TestRootNoHelpSubcommand(t *testing.T) {
@@ -109,7 +113,7 @@ func TestNpmPackageVersionMatchesBinary(t *testing.T) {
 	if err != nil {
 		t.Skipf("npm packaging not present yet: %v", err)
 	}
-	if !strings.Contains(string(data), `"version": "0.7.0-alpha.1"`) {
+	if !strings.Contains(string(data), `"version": "0.7.0-alpha.2"`) {
 		t.Errorf("npm package.json version drifted from the binary version")
 	}
 }

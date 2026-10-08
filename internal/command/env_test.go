@@ -46,7 +46,7 @@ func setupEnv(t *testing.T) (deps command.Deps, stubDir string, stdout, stderr *
 	}
 
 	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
-	for _, k := range []string{"KAMPODINE_HOST", "KAMPODINE_SSH_KEY", "KAMPODINE_PROFILE", "APP_HOST_HEADER", "KAMPODINE_ENV_REMOTE"} {
+	for _, k := range []string{"KAMPODRA_HOST", "KAMPODRA_SSH_KEY", "KAMPODRA_PROFILE", "KAMPODRA_PROXY_HOST", "KAMPODRA_ENV_FILE"} {
 		t.Setenv(k, "")
 	}
 
