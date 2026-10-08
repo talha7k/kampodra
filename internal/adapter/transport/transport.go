@@ -29,6 +29,10 @@ import (
 type HostSpec struct {
 	Host   string // user@ip or an ssh-config Host alias
 	SSHKey string // identity file path; "" = agent / ssh config
+	// AcceptNewHostKey adds -o StrictHostKeyChecking=accept-new — the
+	// vm-prepare first-contact shape (bootstrapping a host whose key is not
+	// known yet). Ordinary deploy/status runs never set it.
+	AcceptNewHostKey bool
 }
 
 // Runner executes composed remote commands over ssh (captured runs, stdin
@@ -92,6 +96,9 @@ func SSHPassthroughArgs(host HostSpec, cmdAndArgs []string) []string {
 
 func sshBaseArgs(host HostSpec, remoteCmd string, extra []string) []string {
 	args := []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes"}
+	if host.AcceptNewHostKey {
+		args = append(args, "-o", "StrictHostKeyChecking=accept-new")
+	}
 	if host.SSHKey != "" {
 		args = append(args, "-i", host.SSHKey)
 	}

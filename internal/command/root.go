@@ -153,6 +153,7 @@ func NewRoot(version string, deps Deps) *cobra.Command {
 	root.AddCommand(newConfigCommand(d))
 	root.AddCommand(newBackupCommand(d))
 	root.AddCommand(newVMWipeCommand(d))
+	root.AddCommand(newVMPrepareCommand(d))
 	return root
 }
 

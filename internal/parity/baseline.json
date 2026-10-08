@@ -4,7 +4,6 @@
     "dns",
     "image-import",
     "metrics",
-    "migrate",
-    "vm-prepare"
+    "migrate"
   ]
 }
