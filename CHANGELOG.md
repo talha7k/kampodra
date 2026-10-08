@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.7.0-beta.1 — 2026-10-09
+
+- **Wave 4 — the INFRA families** (the frozen-spec port is complete except
+  bluegreen / image-import / migrate, which stay honestly baselined):
+  - **`config`** — `init | list | show | set-default | remove` against
+    `~/.kampodra/config.json` (0700 dir / 0600 file, atomic same-dir tmp +
+    mv). First profile auto-becomes the default; removing the LAST profile
+    requires `--force`; the default reassigns sorted-first after a remove.
+    Re-init (`--force`) refreshes the flat fields, keeps the cached init
+    verdict while host/ssh-key are unchanged, and never touches the project
+    block (tooling-owned). Values are validated (no whitespace/quotes/
+    backslashes — never echoed); `~` expands in `--ssh-key`. The parity
+    snapshot now sees cobra persistent flags (a snapshot gap, fixed).
+  - **`backup`** — `list | download | verify | restore-plan` over the oci
+    CLI's own auth (config-file `--profile` or `--instance-principal`; zero
+    stored creds). LIST-denied policy prints the exact IAM shape; download
+    lands 0600 and sha256/md5-verifies against the object's digest metadata
+    (mismatch prints expected/got and fails closed); verify pipes the db
+    image over ssh stdin into the VM's `/usr/local/bin/restore-verify`
+    (.tgz archives extract to scratch, every .db member piped, traversal-
+    safe); restore-plan PRINTS the stop/swap/start sequence and never
+    executes.
+  - **`vm-wipe` (kampodra-native)** — full teardown for the fresh-VM
+    rebuild loop: stop + disable every project service (init-aware),
+    remove the project containers (app + shadow + edge), prune images,
+    delete env file / deployed-sha stamp / state dirs. `--yes` gates every
+    mutation, `--keep-data` preserves the tenant data dir, and a host whose
+    services don't match the profile is refused unless `--force`. Prints a
+    full removed-summary; suggests `vm-prepare` next.
+  - **`env from-schema` (kampodra-native)** — the deploy.sh varlock block:
+    generates the env file from the repo's COMMITTED `.env.schema`
+    (`git archive HEAD` → scratch dir inside the repo → the repo's own
+    varlock resolves pass() refs), filters to KEY=VALUE (rc-script-owned
+    clear keys dropped via the new `envClearKeys` project-config field,
+    quotes stripped for `--env-file`), then writes locally (`--out`, 0600)
+    or pushes through the env family's flow. Values NEVER echo —
+    fingerprints only.
+  - **`vm-prepare`** — the Alpine host bootstrap, ported faithfully:
+    UEFI/no-systemd/OpenRC gates (fail-closed BEFORE mutations), sshd
+    hardening ensure + gate, community repo + podman stack + cgroups,
+    registries.conf + sysctl 80, OpenRC units for the api container +
+    kamal-proxy (supervise-daemon), the kampodra-anchor watcher (inert
+    without the conf), kamal-proxy pull + start + readiness, and the full
+    post-gate battery. ALL naming routes through `vmbootstrap.Naming` ←
+    ProjectConfig (magic-string guard holds). `--pull-images` pre-pulls
+    the app image directly from the ImagePrefix registry (kampodine's
+    Mac-local tunnel is gone — kampodra streams on deploy). NEW `--ansible
+    <playbook>` runs ansible-playbook against the host after bootstrap
+    (inventory + `--private-key` derived from the resolved target).
+    Transport gains `StrictHostKeyChecking=accept-new` for first contact.
+  - **`metrics`** — one-shot snapshot over one ssh round-trip (the osfacts
+    renderers from wave 1); `--warn-disk <pct>` (default 90) exits 1 at or
+    above the threshold using the deploy gate's verdict logic; `--watch N
+    --count M` loops.
+  - **`dns`** — `records | add | rm` over the oci CLI: types pinned to
+    A|AAAA|CNAME, pure validators fire BEFORE any provider call, zone
+    resolution requires exactly one compartment zone (else `--zone`),
+    `add` merges the RRSet (round-robin survives) and is idempotent, `rm`
+    filters and may empty the RRSet, and the no-credential static gate is
+    ported (no credential material tokens anywhere in the dns surface).
+- **Parity** — the NOT_YET_PORTED baseline is down to `bluegreen`,
+  `image-import`, `migrate` (deliberate follow-ups, honestly baselined).
+  Native additions review-flagged by the guard: `vm-wipe`, `env
+  from-schema`, `vm-prepare --ansible`, plus the pre-existing
+  `ssh`/`--rolling`/`converge`/`diff` surface.
+- **Fixes** — the deploy pipeline test's `save|load` order pin raced the
+  concurrent stream legs (pre-existing flake, ~1/6 runs); the pin now
+  asserts the real invariants (both legs after build, retag after stream).
+
 ## 0.7.0-alpha.3 — 2026-10-08
 
 - **`deploy` — the REAL pipeline** (the NOT_YET_PORTED gate is gone): clean-tree

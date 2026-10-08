@@ -99,8 +99,10 @@ silent.
 
 ## Status
 
-Pre-0.7 alpha — the command surface is being ported from the frozen shell
-spec under a machine-checked parity ratchet. See `CHANGELOG.md`.
+**0.7.0-beta.1** — the INFRA surface (config, backup, metrics, dns,
+vm-prepare, vm-wipe) is ported and machine-checked against the frozen
+shell spec; bluegreen / image-import / migrate remain consciously
+NOT_YET_PORTED (`internal/parity/baseline.json`). See `CHANGELOG.md`.
 
 ## License
 
