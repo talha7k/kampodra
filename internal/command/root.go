@@ -66,6 +66,7 @@ type Deps struct {
 	Env    func(string) (string, bool)
 	Stdout io.Writer
 	Stderr io.Writer
+	Stdin  io.Reader
 	Runner transport.Runner
 	Prober *probe.Prober
 }
@@ -79,6 +80,9 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.Stderr == nil {
 		d.Stderr = os.Stderr
+	}
+	if d.Stdin == nil {
+		d.Stdin = os.Stdin
 	}
 	if d.Runner == nil {
 		d.Runner = &transport.SSHRunner{}
@@ -134,6 +138,9 @@ func NewRoot(version string, deps Deps) *cobra.Command {
 	})
 
 	root.AddCommand(newStatusCommand(d))
+	root.AddCommand(newDeployCommand(d))
+	root.AddCommand(newEnvCommand(d))
+	root.AddCommand(newSSHCommand(d))
 	return root
 }
 

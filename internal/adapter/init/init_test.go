@@ -141,3 +141,36 @@ func TestStatusProbeCommand(t *testing.T) {
 		t.Error("StatusProbeCommand(unknown) must fail (svc_action parity)")
 	}
 }
+
+func TestActionCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		sys     System
+		service string
+		action  string
+		want    string
+		wantErr bool
+	}{
+		{name: "openrc keeps the historical byte shape", sys: SystemOpenRC, service: "kampodine-api", action: "restart", want: "rc-service kampodine-api restart"},
+		{name: "systemd uses the verb-first order", sys: SystemSystemd, service: "kampodine-api", action: "restart", want: "systemctl restart kampodine-api"},
+		{name: "openrc status probe", sys: SystemOpenRC, service: "kamal-proxy", action: "status", want: "rc-service kamal-proxy status"},
+		{name: "no init detected fails (restart is fatal)", sys: System(""), service: "x", action: "restart", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ActionCommand(tt.sys, tt.service, tt.action)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ActionCommand() = %q, want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ActionCommand() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("ActionCommand() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

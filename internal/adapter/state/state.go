@@ -58,6 +58,50 @@ func LedgerCount(path, host string) int {
 	return n
 }
 
+// LedgerEntry is one parsed ledger line (the deployment-history contract in
+// common.sh: fixed key order, escaped values).
+type LedgerEntry struct {
+	Ts         string `json:"ts"`
+	Host       string `json:"host"`
+	Sha        string `json:"sha"`
+	Tag        string `json:"tag"`
+	Result     string `json:"result"`
+	DurationMs int    `json:"duration_ms"`
+	Subject    string `json:"subject"`
+}
+
+// LedgerEntries parses the ledger into entries, optionally fixed-string
+// filtered to one host via the same `"host":"…","sha":"` seam as
+// LedgerCount. A missing ledger yields nil (rendering never fails on a
+// fresh machine); malformed lines are SKIPPED here (LedgerCount counts them
+// for the owner's total, but garbage must never crash a render). File order
+// is preserved — the last entry for a tag is the newest.
+func LedgerEntries(path, host string) []LedgerEntry {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	needle := ""
+	if host != "" {
+		needle = `"host":"` + host + hostSeam
+	}
+	var out []LedgerEntry
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if needle != "" && !strings.Contains(line, needle) {
+			continue
+		}
+		var e LedgerEntry
+		if json.Unmarshal([]byte(line), &e) != nil {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // Profile is one flat per-instance config entry — no inheritance (owner
 // decision): host/sshKey/proxyHost/group + the cached init verdict.
 type Profile struct {

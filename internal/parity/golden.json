@@ -32,8 +32,10 @@
         "shell"
       ],
       "flags": [
+        "--all-profiles",
         "--dockerfile",
         "--dry-run",
+        "--follow",
         "--host",
         "--keep",
         "--lines",
@@ -47,7 +49,7 @@
       ],
       "args": {
         "shell": [
-          "\u003ccmd\u003e..."
+          "<cmd>..."
         ]
       }
     },
@@ -58,11 +60,26 @@
         "bluegreen.sh"
       ],
       "flags": [
+        "--all-profiles",
         "--host",
         "--profile",
         "--ssh-key",
         "--verbose"
       ]
+    },
+    {
+      "name": "ssh",
+      "script": "kampodra-native",
+      "flags": [
+        "--host",
+        "--profile",
+        "--ssh-key"
+      ],
+      "args": {
+        "": [
+          "<cmd>..."
+        ]
+      }
     },
     {
       "name": "bluegreen",
@@ -81,7 +98,7 @@
       ],
       "args": {
         "provision": [
-          "\u003ccolor\u003e"
+          "<color>"
         ]
       }
     },
@@ -120,6 +137,7 @@
       "name": "env",
       "script": "env.sh",
       "subcommands": [
+        "diff",
         "fingerprint",
         "list",
         "pull",
@@ -131,7 +149,12 @@
         "--out",
         "--profile",
         "--ssh-key"
-      ]
+      ],
+      "args": {
+        "diff": [
+          "<local-file>"
+        ]
+      }
     },
     {
       "name": "dns",
@@ -173,10 +196,10 @@
       ],
       "args": {
         "remove": [
-          "\u003cname\u003e"
+          "<name>"
         ],
         "set-default": [
-          "\u003cname\u003e"
+          "<name>"
         ]
       }
     },
@@ -213,12 +236,13 @@
       ],
       "args": {
         "download": [
-          "\u003cobject\u003e"
+          "<object>"
         ],
         "restore-plan": [
-          "\u003cobject\u003e"
+          "<object>"
         ]
       }
     }
-  ]
+  ],
+  "spec_note": "FROZEN SPEC \u2014 derived from kampodine v0.6.0 @ 5bf07fe; kampodine retired 2026-10-08; kampodra is the sole successor. Never regenerate."
 }

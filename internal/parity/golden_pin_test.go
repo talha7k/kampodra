@@ -10,13 +10,21 @@ import (
 // so a parser regression cannot silently rewrite it. When the shell moves
 // and the golden is regenerated CONSCIOUSLY, update these expectations in
 // the same commit — that review is the point of the guard.
+//
+// kampodra-native additions (surface the shell never had, reviewed here and
+// enforced by the guard once landed):
+//   - status/deploy `--all-profiles` — per-profile fan-out
+//   - deploy `--follow` — stream container logs until ctrl-c
+//   - the `ssh` command — host-level ssh passthrough (script
+//     "kampodra-native": no shell equivalent exists)
+//   - env `diff <local-file>` — fingerprint-level local-vs-remote env diff
 func TestCommittedGoldenMatchesHandReviewedSurface(t *testing.T) {
 	g, err := LoadGolden(filepath.Join("golden.json"))
 	if err != nil {
 		t.Fatalf("load committed golden: %v", err)
 	}
-	if n := len(g.Commands); n != 11 {
-		t.Fatalf("committed golden has %d commands, want 11 (kampodine HEAD surface)", n)
+	if n := len(g.Commands); n != 12 {
+		t.Fatalf("committed golden has %d commands, want 12 (kampodine HEAD + the kampodra-native ssh command)", n)
 	}
 	if g.SourceShell != "github.com/talha7k/kampodine" {
 		t.Errorf("source_shell_repo = %q, want the canonical repo name (never a local path)", g.SourceShell)
@@ -34,8 +42,10 @@ func TestCommittedGoldenMatchesHandReviewedSurface(t *testing.T) {
 	if !ok {
 		t.Fatalf("golden has no status command")
 	}
-	if eqStrings(status.Flags, "--host", "--profile", "--ssh-key", "--verbose") == false {
-		t.Errorf("status flags = %v, want [--host --profile --ssh-key --verbose]", status.Flags)
+	// --all-profiles is kampodra-native (per-profile fan-out), consciously
+	// added on top of the shell HEAD surface.
+	if eqStrings(status.Flags, "--all-profiles", "--host", "--profile", "--ssh-key", "--verbose") == false {
+		t.Errorf("status flags = %v, want [--all-profiles --host --profile --ssh-key --verbose]", status.Flags)
 	}
 	if len(status.Subcommands) != 0 {
 		t.Errorf("status subcommands = %v, want none (the tail exec is bluegreen's surface, not status's)", status.Subcommands)
@@ -44,12 +54,27 @@ func TestCommittedGoldenMatchesHandReviewedSurface(t *testing.T) {
 		t.Errorf("status tail execs = %v, want [bluegreen.sh]", status.TailExecs)
 	}
 
+	ssh, ok := byName["ssh"]
+	if !ok {
+		t.Fatalf("golden has no ssh command (kampodra-native passthrough)")
+	}
+	if ssh.Script != "kampodra-native" {
+		t.Errorf("ssh script = %q, want the kampodra-native marker (no shell equivalent)", ssh.Script)
+	}
+	if eqStrings(ssh.Flags, "--host", "--profile", "--ssh-key") == false {
+		t.Errorf("ssh flags = %v, want [--host --profile --ssh-key]", ssh.Flags)
+	}
+	if got := ssh.Args[""]; len(got) != 1 || got[0] != "<cmd>..." {
+		t.Errorf("ssh args = %v, want [<cmd>...] under the command-level key", got)
+	}
+
 	deploy := byName["deploy"]
 	if eqStrings(deploy.Subcommands, "list", "logs", "prune", "restart", "shell") == false {
 		t.Errorf("deploy subcommands = %v", deploy.Subcommands)
 	}
-	if len(deploy.Flags) != 12 {
-		t.Errorf("deploy flags = %v, want 12 (deploy.sh + deploy-lifecycle.sh union)", deploy.Flags)
+	// 12 shell flags + the kampodra-native --all-profiles and --follow.
+	if len(deploy.Flags) != 14 {
+		t.Errorf("deploy flags = %v, want 14 (deploy.sh + deploy-lifecycle.sh union + kampodra-native additions)", deploy.Flags)
 	}
 	if deploy.Args["shell"] == nil || deploy.Args["shell"][0] != "<cmd>..." {
 		t.Errorf("deploy shell args = %v, want [<cmd>...]", deploy.Args["shell"])
@@ -75,8 +100,12 @@ func TestCommittedGoldenMatchesHandReviewedSurface(t *testing.T) {
 	}
 
 	env := byName["env"]
-	if eqStrings(env.Subcommands, "fingerprint", "list", "pull", "push") == false {
+	// diff is kampodra-native: a fingerprint-level local-vs-remote env diff.
+	if eqStrings(env.Subcommands, "diff", "fingerprint", "list", "pull", "push") == false {
 		t.Errorf("env subcommands = %v", env.Subcommands)
+	}
+	if got := env.Args["diff"]; len(got) != 1 || got[0] != "<local-file>" {
+		t.Errorf("env diff args = %v, want [<local-file>]", got)
 	}
 
 	migrate := byName["migrate"]
