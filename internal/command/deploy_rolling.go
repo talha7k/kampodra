@@ -8,6 +8,7 @@ import (
 	"time"
 
 	initadapter "github.com/talha7k/kampodra/internal/adapter/init"
+	"github.com/talha7k/kampodra/internal/adapter/vmbootstrap"
 )
 
 // --rolling: the zero-downtime shadow-container double re-point (opt-in).
@@ -72,11 +73,15 @@ func (r *deployRun) executeRolling() error {
 	}
 
 	// --- 1. shadow up: SHA tag (never :latest), kamal network, loopback
-	// probe port -----------------------------------------------------------
+	// probe port. The run replicates the init unit's CLEAR env
+	// (vmbootstrap.ClearEnvArgs) — the env file deliberately lacks
+	// envClearKeys keys, so a shadow without them boots the app's compiled
+	// default port and the probe targets a dead endpoint (2026-10-09 live
+	// fire: safe-abort at the shadow health gate).
 	r.say("[rolling] shadow %s from %s:%s (network %s, loopback probe :%s)…",
 		shadow, pj.ImagePrefix, r.ver, pj.Network, pj.ShadowProbePort)
-	runCmd := fmt.Sprintf("podman run -d --name %s --network %s --env-file %s -p 127.0.0.1:%s:%s %s:%s",
-		shadow, pj.Network, pj.EnvFile, pj.ShadowProbePort, pj.Port, pj.ImagePrefix, r.ver)
+	runCmd := fmt.Sprintf("podman run -d --name %s --network %s %s --env-file %s -p 127.0.0.1:%s:%s %s:%s",
+		shadow, pj.Network, vmbootstrap.ClearEnvArgs(pj.Port), pj.EnvFile, pj.ShadowProbePort, pj.Port, pj.ImagePrefix, r.ver)
 	if _, err := r.vm(runCmd); err != nil {
 		return fmt.Errorf("shadow container failed to start: %w", err)
 	}

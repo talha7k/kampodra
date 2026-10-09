@@ -12,7 +12,12 @@ import (
 
 var (
 	rollingShadow     = deployContainer + "-shadow"
-	rollingShadowRun  = "podman run -d --name " + rollingShadow + " --network kamal --env-file " + pipelineEnvFile + " -p 127.0.0.1:18080:8080 " + pipelineImageTag
+	// The shadow replicates the init unit's CLEAR env (NODE_ENV=production,
+	// PORT) — the app defaults to its own port without PORT (3095 for the
+	// esellar api), and the env file deliberately lacks envClearKeys keys,
+	// so a shadow without them probes the wrong port (2026-10-09 live
+	// fire: shadow health gate failed, safe-abort).
+	rollingShadowRun  = "podman run -d --name " + rollingShadow + " --network kamal -e NODE_ENV=production -e PORT=8080 --env-file " + pipelineEnvFile + " -p 127.0.0.1:18080:8080 " + pipelineImageTag
 	rollingSwitchFwd  = pipelineProxyCmd + " --host app.example.com --target " + rollingShadow + ":8080 --tls --health-check-path /up"
 	rollingSwitchBack = pipelineProxyCmd + " --host app.example.com --target " + deployContainer + ":8080 --tls --health-check-path /up"
 	rollingRmShadow   = "podman rm -f " + rollingShadow
