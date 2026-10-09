@@ -1,8 +1,9 @@
 # kampodra — Debts & Backlog
 
 Living ledger. Check items off only with evidence (tests green, live-fire
-proof where noted). Last updated: 2026-10-09 (Ubuntu 24.04 guest support,
-7fc307e; repo pushed to GitHub).
+proof where noted). Last updated: 2026-10-10 (live-fire proof session:
+bluegreen + image-import + sidecars + rolling on one disposable OCI VM;
+green never touched).
 
 ## Status snapshot
 
@@ -10,6 +11,11 @@ proof where noted). Last updated: 2026-10-09 (Ubuntu 24.04 guest support,
 - Deploy proven live end-to-end: two real deploys + a full fresh-VM
   wipe-and-rebuild (21.5 min, `d54c3e1` live-fire fixes) — Alpine path;
   the Ubuntu 24.04 provisioner is fixture-proven only (live drill open)
+- 2026-10-10 live-fire session: the 0.7.0-beta.3 binary drove a full
+  disposable-VM lifecycle against prod-adjacent OCI (bluegreen pair,
+  image-import, sidecar deploy, rolling) — green (84.13.128.216)
+  read-only throughout; findings fixed forward (5 commits, all suites
+  green); evidence under `test-results/livefire-2026-10-09/`
 - Neutral defaults; project config via repo `kampodra.json` + profiles +
   `KAMPODRA_*` env (see `config print` for provenance)
 
@@ -24,14 +30,29 @@ proof where noted). Last updated: 2026-10-09 (Ubuntu 24.04 guest support,
       flip with auto-rollback, inject-route provision, fixture tests for
       every path. Evidence: `internal/command/bluegreen_test.go` (15
       tests: happy flip sequence, ACME-failure rollback, native + inject
-      provision, refusal paths); suite green. STILL NEEDED: one
-      disposable-VM live drill before prod use (Guide rule for
-      host-touching ports).
+      provision, refusal paths); suite green. LIVE DRILL DONE
+      (2026-10-10, disposable VM): status pair view, provision blue via
+      the inject route (4m04s: launch→platform ssh→qcow2→raw→gzip|dd→
+      reboot→Alpine verified), flip --to blue (22.3s, ACME issued for
+      84-8-104-247.sslip.io, served sha through the reserved IP while
+      green kept serving its own), rollback (6.0s → dormant + guest
+      cleanup), forced-flip auto-rollback (51.2s: post-assign failure →
+      dormant + guest cleaned, green lookup-only). Live findings FIXED:
+      ReservedIPListArgs never passed its parser's --query (status saw NO
+      reserved IP); pair instance naming now pairInstancePrefix-derivable
+      (legacy estates: esellar-green vs esellar-api-green); every guest
+      ssh leg now rides the resolved --ssh-key; the inject platform legs
+      authenticate with the resolved private key (--platform-key is
+      authorization only).
 - [x] **`image-import` port** — OCI golden-image (qcow2 → custom image)
       import flow with the firmware verdict + keep-object. Evidence:
       `internal/command/imageimport_test.go` (happy/BIOS-warn/terminal/
-      validation paths); suite green. Live drill: run once against a
-      real tenancy (staging object, then delete).
+      validation paths); suite green. LIVE DRILL DONE (2026-10-10): full
+      207MB qcow2 upload → import → AVAILABLE in 7m10s against the real
+      tenancy; firmware verdict = BIOS with the loud A1 WARN (OCI pins
+      imports); staged object auto-deleted; the custom image deleted at
+      teardown; provision's route detection SKIPPED the BIOS image live
+      (inject route taken).
 - [x] **Secondary-image streaming** — the kampodra.json `images.sidecars`
       block makes deploy build+stream+tag declared sidecars as
       `<imagePrefix>-<name>:latest` (same platform + GIT_SHA identity,
@@ -43,16 +64,35 @@ proof where noted). Last updated: 2026-10-09 (Ubuntu 24.04 guest support,
       (strict block), TestSidecarImageRef (naming seam),
       TestDeployPipelineSidecarsStreamed (sequence + ORDER pins),
       TestDeployPipelineRollbackNeverTouchesSidecars (rollback purity);
-      suite green. Live-fire proof pending (same drill as bluegreen:
-      declare a backup sidecar, fresh-VM rebuild, confirm zero manual
-      podman).
+      suite green. LIVE-FIRE PROOF DONE (2026-10-10, fresh-VM rebuild on
+      the disposable blue): manifest
+      `{"name":"backup","dockerfile":"apps/api-go/Dockerfile.backup"}` —
+      deploy built+streamed+verified the sidecar image alongside the
+      primary with ZERO manual podman; the ansible backups role
+      (backup_image=<sidecar ref>) started the daemon from the streamed
+      image; /healthz responded (documented ok:false noise on an empty
+      tenant dir); backupd logged buildSha=<deploy sha> (sidecar identity
+      proven live). Live finding FIXED: sidecar builds now use the
+      DOCKERFILE's directory as context (repo-root context failed on the
+      first real sidecar Dockerfile — COPY go.mod go.sum).
 ### Medium
 
-- [ ] **Rolling deploy promotion** — `deploy --rolling` is opt-in and
-      fixture-proven only. Flip to default after: (a) one live rolling
-      drill (disposable VM or quiet window), (b) two consecutive clean
-      rolling prod deploys. Keep `--in-place` documented as the escape
-      hatch forever.
+- [ ] **Rolling deploy promotion** — `deploy --rolling` is opt-in.
+      (a) one live rolling drill — DONE (2026-10-10, disposable VM): two
+      clean `--rolling` runs (43.5s then 34.4s; build/stream → shadow
+      boot+health on the loopback probe port → re-point+drain → init stop
+      → retag+start+gate → re-point back → converge), background public
+      probe loop at ~2/s: ZERO failed probes in either swap window (79/79
+      then 105/105 all 200, max 989ms); the failed-shadow safe-abort path
+      also proven live (run 1 died at the shadow gate, nothing took
+      traffic, main untouched). Live findings FIXED: the shadow run now
+      replicates the init unit's clear env via a shared
+      vmbootstrap.ClearEnvArgs (a shadow without PORT booted the app's
+      compiled default port and failed its probe); the drain-confirm poll
+      now uses `kamal-proxy list` (`kamal-proxy ls <svc>` is not a verb —
+      the confirm never confirmed). (b) two consecutive clean rolling
+      PROD deploys — STILL OPEN. Keep `--in-place` documented as the
+      escape hatch forever.
 - [x] **lint-debt burn-down** — COMPLETE (2026-10-09): all ten grandfathered
       functions refactored under the gocognit 25 / gocyclo 20 bar
       (ResolveTraced → per-layer resolver methods; newDeployCommand →
