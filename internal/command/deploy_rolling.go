@@ -115,10 +115,9 @@ func (r *deployRun) executeRolling() error {
 // the drain budget elapses (nil on confirm, nil on timeout — the caller
 // continues either way; only the narration differs).
 func (r *deployRun) drainWait() error {
-	pj := r.target.Project
 	deadline := time.Now().Add(time.Duration(r.opts.drainTimeout) * time.Second)
 	for {
-		out := r.vmTolerant(fmt.Sprintf("podman exec kamal-proxy kamal-proxy ls %s", pj.Container))
+		out := r.vmTolerant("podman exec kamal-proxy kamal-proxy list")
 		if strings.Contains(out, r.shadowName()) {
 			r.say("[rolling] proxy switched to the shadow — drained; stopping the old container")
 			return nil

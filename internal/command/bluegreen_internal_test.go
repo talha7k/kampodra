@@ -136,4 +136,3 @@ func TestColorNameUsesPairInstancePrefix(t *testing.T) {
 		t.Errorf("prefixed colorName(blue) = %q, want esellar-blue", got)
 	}
 }
-
