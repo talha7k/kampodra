@@ -257,6 +257,16 @@ func (p *vmProvisioner) managedState(sysctlSnippet string) error {
 	if err := p.run("mkdir -p " + n.EnvDir + " && chmod 700 " + n.EnvDir); err != nil {
 		return p.die("state dir create failed", err)
 	}
+	// The app unit bind-mounts the dataDir — ensure it exists. A
+	// volume-less host's datamount tolerates absence and only mkdirs when
+	// it mounts a volume; without this the first deploy's podman run
+	// crash-loops on `statfs <dataDir>: no such file or directory`
+	// (2026-10-09 live fire, disposable VM). On a mounted volume this is a
+	// no-op (the mountpoint exists).
+	p.say("ensuring the data dir %s (the app unit bind-mounts it)…", n.DataDir)
+	if err := p.run("mkdir -p " + n.DataDir); err != nil {
+		return p.die("data dir create failed", err)
+	}
 	p.say("writing /etc/containers/registries.conf (insecure %s; search docker.io)…", n.Registry)
 	if err := p.run("mkdir -p /etc/containers"); err != nil {
 		return p.die("mkdir /etc/containers failed", err)

@@ -11,7 +11,7 @@ import (
 // made keeps the shadow serving (LOUD exit + converge).
 
 var (
-	rollingShadow     = deployContainer + "-shadow"
+	rollingShadow = deployContainer + "-shadow"
 	// The shadow replicates the init unit's CLEAR env (NODE_ENV=production,
 	// PORT) — the app defaults to its own port without PORT (3095 for the
 	// esellar api), and the env file deliberately lacks envClearKeys keys,
@@ -219,4 +219,24 @@ func TestDeployConvergeUnhealthyKeepsShadowServing(t *testing.T) {
 	}
 	mustContain(t, stderr.String(), "left the shadow serving")
 	mustContain(t, stderr.String(), "deploy list")
+}
+
+// TestDeployRollingDrainPollUsesList: the drain-confirm poll runs
+// `kamal-proxy list` and matches the shadow in the TARGET column. The
+// old `kamal-proxy ls <service>` is not a kamal-proxy verb at all — the
+// poll errored on every try and the drain wait always burned its full
+// budget (2026-10-09 live fire: harmless by design, but the confirm
+// never confirmed).
+func TestDeployRollingDrainPollUsesList(t *testing.T) {
+	deps, stubDir, stdout, stderr, _ := setupDeployPipeline(t)
+	if code := runDeploy(t, deps, "--host", statusHost, "--rolling"); code != 0 {
+		t.Fatalf("exit = %d, stdout:\n%sstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	inv := invocations(t, stubDir)
+	if !strings.Contains(inv, "podman exec kamal-proxy kamal-proxy list") {
+		t.Errorf("drain poll must run kamal-proxy list:\n%s", inv)
+	}
+	if strings.Contains(inv, "kamal-proxy ls ") {
+		t.Errorf("kamal-proxy ls is not a verb (drain poll must not use it):\n%s", inv)
+	}
 }
