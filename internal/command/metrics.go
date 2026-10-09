@@ -1,6 +1,7 @@
 package command
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"time"
@@ -54,33 +55,77 @@ func newMetricsCommand(d Deps) *cobra.Command {
 	return cmd
 }
 
-func runMetrics(d Deps, c *cobra.Command) error {
-	diskThreshold, _ := c.Flags().GetString("disk-threshold")
+// metricsFlags is metrics' validated cadence + verdict flag set.
+type metricsFlags struct {
+	diskThreshold string
+	watchSec      int
+	countN        int
+}
+
+// parseMetricsFlags reads and validates the snapshot cadence flags: the
+// disk threshold is a percentage 1-100; watch/count, when set, must be
+// positive integers (absent = unbounded/one-shot respectively).
+func parseMetricsFlags(c *cobra.Command) (metricsFlags, error) {
+	f := metricsFlags{}
+	f.diskThreshold, _ = c.Flags().GetString("disk-threshold")
 	watch, _ := c.Flags().GetString("watch")
 	count, _ := c.Flags().GetString("count")
-	host, _ := c.Flags().GetString("host")
-	key, _ := c.Flags().GetString("ssh-key")
-	profile, _ := c.Flags().GetString("profile")
 
-	if n, err := strconv.Atoi(diskThreshold); err != nil || n < 1 || n > 100 {
-		return fmt.Errorf("--disk-threshold must be a percentage 1-100 (got: %s)", diskThreshold)
+	if n, err := strconv.Atoi(f.diskThreshold); err != nil || n < 1 || n > 100 {
+		return f, fmt.Errorf("--disk-threshold must be a percentage 1-100 (got: %s)", f.diskThreshold)
 	}
-	watchSec := 0
 	if watch != "" {
 		n, err := strconv.Atoi(watch)
 		if err != nil || n < 1 {
-			return fmt.Errorf("--watch must be a positive-integer number of seconds (got: %s)", watch)
+			return f, fmt.Errorf("--watch must be a positive-integer number of seconds (got: %s)", watch)
 		}
-		watchSec = n
+		f.watchSec = n
 	}
-	countN := 0
 	if count != "" {
 		n, err := strconv.Atoi(count)
 		if err != nil || n < 1 {
-			return fmt.Errorf("--count must be a positive integer (got: %s)", count)
+			return f, fmt.Errorf("--count must be a positive integer (got: %s)", count)
 		}
-		countN = n
+		f.countN = n
 	}
+	return f, nil
+}
+
+// metricsOneSnapshot runs ONE remote snapshot round-trip: renders the
+// snapshot and the disk verdict (fail = exit 1, warn = banner). The error
+// on ssh failure names the VM — nothing to report.
+func metricsOneSnapshot(d Deps, ctx context.Context, target Target, diskThreshold string) error {
+	raw, err := d.Runner.Run(ctx, target.HostSpec, osfacts.MetricsRemoteCmd)
+	if err != nil {
+		return fmt.Errorf("cannot reach VM %s (ssh failed) — nothing to report", target.HostSpec.Host)
+	}
+	fmt.Fprintf(d.Stdout, "[metrics] == metrics (%s) ==\n", target.HostSpec.Host)
+	snap := osfacts.ParseMetrics(raw)
+	fmt.Fprintln(d.Stdout, osfacts.RenderMetricsSnapshot(snap))
+	verdict := osfacts.VerdictUnknown
+	var pct int
+	if p, ok := osfacts.RootDiskPct(snap); ok {
+		pct = p
+		verdict = osfacts.DiskVerdict(strconv.Itoa(p), diskThreshold)
+	}
+	switch verdict {
+	case osfacts.VerdictFail:
+		fmt.Fprintf(d.Stdout, "WARNING: root disk at %d%% (>= --disk-threshold %s%%) — free space first: kampodra deploy prune --dry-run\n", pct, diskThreshold)
+		return &exitError{code: 1}
+	case osfacts.VerdictWarn:
+		fmt.Fprintf(d.Stdout, "WARNING: root disk above 90%% (%d%%) — old sha-tagged deploy images pile up; reclaim: kampodra deploy prune --dry-run\n", pct)
+	}
+	return nil
+}
+
+func runMetrics(d Deps, c *cobra.Command) error {
+	flags, err := parseMetricsFlags(c)
+	if err != nil {
+		return err
+	}
+	host, _ := c.Flags().GetString("host")
+	key, _ := c.Flags().GetString("ssh-key")
+	profile, _ := c.Flags().GetString("profile")
 
 	cfg, err := state.LoadConfig(d.Home)
 	if err != nil {
@@ -100,36 +145,19 @@ func runMetrics(d Deps, c *cobra.Command) error {
 
 	ctx := c.Context()
 	for n := 1; ; n++ {
-		raw, err := d.Runner.Run(ctx, target.HostSpec, osfacts.MetricsRemoteCmd)
-		if err != nil {
-			return fmt.Errorf("cannot reach VM %s (ssh failed) — nothing to report", target.HostSpec.Host)
+		if err := metricsOneSnapshot(d, ctx, target, flags.diskThreshold); err != nil {
+			return err
 		}
-		fmt.Fprintf(d.Stdout, "[metrics] == metrics (%s) ==\n", target.HostSpec.Host)
-		snap := osfacts.ParseMetrics(raw)
-		fmt.Fprintln(d.Stdout, osfacts.RenderMetricsSnapshot(snap))
-		verdict := osfacts.VerdictUnknown
-		var pct int
-		if p, ok := osfacts.RootDiskPct(snap); ok {
-			pct = p
-			verdict = osfacts.DiskVerdict(strconv.Itoa(p), diskThreshold)
-		}
-		switch verdict {
-		case osfacts.VerdictFail:
-			fmt.Fprintf(d.Stdout, "WARNING: root disk at %d%% (>= --disk-threshold %s%%) — free space first: kampodra deploy prune --dry-run\n", pct, diskThreshold)
-			return &exitError{code: 1}
-		case osfacts.VerdictWarn:
-			fmt.Fprintf(d.Stdout, "WARNING: root disk above 90%% (%d%%) — old sha-tagged deploy images pile up; reclaim: kampodra deploy prune --dry-run\n", pct)
-		}
-		if countN > 0 && n >= countN {
+		if flags.countN > 0 && n >= flags.countN {
 			return nil
 		}
-		if watchSec == 0 {
+		if flags.watchSec == 0 {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(time.Duration(watchSec) * time.Second):
+		case <-time.After(time.Duration(flags.watchSec) * time.Second):
 		}
 	}
 }

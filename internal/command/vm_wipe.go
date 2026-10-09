@@ -101,13 +101,53 @@ func runVMWipe(d Deps, c *cobra.Command) error {
 	}
 
 	// --- match check: never tear down a host that clearly isn't ours ------
+	initSys, containers, err := wipeMatchCheck(ctx, target, run, force)
+	if err != nil {
+		return err
+	}
+
+	profileLabel := target.ProfileName
+	if profileLabel == "" {
+		profileLabel = "<none>"
+	}
+	fmt.Fprintf(d.Stdout, "[vm-wipe] tearing down %s (profile: %s)\n", target.HostSpec.Host, profileLabel)
+	var removed []string
+
+	// --- 1. stop + disable every project service (init-aware) -------------
+	removed = append(removed, wipeStopServices(initSys, pj.Services, runTolerant)...)
+
+	// --- 2. remove the project containers (present ones only) -------------
+	removed = append(removed, wipeContainers(projectContainerNames(pj), containers, runTolerant)...)
+
+	// --- 3. prune the image store (everything unreferenced is dust now) ---
+	runTolerant("podman image prune -a -f")
+	removed = append(removed, "podman images (pruned)")
+
+	// --- 4. remove MANAGED files only; the env DIR may hold other services'
+	// files (monitoring agents, etc.) — never rm -rf it. Name the leftovers
+	// so the operator can clean them deliberately.
+	removed = append(removed, wipeManagedFiles(d, pj, keepData, runTolerant)...)
+
+	for _, r := range removed {
+		fmt.Fprintf(d.Stdout, "[vm-wipe] removed: %s\n", r)
+	}
+	fmt.Fprintf(d.Stdout, "[vm-wipe] DONE — %s is clean; rebuild with: kampodra vm-prepare --host %s\n",
+		target.HostSpec.Host, target.HostSpec.Host)
+	return nil
+}
+
+// wipeMatchCheck refuses to tear down a host that clearly isn't ours: a
+// host with NO running project service and NO project container is wrong
+// (or the wrong profile) — --force means it anyway. Returns the detected
+// init system and the VM's container names for the teardown steps.
+func wipeMatchCheck(ctx context.Context, target Target, run func(string) (string, error), force bool) (initadapter.System, []string, error) {
 	initSys, _, _ := initadapter.Detect(ctx, func(_ context.Context, remote string) (string, error) {
 		return run(remote)
 	}, target.ProfileInit)
 	containerOut, _ := run("podman ps -a --format '{{.Names}}'")
 	containers := splitLines(containerOut)
 	projectSet := map[string]bool{}
-	for _, name := range projectContainerNames(pj) {
+	for _, name := range projectContainerNames(target.Project) {
 		projectSet[name] = true
 	}
 	matchedContainer := false
@@ -119,72 +159,72 @@ func runVMWipe(d Deps, c *cobra.Command) error {
 	matchedService := false
 	states, _ := initadapter.ServiceStates(ctx, func(_ context.Context, remote string) (string, error) {
 		return run(remote)
-	}, initSys, pj.Services)
+	}, initSys, target.Project.Services)
 	for _, s := range states {
 		if s.Running {
 			matchedService = true
 		}
 	}
 	if !force && !matchedContainer && !matchedService {
-		return fmt.Errorf("no kampodra services found on %s — refusing to wipe (wrong host, or wrong profile? use a matching --profile, or --force to mean it)", target.HostSpec.Host)
+		return initSys, containers, fmt.Errorf("no kampodra services found on %s — refusing to wipe (wrong host, or wrong profile? use a matching --profile, or --force to mean it)", target.HostSpec.Host)
 	}
+	return initSys, containers, nil
+}
 
-	profileLabel := target.ProfileName
-	if profileLabel == "" {
-		profileLabel = "<none>"
-	}
-	fmt.Fprintf(d.Stdout, "[vm-wipe] tearing down %s (profile: %s)\n", target.HostSpec.Host, profileLabel)
+// wipeStopServices stops + disables every project service via the
+// detected init system (tolerant — a half-torn-down host must still
+// finish the wipe). Returns the removal notes in stop-then-disable order.
+func wipeStopServices(initSys initadapter.System, services []string, tolerant func(string)) []string {
 	var removed []string
-
-	// --- 1. stop + disable every project service (init-aware) -------------
-	for _, svc := range pj.Services {
+	for _, svc := range services {
 		if stopCmd, err := initadapter.ActionCommand(initSys, svc, "stop"); err == nil {
-			runTolerant(stopCmd)
+			tolerant(stopCmd)
 			removed = append(removed, svc+" (service stopped)")
 		}
 		switch initSys {
 		case initadapter.SystemOpenRC:
-			runTolerant("rc-update del " + svc + " default")
+			tolerant("rc-update del " + svc + " default")
 		case initadapter.SystemSystemd:
-			runTolerant("systemctl disable " + svc)
+			tolerant("systemctl disable " + svc)
 		}
 		removed = append(removed, svc+" (service disabled)")
 	}
+	return removed
+}
 
-	// --- 2. remove the project containers (present ones only) -------------
-	for _, name := range projectContainerNames(pj) {
+// wipeContainers force-removes the project containers that are present
+// (absent ones are already gone — not removals). Returns removal notes.
+func wipeContainers(names, containers []string, tolerant func(string)) []string {
+	var removed []string
+	for _, name := range names {
 		if containsString(containers, name) {
-			runTolerant("podman rm -f " + name)
+			tolerant("podman rm -f " + name)
 			removed = append(removed, name+" (container)")
 		}
 	}
+	return removed
+}
 
-	// --- 3. prune the image store (everything unreferenced is dust now) ---
-	runTolerant("podman image prune -a -f")
-	removed = append(removed, "podman images (pruned)")
-
-	// --- 4. remove MANAGED files only; the env DIR may hold other services'
-	// files (monitoring agents, etc.) — never rm -rf it. Name the leftovers
-	// so the operator can clean them deliberately.
+// wipeManagedFiles removes ONLY kampodra-managed files — the env DIR may
+// hold other services' files (monitoring agents, etc.) and is never
+// rm -rf'd; the leftovers are named for deliberate cleanup. Tenant data
+// goes too unless keepData. Returns removal notes (prints happen
+// mid-sequence exactly as before).
+func wipeManagedFiles(d Deps, pj project.Config, keepData bool, tolerant func(string)) []string {
+	var removed []string
 	envDir := pathDir(pj.EnvFile)
-	runTolerant("rm -f " + pj.EnvFile)
-	runTolerant("rm -f " + pj.DeployedShaFile)
-	runTolerant("rm -f " + envDir + "/anchor.conf")
+	tolerant("rm -f " + pj.EnvFile)
+	tolerant("rm -f " + pj.DeployedShaFile)
+	tolerant("rm -f " + envDir + "/anchor.conf")
 	removed = append(removed, pj.EnvFile+" (env file)", pj.DeployedShaFile+" (stamp)", envDir+"/anchor.conf (anchor config)")
 	fmt.Fprintf(d.Stdout, "[vm-wipe] left in place (not kampodra-managed): %s/ — inspect and remove if nothing else needs it\n", envDir)
 	if keepData {
 		fmt.Fprintf(d.Stdout, "[vm-wipe] kept: %s (tenant data — --keep-data)\n", pj.DataDir)
 	} else {
-		runTolerant("rm -rf " + pj.DataDir)
+		tolerant("rm -rf " + pj.DataDir)
 		removed = append(removed, pj.DataDir+" (tenant data dir)")
 	}
-
-	for _, r := range removed {
-		fmt.Fprintf(d.Stdout, "[vm-wipe] removed: %s\n", r)
-	}
-	fmt.Fprintf(d.Stdout, "[vm-wipe] DONE — %s is clean; rebuild with: kampodra vm-prepare --host %s\n",
-		target.HostSpec.Host, target.HostSpec.Host)
-	return nil
+	return removed
 }
 
 func splitLines(s string) []string {

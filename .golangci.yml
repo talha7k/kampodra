@@ -43,12 +43,9 @@ linters:
     rules:
       - linters: [errcheck, unparam]
         path: _test\.go$
-      # Grandfathered complexity (pre-existing, tracked in DEBTS.md under
-      # "lint-debt burn-down" — the gate fails on ANY function not named
-      # here, so new code must stay under the bar; burn these down one by
-      # one, deleting a line each time).
-      - linters: [gocognit, gocyclo]
-        text: 'complexity \d+ of func `(ResolveTraced|newDeployCommand|runDeployRoot|\(\*deployRun\)\.execute|newEnvCommand|runMetrics|runMigrate|statusBody|runVMPrepare|runVMWipe|TestNoProjectMagicStringsOutsideProjectDotGo)` is high'
+      # No complexity allowlist: the burn-down is COMPLETE (2026-10-09) —
+      # every function is under the gocognit 25 / gocyclo 20 bar, and the
+      # gate now fails on ANY function above it, forever.
 formatters:
   enable:
     - gofmt

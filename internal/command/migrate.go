@@ -11,6 +11,7 @@ import (
 
 	initadapter "github.com/talha7k/kampodra/internal/adapter/init"
 	migrateadapter "github.com/talha7k/kampodra/internal/adapter/migrate"
+	"github.com/talha7k/kampodra/internal/adapter/project"
 	"github.com/talha7k/kampodra/internal/adapter/state"
 )
 
@@ -66,24 +67,123 @@ func newMigrateCommand(d Deps) *cobra.Command {
 	return cmd
 }
 
+// parseMigrateFlags validates the repo root (required — the VM checkout)
+// and the bounded-parallel jobs count.
+func parseMigrateFlags(d Deps, c *cobra.Command) (repoRoot string, jobs int, err error) {
+	repoRoot = firstNonEmpty(flagString(c, "repo-root"), envValue(d.Env, "KAMPODRA_REPO_ROOT"))
+	if repoRoot == "" {
+		return "", 0, fmt.Errorf("the VM repo checkout is required for migrate: pass --repo-root <path> or set KAMPODRA_REPO_ROOT")
+	}
+	jobs = 4
+	if v := firstNonEmpty(flagString(c, "jobs"), envValue(d.Env, "MIGRATE_JOBS")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 64 {
+			return "", 0, fmt.Errorf("--jobs must be a positive count of parallel migrations, 1-64 (got: %s)", v)
+		}
+		jobs = n
+	}
+	return repoRoot, jobs, nil
+}
+
+// migrateStopGuard enforces the stop-first contract: writing schema while
+// the API serves risks SQLITE_BUSY on a single-writer engine. Detection
+// order mirrors common.sh: rc-service (openrc) first, then systemctl
+// (systemd); on a host with neither (local dev machines) state is
+// unknowable — proceed with a loud warning rather than blocking.
+func migrateStopGuard(ctx context.Context, d Deps, run func(string) (string, error), target Target, allowRunning bool) error {
+	initSys, _, _ := initadapter.Detect(ctx, func(_ context.Context, remote string) (string, error) {
+		return run(remote)
+	}, target.ProfileInit)
+	if initSys != initadapter.SystemOpenRC && initSys != initadapter.SystemSystemd {
+		fmt.Fprintf(d.Stdout, "[migrate] service state unknown (neither rc-service nor systemctl found) — assuming %s is not running\n", target.Project.Container)
+		return nil
+	}
+	states, err := initadapter.ServiceStates(ctx, func(_ context.Context, remote string) (string, error) {
+		return run(remote)
+	}, initSys, target.Project.Services)
+	if err != nil {
+		return nil
+	}
+	apiRunning := false
+	for _, s := range states {
+		if s.Name == target.Project.Container && s.Running {
+			apiRunning = true
+		}
+	}
+	if !apiRunning {
+		return nil
+	}
+	if !allowRunning {
+		stopCmd, _ := initadapter.ActionCommand(initSys, target.Project.Container, "stop")
+		return fmt.Errorf("%s is running — stop it first (%s) or pass --allow-running", target.Project.Container, stopCmd)
+	}
+	fmt.Fprintf(d.Stdout, "WARNING: migrating while %s is running (--allow-running)\n", target.Project.Container)
+	return nil
+}
+
+// checkMigrateProbe turns the one-round-trip probe verdict into the
+// actionable errors: the shell's check order — repo root, pnpm, tenant
+// dir.
+func checkMigrateProbe(probe migrateadapter.Probe, target Target, repoRoot, migrateScript, dataDir string) error {
+	if !probe.RepoOK {
+		return fmt.Errorf("repo root not found at %s (migrateScript %q missing — configure migrateScript in kampodra.json, the profile project block, or KAMPODRA_MIGRATE_SCRIPT)", repoRoot, migrateScript)
+	}
+	if !probe.PnpmOK {
+		return fmt.Errorf("pnpm not found in PATH on %s", target.HostSpec.Host)
+	}
+	if !probe.TenantDirOK {
+		return fmt.Errorf("tenant dir %s does not exist on %s", dataDir, target.HostSpec.Host)
+	}
+	return nil
+}
+
+// migrateRunAll executes the migration plan: root.db (auth/org plane)
+// FIRST, alone; then tenant files bounded-parallel (per-file write locks
+// are independent — one writer per file by the store model), with the
+// shared stdout writer mutex-guarded. Returns (migrated, failures).
+func migrateRunAll(d Deps, run func(string) (string, error), repoRoot string, pj project.Config, rootJob *migrateadapter.Job, tenantJobs []migrateadapter.Job, jobs int) (int, int) {
+	migrated, failures := 0, 0
+	// The tenant pool calls migrateOne concurrently — the shared writers
+	// (bytes.Buffer in tests, line interleaving otherwise) need a mutex.
+	var outMu sync.Mutex
+	say := func(format string, args ...any) {
+		outMu.Lock()
+		defer outMu.Unlock()
+		fmt.Fprintf(d.Stdout, format, args...)
+	}
+	migrateOne := func(j migrateadapter.Job) bool {
+		rel := strings.TrimPrefix(j.Path, pj.DataDir+"/")
+		say("[migrate] migrating %s (ns: %s)\n", rel, j.NS)
+		if _, err := run(migrateadapter.MigrateCommand(repoRoot, pj.MigrateScript, j)); err != nil {
+			outMu.Lock()
+			fmt.Fprintf(d.Stderr, "[migrate][FAIL] migration failed for %s\n", j.Path)
+			outMu.Unlock()
+			return false
+		}
+		return true
+	}
+
+	if rootJob != nil {
+		if migrateOne(*rootJob) {
+			migrated++
+		} else {
+			failures++
+		}
+	}
+	tenantOK := runBounded(jobs, tenantJobs, migrateOne)
+	migrated += tenantOK
+	failures += len(tenantJobs) - tenantOK
+	return migrated, failures
+}
+
 func runMigrate(d Deps, c *cobra.Command) error {
 	allowRunning := flagBool(c, "allow-running")
 	host, _ := c.Flags().GetString("host")
 	key, _ := c.Flags().GetString("ssh-key")
 	profile, _ := c.Flags().GetString("profile")
-	repoRoot := firstNonEmpty(flagString(c, "repo-root"), envValue(d.Env, "KAMPODRA_REPO_ROOT"))
-	jobsFlag, _ := c.Flags().GetString("jobs")
-
-	if repoRoot == "" {
-		return fmt.Errorf("the VM repo checkout is required for migrate: pass --repo-root <path> or set KAMPODRA_REPO_ROOT")
-	}
-	jobs := 4
-	if v := firstNonEmpty(jobsFlag, envValue(d.Env, "MIGRATE_JOBS")); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > 64 {
-			return fmt.Errorf("--jobs must be a positive count of parallel migrations, 1-64 (got: %s)", v)
-		}
-		jobs = n
+	repoRoot, jobs, err := parseMigrateFlags(d, c)
+	if err != nil {
+		return err
 	}
 
 	cfg, err := state.LoadConfig(d.Home)
@@ -108,36 +208,8 @@ func runMigrate(d Deps, c *cobra.Command) error {
 		return d.Runner.Run(ctx, target.HostSpec, remote)
 	}
 
-	// --- stop-first guard (init-aware, via the ProjectConfig services) ----
-	// Writing schema while the API serves risks SQLITE_BUSY on a
-	// single-writer engine. Detection order mirrors common.sh: rc-service
-	// (openrc) first, then systemctl (systemd); on a host with neither
-	// (local dev machines) state is unknowable — proceed with a loud
-	// warning rather than blocking.
-	initSys, _, _ := initadapter.Detect(ctx, func(_ context.Context, remote string) (string, error) {
-		return run(remote)
-	}, target.ProfileInit)
-	if initSys == initadapter.SystemOpenRC || initSys == initadapter.SystemSystemd {
-		states, err := initadapter.ServiceStates(ctx, func(_ context.Context, remote string) (string, error) {
-			return run(remote)
-		}, initSys, pj.Services)
-		if err == nil {
-			apiRunning := false
-			for _, s := range states {
-				if s.Name == pj.Container && s.Running {
-					apiRunning = true
-				}
-			}
-			if apiRunning {
-				if !allowRunning {
-					stopCmd, _ := initadapter.ActionCommand(initSys, pj.Container, "stop")
-					return fmt.Errorf("%s is running — stop it first (%s) or pass --allow-running", pj.Container, stopCmd)
-				}
-				fmt.Fprintf(d.Stdout, "WARNING: migrating while %s is running (--allow-running)\n", pj.Container)
-			}
-		}
-	} else {
-		fmt.Fprintf(d.Stdout, "[migrate] service state unknown (neither rc-service nor systemctl found) — assuming %s is not running\n", pj.Container)
+	if err := migrateStopGuard(ctx, d, run, target, allowRunning); err != nil {
+		return err
 	}
 
 	// --- one-round-trip probe: preconditions + db listing ------------------
@@ -146,15 +218,8 @@ func runMigrate(d Deps, c *cobra.Command) error {
 		return fmt.Errorf("cannot reach VM %s (ssh failed) — nothing to migrate", target.HostSpec.Host)
 	}
 	probe := migrateadapter.ParseProbe(probeOut)
-	// The shell's check order: repo root, pnpm, tenant dir.
-	if !probe.RepoOK {
-		return fmt.Errorf("repo root not found at %s (migrateScript %q missing — configure migrateScript in kampodra.json, the profile project block, or KAMPODRA_MIGRATE_SCRIPT)", repoRoot, pj.MigrateScript)
-	}
-	if !probe.PnpmOK {
-		return fmt.Errorf("pnpm not found in PATH on %s", target.HostSpec.Host)
-	}
-	if !probe.TenantDirOK {
-		return fmt.Errorf("tenant dir %s does not exist on %s", pj.DataDir, target.HostSpec.Host)
+	if err := checkMigrateProbe(probe, target, repoRoot, pj.MigrateScript, pj.DataDir); err != nil {
+		return err
 	}
 
 	// --- plan: root first, tenants sorted ----------------------------------
@@ -164,44 +229,7 @@ func runMigrate(d Deps, c *cobra.Command) error {
 		return nil
 	}
 
-	failures := 0
-	migrated := 0
-	// The tenant pool calls migrateOne concurrently — the shared writers
-	// (bytes.Buffer in tests, line interleaving otherwise) need a mutex.
-	var outMu sync.Mutex
-	say := func(format string, args ...any) {
-		outMu.Lock()
-		defer outMu.Unlock()
-		fmt.Fprintf(d.Stdout, format, args...)
-	}
-	migrateOne := func(j migrateadapter.Job) bool {
-		rel := strings.TrimPrefix(j.Path, pj.DataDir+"/")
-		say("[migrate] migrating %s (ns: %s)\n", rel, j.NS)
-		if _, err := run(migrateadapter.MigrateCommand(repoRoot, pj.MigrateScript, j)); err != nil {
-			outMu.Lock()
-			fmt.Fprintf(d.Stderr, "[migrate][FAIL] migration failed for %s\n", j.Path)
-			outMu.Unlock()
-			return false
-		}
-		return true
-	}
-
-	// root.db (auth/org plane) migrates FIRST, alone.
-	if rootJob != nil {
-		if migrateOne(*rootJob) {
-			migrated++
-		} else {
-			failures++
-		}
-	}
-
-	// then tenant files bounded-parallel: per-file write locks are
-	// independent (one writer per file by the store model), so parallelism
-	// is safe; the failure gate stays all-or-nothing either way.
-	tenantOK := runBounded(jobs, tenantJobs, migrateOne)
-	migrated += tenantOK
-	failures += len(tenantJobs) - tenantOK
-
+	migrated, failures := migrateRunAll(d, run, repoRoot, pj, rootJob, tenantJobs, jobs)
 	if failures > 0 {
 		fmt.Fprintf(d.Stdout, "[migrate] %d db file(s) failed to migrate (migrated: %d) — do NOT start the API on a half-migrated estate; fix and re-run\n",
 			failures, migrated)

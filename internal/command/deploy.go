@@ -172,13 +172,28 @@ func newDeployCommand(d Deps) *cobra.Command {
 		return ResolveTarget(cfg, host, key, profile, mf, d.Env)
 	}
 
-	// --- converge -------------------------------------------------------------
-	subConverge := &cobra.Command{
+	// --- subcommands (one builder each; they share the resolver closure) ----
+	cmd.AddCommand(
+		newDeployConvergeSub(d, resolveDeploy),
+		newDeployListSub(d, resolveDeploy),
+		newDeployPruneSub(d, resolveDeploy),
+		newDeployLogsSub(d, resolveDeploy),
+		newDeployRestartSub(d, resolveDeploy),
+		newDeployShellSub(d, resolveDeploy),
+	)
+	return cmd
+}
+
+// newDeployConvergeSub is deploy's `converge` subcommand: finish an
+// interrupted --rolling deploy (retag → restart → gate → re-point → rm
+// shadow).
+func newDeployConvergeSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "converge [<sha7>]",
 		Short: "finish an interrupted --rolling deploy: retag → restart → health gate → re-point to main → remove the shadow",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
-			target, err := resolveDeploy(c, "")
+			target, err := resolve(c, "")
 			if err != nil {
 				return err
 			}
@@ -196,13 +211,17 @@ func newDeployCommand(d Deps) *cobra.Command {
 			return runDeployConverge(d, c.Context(), target, sha, drain)
 		},
 	}
-	subConverge.Flags().Int("drain-timeout", deployRollingDrainTimeout, "drain budget carried from the interrupted deploy (s)")
-	subConverge.SetHelpFunc(func(c *cobra.Command, _ []string) {
+	cmd.Flags().Int("drain-timeout", deployRollingDrainTimeout, "drain budget carried from the interrupted deploy (s)")
+	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
 		fmt.Fprint(c.OutOrStdout(), deployHelp)
 	})
+	return cmd
+}
 
-	// --- list ---------------------------------------------------------------
-	subList := &cobra.Command{
+// newDeployListSub is deploy's `list` subcommand: deployment history,
+// one section per profile (--all-profiles / --group fan-out).
+func newDeployListSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "deployment history: VM sha-tagged images (running one marked) merged with the local ledger + total deployments count",
 		Args:  cobra.NoArgs,
@@ -218,7 +237,7 @@ func newDeployCommand(d Deps) *cobra.Command {
 				return err
 			}
 			for _, name := range names {
-				target, err := resolveDeploy(c, name)
+				target, err := resolve(c, name)
 				if err != nil {
 					return err
 				}
@@ -235,16 +254,20 @@ func newDeployCommand(d Deps) *cobra.Command {
 			return nil
 		},
 	}
-	subList.Flags().Bool("all-profiles", false, "render one history section per configured profile")
-	subList.Flags().String("group", "", "render history for every profile in this group (exclusive with --all-profiles/--host/--profile)")
+	cmd.Flags().Bool("all-profiles", false, "render one history section per configured profile")
+	cmd.Flags().String("group", "", "render history for every profile in this group (exclusive with --all-profiles/--host/--profile)")
+	return cmd
+}
 
-	// --- prune ---------------------------------------------------------------
-	subPrune := &cobra.Command{
+// newDeployPruneSub is deploy's `prune` subcommand: reclaim VM disk by
+// removing old sha-tagged images (keeps running + ts-rollback + newest N).
+func newDeployPruneSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "prune",
 		Short: "reclaim VM disk: remove old sha-tagged images (keeps running + ts-rollback + newest N); --dry-run prints exact commands",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
-			target, err := resolveDeploy(c, "")
+			target, err := resolve(c, "")
 			if err != nil {
 				return err
 			}
@@ -265,16 +288,20 @@ func newDeployCommand(d Deps) *cobra.Command {
 			return runDeployPrune(d, c.Context(), target, keepN, dryRun)
 		},
 	}
-	subPrune.Flags().String("keep", fmt.Sprintf("%d", deployKeepN), "newest N sha-tagged images to always keep")
-	subPrune.Flags().Bool("dry-run", false, "print the exact podman rmi commands and remove nothing")
+	cmd.Flags().String("keep", fmt.Sprintf("%d", deployKeepN), "newest N sha-tagged images to always keep")
+	cmd.Flags().Bool("dry-run", false, "print the exact podman rmi commands and remove nothing")
+	return cmd
+}
 
-	// --- logs ---------------------------------------------------------------
-	subLogs := &cobra.Command{
+// newDeployLogsSub is deploy's `logs` subcommand: tail the running api
+// container's logs; --follow streams until ctrl-c.
+func newDeployLogsSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "logs",
 		Short: "tail the running api container's logs (--lines N); --follow streams until ctrl-c",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
-			target, err := resolveDeploy(c, "")
+			target, err := resolve(c, "")
 			if err != nil {
 				return err
 			}
@@ -289,16 +316,20 @@ func newDeployCommand(d Deps) *cobra.Command {
 			return runDeployLogs(d, c, target, lines, follow)
 		},
 	}
-	subLogs.Flags().String("lines", deployLogLines, "number of lines to tail")
-	subLogs.Flags().Bool("follow", false, "stream the logs until ctrl-c (clean exit)")
+	cmd.Flags().String("lines", deployLogLines, "number of lines to tail")
+	cmd.Flags().Bool("follow", false, "stream the logs until ctrl-c (clean exit)")
+	return cmd
+}
 
-	// --- restart ---------------------------------------------------------------
-	subRestart := &cobra.Command{
+// newDeployRestartSub is deploy's `restart` subcommand: init-aware api
+// service restart (rc-service on Alpine, systemctl on systemd hosts).
+func newDeployRestartSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
+	return &cobra.Command{
 		Use:   "restart",
 		Short: "restart the api service (init-aware: rc-service on Alpine, systemctl on systemd hosts)",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
-			target, err := resolveDeploy(c, "")
+			target, err := resolve(c, "")
 			if err != nil {
 				return err
 			}
@@ -308,14 +339,17 @@ func newDeployCommand(d Deps) *cobra.Command {
 			return runDeployRestart(d, c.Context(), target)
 		},
 	}
+}
 
-	// --- shell ---------------------------------------------------------------
-	subShell := &cobra.Command{
+// newDeployShellSub is deploy's `shell` subcommand: interactive sh in the
+// api container (exec -- <cmd> for one-shot).
+func newDeployShellSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
+	return &cobra.Command{
 		Use:   "shell [exec -- <cmd>...]",
 		Short: "interactive sh in the api container (exec -- <cmd> for one-shot)",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(c *cobra.Command, args []string) error {
-			target, err := resolveDeploy(c, "")
+			target, err := resolve(c, "")
 			if err != nil {
 				return err
 			}
@@ -325,21 +359,77 @@ func newDeployCommand(d Deps) *cobra.Command {
 			return runDeployShell(d, c, target, args)
 		},
 	}
-
-	cmd.AddCommand(subConverge, subList, subPrune, subLogs, subRestart, subShell)
-	return cmd
 }
 
 // runDeployRoot dispatches the pipeline surface: --rollback / --sha /
 // plain (optionally --rolling), with the shell's argument grammar (a
 // positional in rollback mode is the sha; anything else is unknown).
-func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
+// validateDeployArgs enforces deploy's flag contract: mode exclusivity,
+// percentage/fragment shapes, and the positional-sha rules (only the
+// rollback mode takes one; --rollback=<sha> + positional = given twice).
+// Returns the positional rollback sha ("" = none).
+func validateDeployArgs(c *cobra.Command, args []string) (string, error) {
+	shaArg, _ := c.Flags().GetString("sha")
+	rollbackSet := c.Flags().Changed("rollback")
+	rolling, _ := c.Flags().GetBool("rolling")
+	drain, _ := c.Flags().GetInt("drain-timeout")
+	diskThreshold, _ := c.Flags().GetString("disk-threshold")
+
+	if c.Flags().Changed("sha") && rollbackSet {
+		return "", fmt.Errorf("--rollback and --sha are exclusive")
+	}
+	if rolling && rollbackSet {
+		return "", fmt.Errorf("--rolling and --rollback are exclusive (rollback is instant — the old image is already on the VM)")
+	}
+	if c.Flags().Changed("drain-timeout") && !rolling {
+		return "", fmt.Errorf("--drain-timeout requires --rolling")
+	}
+	if drain < 0 {
+		return "", fmt.Errorf("--drain-timeout must be a non-negative number of seconds (got: %d)", drain)
+	}
+	if diskThreshold != "" {
+		if n, err := strconv.Atoi(diskThreshold); err != nil || n < 0 || n > 100 {
+			return "", fmt.Errorf("--disk-threshold must be a percentage 0-100 (got: %s)", diskThreshold)
+		}
+	}
+	if c.Flags().Changed("sha") && !shaFragmentRe.MatchString(shaArg) {
+		return "", fmt.Errorf("--sha must be a git sha fragment (got: %s)", shaArg)
+	}
+	return positionalRollbackSha(c, args)
+}
+
+// positionalRollbackSha applies the positional grammar: only the rollback
+// mode takes a positional (the sha); --rollback=<sha> + positional = given
+// twice; whatever survives must be a sha fragment.
+func positionalRollbackSha(c *cobra.Command, args []string) (string, error) {
+	rollbackRaw, _ := c.Flags().GetString("rollback")
+	rollbackSet := c.Flags().Changed("rollback")
+	rollbackSha := ""
+	if rollbackSet && rollbackRaw != "-" {
+		rollbackSha = rollbackRaw
+	}
+	if len(args) > 0 {
+		if !rollbackSet {
+			return "", fmt.Errorf("unknown argument: %s (--help)", args[0])
+		}
+		if rollbackSha != "" {
+			return "", fmt.Errorf("rollback sha given twice (--rollback=%s and %s)", rollbackSha, args[0])
+		}
+		rollbackSha = args[0]
+	}
+	if rollbackSet && rollbackSha != "" && !shaFragmentRe.MatchString(rollbackSha) {
+		return "", fmt.Errorf("--rollback must be a git sha fragment (or bare for stamp-resolved rollback; got: %s)", rollbackSha)
+	}
+	return rollbackSha, nil
+}
+
+// assembleDeployRun resolves the deploy target and pipeline options:
+// config + manifest + host resolution, the --dockerfile ladder, and the
+// sidecar set off the repo manifest.
+func assembleDeployRun(d Deps, c *cobra.Command) (Target, deployOpts, error) {
 	host, _ := c.Flags().GetString("host")
 	key, _ := c.Flags().GetString("ssh-key")
 	profile, _ := c.Flags().GetString("profile")
-	shaArg, _ := c.Flags().GetString("sha")
-	rollbackRaw, _ := c.Flags().GetString("rollback")
-	rollbackSet := c.Flags().Changed("rollback")
 	rolling, _ := c.Flags().GetBool("rolling")
 	drain, _ := c.Flags().GetInt("drain-timeout")
 	dockerfile, _ := c.Flags().GetString("dockerfile")
@@ -347,58 +437,20 @@ func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
 	diskThreshold, _ := c.Flags().GetString("disk-threshold")
 	skipSmoke, _ := c.Flags().GetBool("skip-smoke")
 
-	if versionSet := c.Flags().Changed("sha"); versionSet && rollbackSet {
-		return fmt.Errorf("--rollback and --sha are exclusive")
-	}
-	if rolling && rollbackSet {
-		return fmt.Errorf("--rolling and --rollback are exclusive (rollback is instant — the old image is already on the VM)")
-	}
-	if c.Flags().Changed("drain-timeout") && !rolling {
-		return fmt.Errorf("--drain-timeout requires --rolling")
-	}
-	if drain < 0 {
-		return fmt.Errorf("--drain-timeout must be a non-negative number of seconds (got: %d)", drain)
-	}
-	if diskThreshold != "" {
-		if n, err := strconv.Atoi(diskThreshold); err != nil || n < 0 || n > 100 {
-			return fmt.Errorf("--disk-threshold must be a percentage 0-100 (got: %s)", diskThreshold)
-		}
-	}
-	if versionSet := c.Flags().Changed("sha"); versionSet && !shaFragmentRe.MatchString(shaArg) {
-		return fmt.Errorf("--sha must be a git sha fragment (got: %s)", shaArg)
-	}
-	// positionals: only the rollback mode takes one (the sha)
-	rollbackSha := ""
-	if rollbackSet && rollbackRaw != "-" {
-		rollbackSha = rollbackRaw
-	}
-	if len(args) > 0 {
-		if !rollbackSet {
-			return fmt.Errorf("unknown argument: %s (--help)", args[0])
-		}
-		if rollbackSha != "" {
-			return fmt.Errorf("rollback sha given twice (--rollback=%s and %s)", rollbackSha, args[0])
-		}
-		rollbackSha = args[0]
-	}
-	if rollbackSet && rollbackSha != "" && !shaFragmentRe.MatchString(rollbackSha) {
-		return fmt.Errorf("--rollback must be a git sha fragment (or bare for stamp-resolved rollback; got: %s)", rollbackSha)
-	}
-
 	cfg, err := state.LoadConfig(d.Home)
 	if err != nil {
-		return err
+		return Target{}, deployOpts{}, err
 	}
 	mf, err := d.manifestFor()
 	if err != nil {
-		return err
+		return Target{}, deployOpts{}, err
 	}
 	target, err := ResolveTarget(cfg, host, key, profile, mf, d.Env)
 	if err != nil {
-		return err
+		return Target{}, deployOpts{}, err
 	}
 	if err := requireHost(target); err != nil {
-		return err
+		return Target{}, deployOpts{}, err
 	}
 	// The --dockerfile ladder: explicit flag > project config (whose value
 	// already merged env > profile block > kampodra.json > "Dockerfile").
@@ -411,7 +463,7 @@ func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
 	if mf != nil && mf.Fields.Images != nil {
 		sidecars = mf.Fields.Images.Sidecars
 	}
-	opts := deployOpts{
+	return target, deployOpts{
 		dockerfile:    dockerfile,
 		envFile:       envFile,
 		diskThreshold: diskThreshold,
@@ -419,6 +471,19 @@ func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
 		rolling:       rolling,
 		drainTimeout:  drain,
 		sidecars:      sidecars,
+	}, nil
+}
+
+func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
+	rollbackSha, err := validateDeployArgs(c, args)
+	if err != nil {
+		return err
+	}
+	rollbackSet := c.Flags().Changed("rollback")
+	shaArg, _ := c.Flags().GetString("sha")
+	target, opts, err := assembleDeployRun(d, c)
+	if err != nil {
+		return err
 	}
 	ctx := c.Context()
 

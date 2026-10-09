@@ -12,6 +12,45 @@ import (
 // strings is an unreachable hardcode — route it through ProjectConfig.
 // Test files are exempt (fixtures may name today's values); project.go is
 // the single source; everything else fails here.
+// magicViolationsInFile scans one non-test, non-project.go Go file for
+// the magic strings; returns one violation note per hit.
+func magicViolationsInFile(path string, magic []string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return []string{path + ": unreadable: " + err.Error()}
+	}
+	var violations []string
+	for _, m := range magic {
+		if strings.Contains(string(data), m) {
+			violations = append(violations, path+": names "+m+" — route it through ProjectConfig")
+		}
+	}
+	return violations
+}
+
+// magicViolationsInRoot walks one root tree, skipping test files (fixtures
+// may name today's values) and project.go (the ONE source of the naming).
+func magicViolationsInRoot(root string, magic []string) ([]string, error) {
+	var violations []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		if strings.HasSuffix(path, "_test.go") {
+			return nil // fixtures may name today's values
+		}
+		if strings.HasSuffix(filepath.ToSlash(path), "internal/adapter/project/project.go") {
+			return nil // the ONE source of the naming
+		}
+		violations = append(violations, magicViolationsInFile(path, magic)...)
+		return nil
+	})
+	return violations, err
+}
+
 func TestNoProjectMagicStringsOutsideProjectDotGo(t *testing.T) {
 	magic := []string{
 		// Retired app-specific names — no legacy: if any of these return,
@@ -29,39 +68,16 @@ func TestNoProjectMagicStringsOutsideProjectDotGo(t *testing.T) {
 		"migrate-db.ts", // the configured migrate script → MigrateScript
 	}
 
-	roots := []string{
+	var violations []string
+	for _, root := range []string{
 		filepath.Join("..", "..", "..", "cmd"),
 		filepath.Join("..", "..", "..", "internal"),
-	}
-	var violations []string
-	for _, root := range roots {
-		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() || !strings.HasSuffix(path, ".go") {
-				return nil
-			}
-			if strings.HasSuffix(path, "_test.go") {
-				return nil // fixtures may name today's values
-			}
-			if strings.HasSuffix(filepath.ToSlash(path), "internal/adapter/project/project.go") {
-				return nil // the ONE source of the naming
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			for _, m := range magic {
-				if strings.Contains(string(data), m) {
-					violations = append(violations, path+": names "+m+" — route it through ProjectConfig")
-				}
-			}
-			return nil
-		})
+	} {
+		v, err := magicViolationsInRoot(root, magic)
 		if err != nil {
 			t.Fatalf("walk %s: %v", root, err)
 		}
+		violations = append(violations, v...)
 	}
 	if len(violations) > 0 {
 		t.Errorf("project magic strings leaked outside project.go:\n  %s",

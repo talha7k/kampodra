@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -102,10 +103,20 @@ func runStatus(d Deps, cmd *cobra.Command) error {
 // statusBody renders one target's full status view (deployments header,
 // live edge, VM state).
 func statusBody(d Deps, ctx context.Context, target Target, verbose bool) error {
+	statusDeployments(d, target, verbose)
+	statusLive(d, ctx, target)
+	if target.HostSpec.Host != "" {
+		statusVM(d, ctx, target, verbose)
+	}
+	return nil
+}
+
+// statusDeployments renders the ledger section (the owner's "total
+// deployments", always visible) — per-host when a target resolves,
+// across-all-hosts otherwise.
+func statusDeployments(d Deps, target Target, verbose bool) {
 	out := d.Stdout
 	ledgerPath := state.LedgerPath(d.Home)
-
-	// --- deployment count (the owner's "total deployments", always visible)
 	fmt.Fprintf(out, "== deployments (ledger: %s) ==\n", ledgerPath)
 	if target.HostSpec.Host != "" {
 		fmt.Fprintf(out, "Total deployments: %d · deployments to %s\n",
@@ -118,8 +129,12 @@ func statusBody(d Deps, ctx context.Context, target Target, verbose bool) error 
 		}
 	}
 	fmt.Fprintln(out)
+}
 
-	// --- live (through the proxy)
+// statusLive renders the through-the-proxy health section: live health
+// payload + the build id, or the unreachable banner.
+func statusLive(d Deps, ctx context.Context, target Target) {
+	out := d.Stdout
 	fmt.Fprintf(out, "== live (through the proxy: https://%s) ==\n", target.ProxyHost)
 	if body, ok := d.Prober.LiveStatus(ctx, target.ProxyHost, target.Project.HealthPath); ok {
 		fmt.Fprintf(out, "HEALTH OK: %s\n", body)
@@ -131,81 +146,99 @@ func statusBody(d Deps, ctx context.Context, target Target, verbose bool) error 
 	} else {
 		fmt.Fprintln(out, "UNREACHABLE or unhealthy — check the VM (ssh) and kamal-proxy")
 	}
+}
 
-	if target.HostSpec.Host != "" {
-		fmt.Fprintln(out)
-		fmt.Fprintf(out, "== VM (%s) ==\n", target.HostSpec.Host)
-		// The shell's vm() helper as one closure: every VM read composes a
-		// remote command and tolerates failure (`|| true` degradation).
-		run := func(remote string) string {
-			o, _ := d.Runner.Run(ctx, target.HostSpec, remote)
-			return o
-		}
-		runErr := func(ctx context.Context, remote string) (string, error) {
-			return d.Runner.Run(ctx, target.HostSpec, remote)
-		}
+// statusVM renders the ssh-side VM section: disk verdict, sha-tagged
+// image inventory + prune estimate, init-aware service roll call, and —
+// verbose only — the metrics snapshot. Every read degrades tolerantly
+// (`|| true` shape): a half-dead VM still reports what answers.
+func statusVM(d Deps, ctx context.Context, target Target, verbose bool) {
+	out := d.Stdout
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "== VM (%s) ==\n", target.HostSpec.Host)
+	// The shell's vm() helper as one closure: every VM read composes a
+	// remote command and tolerates failure (`|| true` degradation).
+	run := func(remote string) string {
+		o, _ := d.Runner.Run(ctx, target.HostSpec, remote)
+		return o
+	}
+	runErr := func(ctx context.Context, remote string) (string, error) {
+		return d.Runner.Run(ctx, target.HostSpec, remote)
+	}
+	statusVMDisk(out, run)
+	statusVMImages(out, run, target.Project.ImagePrefix)
+	statusVMServices(ctx, out, runErr, target)
+	if verbose {
+		statusVMMetrics(d, ctx, out, target)
+	}
+}
 
-		// disk
-		pct, ok := osfacts.DiskUsedPct(run(fmt.Sprintf("df -P %s 2>/dev/null", diskPath)))
-		switch osfacts.DiskVerdict(pctString(pct, ok), "") {
-		case osfacts.VerdictOK, osfacts.VerdictWarn:
-			fmt.Fprintf(out, "disk    : %d%% used on %s\n", pct, diskPath)
-			if pct > 90 {
-				fmt.Fprintln(out, "WARNING : VM disk above 90% — old sha-tagged deploy images pile up (~1GB each); reclaim: kampodra deploy prune --dry-run")
+// statusVMDisk renders the root-disk usage line + the 90% warning.
+func statusVMDisk(out io.Writer, run func(string) string) {
+	pct, ok := osfacts.DiskUsedPct(run(fmt.Sprintf("df -P %s 2>/dev/null", diskPath)))
+	switch osfacts.DiskVerdict(pctString(pct, ok), "") {
+	case osfacts.VerdictOK, osfacts.VerdictWarn:
+		fmt.Fprintf(out, "disk    : %d%% used on %s\n", pct, diskPath)
+		if pct > 90 {
+			fmt.Fprintln(out, "WARNING : VM disk above 90% — old sha-tagged deploy images pile up (~1GB each); reclaim: kampodra deploy prune --dry-run")
+		}
+	default:
+		fmt.Fprintln(out, "disk    : unknown (df unreadable)")
+	}
+}
+
+// statusVMImages renders the sha-tagged image inventory + the prune
+// estimate (what deploy prune --dry-run would remove).
+func statusVMImages(out io.Writer, run func(string) string, imagePrefix string) {
+	images := runtime.ShaTagged(runtime.ParseImages(
+		run(fmt.Sprintf("podman images --format '{{.Tag}}|{{.CreatedAt}}|{{.Size}}' %s 2>/dev/null", imagePrefix))))
+	removals, pruneErr := runtime.PruneSelect(images, run("podman ps --format '{{.Image}}' 2>/dev/null"), pruneKeepN)
+	reclaimTags := "(none)"
+	sizes := make([]string, 0, len(removals))
+	if pruneErr == nil && len(removals) > 0 {
+		tags := make([]string, 0, len(removals))
+		for _, r := range removals {
+			tags = append(tags, r.Tag)
+			sizes = append(sizes, r.Size)
+		}
+		reclaimTags = strings.Join(tags, ",")
+	}
+	fmt.Fprintf(out, "images  : %d sha-tagged deploy image(s); prune would remove %d %s (%s): kampodra deploy prune --dry-run\n",
+		len(images), len(removals), reclaimTags, runtime.SumSizesHuman(sizes))
+}
+
+// statusVMServices renders the init-aware service roll call (openrc keeps
+// the historical shape).
+func statusVMServices(ctx context.Context, out io.Writer, runErr func(context.Context, string) (string, error), target Target) {
+	fmt.Fprintln(out, "services:")
+	initSys, _, _ := initadapter.Detect(ctx, runErr, target.ProfileInit)
+	if states, err := initadapter.ServiceStates(ctx, runErr, initSys, target.Project.Services); err != nil {
+		fmt.Fprintln(out, "(service roll call failed)")
+	} else {
+		for _, s := range states {
+			state := "not-running"
+			if s.Running {
+				state = "running"
 			}
-		default:
-			fmt.Fprintln(out, "disk    : unknown (df unreadable)")
-		}
-
-		// images + prune estimate
-		images := runtime.ShaTagged(runtime.ParseImages(
-			run(fmt.Sprintf("podman images --format '{{.Tag}}|{{.CreatedAt}}|{{.Size}}' %s 2>/dev/null", target.Project.ImagePrefix))))
-		removals, pruneErr := runtime.PruneSelect(images, run("podman ps --format '{{.Image}}' 2>/dev/null"), pruneKeepN)
-		reclaimTags := "(none)"
-		sizes := make([]string, 0, len(removals))
-		if pruneErr == nil && len(removals) > 0 {
-			tags := make([]string, 0, len(removals))
-			for _, r := range removals {
-				tags = append(tags, r.Tag)
-				sizes = append(sizes, r.Size)
-			}
-			reclaimTags = strings.Join(tags, ",")
-		}
-		fmt.Fprintf(out, "images  : %d sha-tagged deploy image(s); prune would remove %d %s (%s): kampodra deploy prune --dry-run\n",
-			len(images), len(removals), reclaimTags, runtime.SumSizesHuman(sizes))
-
-		// services (init-aware: openrc keeps the historical shape)
-		fmt.Fprintln(out, "services:")
-		initSys, _, _ := initadapter.Detect(ctx, runErr, target.ProfileInit)
-		if states, err := initadapter.ServiceStates(ctx, runErr, initSys, target.Project.Services); err != nil {
-			fmt.Fprintln(out, "(service roll call failed)")
-		} else {
-			for _, s := range states {
-				state := "not-running"
-				if s.Running {
-					state = "running"
-				}
-				fmt.Fprintf(out, "%s: %s\n", s.Name, state)
-			}
-		}
-
-		// verbose metrics snapshot
-		if verbose {
-			fmt.Fprintln(out)
-			fmt.Fprintln(out, "== metrics snapshot ==")
-			if raw, err := d.Runner.Run(ctx, target.HostSpec, osfacts.MetricsRemoteCmd); err != nil {
-				fmt.Fprintln(out, "(metrics snapshot failed — VM unreachable?)")
-			} else {
-				snap := osfacts.ParseMetrics(raw)
-				fmt.Fprintln(out, osfacts.RenderMetricsSnapshot(snap))
-				if rootPct, ok := osfacts.RootDiskPct(snap); ok && rootPct > 90 {
-					fmt.Fprintln(out, "WARNING : root disk above 90% — reclaim: kampodra deploy prune --dry-run")
-				}
-			}
+			fmt.Fprintf(out, "%s: %s\n", s.Name, state)
 		}
 	}
+}
 
-	return nil
+// statusVMMetrics renders the verbose metrics snapshot + the root-disk
+// warning (the same snapshot `metrics` runs standalone).
+func statusVMMetrics(d Deps, ctx context.Context, out io.Writer, target Target) {
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "== metrics snapshot ==")
+	if raw, err := d.Runner.Run(ctx, target.HostSpec, osfacts.MetricsRemoteCmd); err != nil {
+		fmt.Fprintln(out, "(metrics snapshot failed — VM unreachable?)")
+	} else {
+		snap := osfacts.ParseMetrics(raw)
+		fmt.Fprintln(out, osfacts.RenderMetricsSnapshot(snap))
+		if rootPct, ok := osfacts.RootDiskPct(snap); ok && rootPct > 90 {
+			fmt.Fprintln(out, "WARNING : root disk above 90% — reclaim: kampodra deploy prune --dry-run")
+		}
+	}
 }
 
 func pctString(pct int, ok bool) string {
