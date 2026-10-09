@@ -1,6 +1,7 @@
 package project
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -12,7 +13,7 @@ func TestLoadDefaultNamedValues(t *testing.T) {
 	want := map[string]string{
 		"Container":    d.Container,
 		"ShadowSuffix": d.ShadowSuffix,
-		"EnvFilePath":  d.EnvFilePath,
+		"EnvFile":      d.EnvFile,
 		"DataDir":      d.DataDir,
 		"Bucket":       d.Bucket,
 		"ObjectPrefix": d.ObjectPrefix,
@@ -20,7 +21,7 @@ func TestLoadDefaultNamedValues(t *testing.T) {
 		"ProxyHost":    d.ProxyHost,
 		"ImagePrefix":  d.ImagePrefix,
 	}
-	for _, field := range []string{"Container", "ShadowSuffix", "EnvFilePath", "DataDir", "Bucket", "ObjectPrefix", "HealthPath", "ProxyHost", "ImagePrefix"} {
+	for _, field := range []string{"Container", "ShadowSuffix", "EnvFile", "DataDir", "Bucket", "ObjectPrefix", "HealthPath", "ProxyHost", "ImagePrefix"} {
 		if want[field] == "" {
 			t.Errorf("LoadDefault().%s is empty — every field must carry a named default", field)
 		}
@@ -67,13 +68,13 @@ func TestResolvePrecedence(t *testing.T) {
 		{
 			name:  "env file path",
 			env:   map[string]string{"KAMPODRA_ENV_FILE": "/srv/app/env"},
-			field: func(c Config) string { return c.EnvFilePath },
+			field: func(c Config) string { return c.EnvFile },
 			want:  "/srv/app/env",
 		},
 		{
 			name:      "env file path from profile",
 			overrides: `{"envFilePath": "/srv/other/env"}`,
-			field:     func(c Config) string { return c.EnvFilePath },
+			field:     func(c Config) string { return c.EnvFile },
 			want:      "/srv/other/env",
 		},
 		{
@@ -152,5 +153,38 @@ func TestResolveNilLookupAndNilRaw(t *testing.T) {
 	got := Resolve(nil, nil, nil)
 	if got.Container != LoadDefault().Container {
 		t.Errorf("Resolve(nil, nil, nil) = %+v, want the defaults", got)
+	}
+}
+
+// TestOverridesEnvFileKeyUnification: the profile project block takes the
+// canonical `envFile` key (same as kampodra.json); the legacy
+// `envFilePath` spelling still loads (existing config.json files keep
+// working) and loses when both are present.
+func TestOverridesEnvFileKeyUnification(t *testing.T) {
+	canonOnly := []byte(`{"envFile": "/etc/app/env"}`)
+	var o Overrides
+	if err := json.Unmarshal(canonOnly, &o); err != nil {
+		t.Fatalf("envFile: %v", err)
+	}
+	if o.EnvFile != "/etc/app/env" {
+		t.Errorf("envFile = %q", o.EnvFile)
+	}
+
+	legacyOnly := []byte(`{"envFilePath": "/etc/old/env"}`)
+	o = Overrides{}
+	if err := json.Unmarshal(legacyOnly, &o); err != nil {
+		t.Fatalf("envFilePath: %v", err)
+	}
+	if o.EnvFile != "/etc/old/env" {
+		t.Errorf("legacy envFilePath must load as EnvFile, got %q", o.EnvFile)
+	}
+
+	both := []byte(`{"envFile": "/etc/app/env", "envFilePath": "/etc/old/env"}`)
+	o = Overrides{}
+	if err := json.Unmarshal(both, &o); err != nil {
+		t.Fatalf("both keys: %v", err)
+	}
+	if o.EnvFile != "/etc/app/env" {
+		t.Errorf("both keys: canonical envFile must win, got %q", o.EnvFile)
 	}
 }

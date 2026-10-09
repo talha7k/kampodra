@@ -14,7 +14,7 @@ import (
 // metrics.sh port: ONE-shot VM snapshot over SSH (load, memory, disk
 // breakdown, containers, top procs) — the rendering contract lives in the
 // osfacts adapter tests; here we pin the command shape: resolution ladder,
-// --warn-disk gating, --watch/--count loop.
+// --disk-threshold gating, --watch/--count loop.
 
 func metricsFixture(diskPct int) string {
 	tmpl := `%%KAMPODRA:LOAD%%
@@ -107,15 +107,15 @@ func TestMetricsOneShotRendersSnapshot(t *testing.T) {
 
 func TestMetricsWarnDiskBelowThresholdPasses(t *testing.T) {
 	deps, _, stderr, _ := setupMetrics(t, metricsFixture(72))
-	if code := runMetrics(t, deps, "--host", "root@h", "--warn-disk", "90"); code != 0 {
+	if code := runMetrics(t, deps, "--host", "root@h", "--disk-threshold", "90"); code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
 	}
 }
 
 func TestMetricsWarnDiskAtThresholdFails(t *testing.T) {
 	deps, stdout, _, _ := setupMetrics(t, metricsFixture(90))
-	if code := runMetrics(t, deps, "--host", "root@h", "--warn-disk", "90"); code != 1 {
-		t.Fatalf("exit = %d, want 1 (>= --warn-disk)", code)
+	if code := runMetrics(t, deps, "--host", "root@h", "--disk-threshold", "90"); code != 1 {
+		t.Fatalf("exit = %d, want 1 (>= --disk-threshold)", code)
 	}
 	if !strings.Contains(stdout.String(), "free space first") || !strings.Contains(stdout.String(), "90%") {
 		t.Errorf("stdout = %q", stdout.String())
@@ -124,7 +124,7 @@ func TestMetricsWarnDiskAtThresholdFails(t *testing.T) {
 
 func TestMetricsAlwaysWarnsAbove90(t *testing.T) {
 	deps, stdout, _, _ := setupMetrics(t, metricsFixture(92))
-	if code := runMetrics(t, deps, "--host", "root@h", "--warn-disk", "95"); code != 0 {
+	if code := runMetrics(t, deps, "--host", "root@h", "--disk-threshold", "95"); code != 0 {
 		t.Fatalf("exit = %d (92 < 95)", code)
 	}
 	if !strings.Contains(stdout.String(), "old sha-tagged deploy images pile up") {
@@ -135,11 +135,11 @@ func TestMetricsAlwaysWarnsAbove90(t *testing.T) {
 func TestMetricsWarnDiskValidation(t *testing.T) {
 	for _, bad := range []string{"0", "101", "abc", ""} {
 		deps, _, stderr, _ := setupMetrics(t, metricsFixture(72))
-		if code := runMetrics(t, deps, "--host", "root@h", "--warn-disk", bad); code != 1 {
-			t.Errorf("--warn-disk %q: exit = %d, want 1", bad, code)
+		if code := runMetrics(t, deps, "--host", "root@h", "--disk-threshold", bad); code != 1 {
+			t.Errorf("--disk-threshold %q: exit = %d, want 1", bad, code)
 		}
-		if !strings.Contains(stderr.String(), "--warn-disk must be a percentage 1-100") {
-			t.Errorf("--warn-disk %q: stderr = %q", bad, stderr.String())
+		if !strings.Contains(stderr.String(), "--disk-threshold must be a percentage 1-100") {
+			t.Errorf("--disk-threshold %q: stderr = %q", bad, stderr.String())
 		}
 	}
 }

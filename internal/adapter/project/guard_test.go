@@ -14,12 +14,19 @@ import (
 // the single source; everything else fails here.
 func TestNoProjectMagicStringsOutsideProjectDotGo(t *testing.T) {
 	magic := []string{
-		"kampodine-api",          // container/service/image name → Container / ImagePrefix
-		"walshipper",             // service name → Services
-		"/etc/kampodine",         // remote env file path → EnvFilePath
-		"/data/tenants",          // tenant data dir → DataDir
-		"esellar-libsql-backups", // object-storage bucket → Bucket
-		"/api/auth/ok",           // app health endpoint → HealthPath
+		// Retired app-specific names — no legacy: if any of these return,
+		// an app contract has leaked back into the tool.
+		"kampodine-api",          // RETIRED container/service/image name → Container / ImagePrefix
+		"walshipper",             // RETIRED service name → Services
+		"/etc/kampodine",         // RETIRED remote state dir → EnvFile / DeployedShaFile
+		"/data/tenants",          // RETIRED tenant data dir → DataDir
+		"esellar-libsql-backups", // RETIRED object-storage bucket → Bucket
+		"/api/auth/ok",           // RETIRED app health endpoint → HealthPath
+		// Today's DISTINCTIVE defaults — project.go is their only home
+		// (generic values like "app", "/data", "/up" are unguardable by design).
+		"/etc/kampodra", // remote state dir → EnvFile / DeployedShaFile
+		"app-backups",   // object-storage bucket → Bucket
+		"migrate-db.ts", // the configured migrate script → MigrateScript
 	}
 
 	roots := []string{

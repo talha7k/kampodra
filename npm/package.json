@@ -1,7 +1,7 @@
 {
   "name": "kampodra",
   "version": "0.7.0-beta.2",
-  "description": "Kamal-style deploys for Alpine + Podman hosts, built on kamal-proxy \u2014 the Go implementation; owns the npm name going forward (shell 0.6 is the last shell version)",
+  "description": "Registry-free deployment CLI for single-VM container stacks over SSH (Podman + kamal-proxy)",
   "license": "AGPL-3.0",
   "type": "module",
   "bin": {

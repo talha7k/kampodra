@@ -1,6 +1,7 @@
 package command
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -19,20 +20,20 @@ const dnsHelp = `Usage:
   kampodra dns records [--zone <id-or-name>]                  # list records: domain / type / ttl / value
   kampodra dns add --name <label> --type A|AAAA|CNAME --value <target> [--ttl 300]
   kampodra dns rm --name <label> --type <A|AAAA|CNAME> --value <target>
-  (all: optional --zone <id-or-name>; --instance-principal for instance auth)
+  (all: optional --zone <id-or-name>)
 
-Auth is the oci CLI's own — its config file (--profile) or instance
-principal. kampodra never accepts, stores, or logs credential material.
-Zone/compartment: --profile (default: OCI_PROFILE env > "default"),
-OCI_COMPARTMENT (required — no default: compartments are account-specific).
-Types are pinned to A | AAAA | CNAME. ` + "`add`" + ` merges into the existing
+Auth is the oci CLI's own — kampodra passes no auth flags unless the
+instance profile's "cloud" block overrides it ({"profile": "…",
+"instancePrincipal": true, "compartment": "…"}); OCI_PROFILE /
+OCI_COMPARTMENT env are the escape hatch. kampodra never accepts, stores,
+or logs credential material. Types are pinned to A | AAAA | CNAME. ` + "`add`" + ` merges into the existing
 RRSet (round-robin records survive); ` + "`rm`" + ` filters it; both are
 idempotence-aware.
 
 Examples:
   kampodra dns records
-  kampodra dns records --zone kampodine.example.com
-  kampodra dns add --name app --type A --value 203.0.113.10 --zone kampodine.example.com
+  kampodra dns records --zone example.com
+  kampodra dns add --name app --type A --value 203.0.113.10 --zone example.com
   kampodra dns add --name www --type CNAME --value app.example.com --ttl 3600
   kampodra dns rm --name app --type A --value 203.0.113.10
 `
@@ -51,13 +52,12 @@ func newDNSCommand(d Deps) *cobra.Command {
 		fmt.Fprint(c.OutOrStdout(), dnsHelp)
 	})
 	pf := cmd.PersistentFlags()
+	pf.String("profile", "", "kampodra instance profile — carries the cloud block (OCI config profile override + compartment)")
 	pf.String("zone", "", "zone id or name (default: the compartment's ONLY zone — several require this flag)")
 	pf.String("name", "", "record name: a DNS label (app) or an fqdn inside the zone")
 	pf.String("type", "", "record type: A, AAAA, or CNAME")
 	pf.String("value", "", "record target (type-shaped: IPv4 / IPv6 / hostname)")
 	pf.String("ttl", "300", "TTL seconds (60..172800)")
-	pf.String("profile", "", "OCI CONFIG profile (default: OCI_PROFILE env > \"default\")")
-	pf.Bool("instance-principal", false, "authenticate as the instance principal (when run ON a VM)")
 
 	cmd.AddCommand(
 		&cobra.Command{
@@ -91,9 +91,8 @@ func newDNSCommand(d Deps) *cobra.Command {
 // dnsContext bundles the resolved provider inputs (the shell's need_provider
 // + resolve_zone sequence).
 type dnsContext struct {
+	auth        cloud.CloudAuth
 	compartment string
-	profile     string
-	ip          bool
 	zoneName    string
 	zoneID      string
 }
@@ -116,7 +115,7 @@ func dnsResolveZone(d Deps, c *cobra.Command, dc *dnsContext) error {
 	ctx := c.Context()
 	if zoneArg != "" {
 		if strings.HasPrefix(zoneArg, "ocid1.dns-zone") {
-			out, err := cloud.RunOCI(ctx, cloud.DNSZoneGetArgs(zoneArg, dc.compartment, dc.profile, dc.ip))
+			out, err := cloud.RunOCI(ctx, cloud.DNSZoneGetArgs(zoneArg, dc.compartment, dc.auth.Profile, dc.auth.InstancePrincipal))
 			if err != nil {
 				return fmt.Errorf("zone not found: %s", zoneArg)
 			}
@@ -131,9 +130,9 @@ func dnsResolveZone(d Deps, c *cobra.Command, dc *dnsContext) error {
 		dc.zoneID = zoneArg
 		return nil
 	}
-	out, err := cloud.RunOCI(ctx, cloud.DNSZoneListArgs(dc.compartment, dc.profile, dc.ip))
+	out, err := cloud.RunOCI(ctx, cloud.DNSZoneListArgs(dc.compartment, dc.auth.Profile, dc.auth.InstancePrincipal))
 	if err != nil {
-		return fmt.Errorf("zone list failed (profile %s, compartment %s): %w", dc.profile, dc.compartment, err)
+		return fmt.Errorf("zone list failed (profile: %s, compartment: %s): %w", dc.auth.Profile, dc.compartment, err)
 	}
 	zones, err := cloud.ParseZones(out)
 	if err != nil {
@@ -153,24 +152,26 @@ func dnsResolveZone(d Deps, c *cobra.Command, dc *dnsContext) error {
 	return nil
 }
 
-func dnsResolveCompartment(d Deps, c *cobra.Command, dc *dnsContext) error {
-	compartmentEnv, ok := d.Env("OCI_COMPARTMENT")
-	if !ok || compartmentEnv == "" {
-		return fmt.Errorf("set OCI_COMPARTMENT=<compartment name or ocid> — no default: compartments are account-specific")
+func dnsResolveCompartment(d Deps, ctx context.Context, target Target, dc *dnsContext) error {
+	dc.auth = cloudAuthFor(d, target)
+	if err := cloud.CheckProvider(dc.auth); err != nil {
+		return err
 	}
+	if dc.auth.Compartment == "" {
+		return fmt.Errorf("no OCI compartment configured — set the instance profile's \"cloud\" block ({\"compartment\": \"<name or ocid>\"}) in ~/.kampodra/config.json, or export OCI_COMPARTMENT=<compartment name or ocid> — compartments are account-specific")
+	}
+	compartmentEnv := dc.auth.Compartment
 	dc.compartment = compartmentEnv
-	dc.profile = ociProfile(d, c)
-	dc.ip = flagBool(c, "instance-principal")
 
 	// A name (not an ocid) resolves through iam compartment list.
 	if !strings.HasPrefix(compartmentEnv, "ocid1.") {
-		out, err := cloud.RunOCI(c.Context(), cloud.DNSCompartmentListArgs(dc.profile, dc.ip))
+		out, err := cloud.RunOCI(ctx, cloud.DNSCompartmentListArgs(dc.auth))
 		if err != nil {
 			return err
 		}
 		ocid, err := cloud.CompartmentOCID(out, compartmentEnv)
 		if err != nil {
-			return fmt.Errorf("compartment '%s' not found (profile %s)", compartmentEnv, dc.profile)
+			return fmt.Errorf("compartment '%s' not found (auth profile: %s)", compartmentEnv, profileLabel(dc.auth))
 		}
 		dc.compartment = ocid
 	}
@@ -209,7 +210,7 @@ func dnsValidateArgs(c *cobra.Command, needValue bool) (name, rtype, value, ttl 
 // dnsPrepare chains validation -> provider check -> compartment -> zone ->
 // domain guard (the add/rm prelude). All validation is local; no provider
 // call happens on a validation failure.
-func dnsPrepare(d Deps, c *cobra.Command, needValue bool) (dc *dnsContext, name, rtype, value, ttl string, err error) {
+func dnsPrepare(d Deps, c *cobra.Command, ctx context.Context, target Target, needValue bool) (dc *dnsContext, name, rtype, value, ttl string, err error) {
 	name, rtype, value, ttl, err = dnsValidateArgs(c, needValue)
 	if err != nil {
 		return nil, "", "", "", "", err
@@ -218,7 +219,7 @@ func dnsPrepare(d Deps, c *cobra.Command, needValue bool) (dc *dnsContext, name,
 	if err = dnsNeedProvider(d); err != nil {
 		return nil, "", "", "", "", err
 	}
-	if err = dnsResolveCompartment(d, c, dc); err != nil {
+	if err = dnsResolveCompartment(d, ctx, target, dc); err != nil {
 		return nil, "", "", "", "", err
 	}
 	if err = dnsResolveZone(d, c, dc); err != nil {
@@ -231,18 +232,22 @@ func dnsPrepare(d Deps, c *cobra.Command, needValue bool) (dc *dnsContext, name,
 }
 
 func runDNSRecords(d Deps, c *cobra.Command) error {
+	target, err := resolveAnyTarget(d, c)
+	if err != nil {
+		return err
+	}
 	dc := &dnsContext{}
 	if _, err := exec.LookPath("oci"); err != nil {
 		return fmt.Errorf("oci CLI not found — install oci-cli (https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm), then: oci setup config")
 	}
-	if err := dnsResolveCompartment(d, c, dc); err != nil {
+	if err := dnsResolveCompartment(d, c.Context(), target, dc); err != nil {
 		return err
 	}
 	if err := dnsResolveZone(d, c, dc); err != nil {
 		return err
 	}
-	fmt.Fprintf(d.Stdout, "[dns] DNS records — zone %s (%s), profile %s:\n", dc.zoneName, dc.zoneID, dc.profile)
-	out, err := cloud.RunOCI(c.Context(), cloud.DNSRecordsArgs(dc.compartment, dc.zoneID, dc.profile, dc.ip))
+	fmt.Fprintf(d.Stdout, "[dns] DNS records — zone %s (%s), auth profile: %s —\n", dc.zoneName, dc.zoneID, profileLabel(dc.auth))
+	out, err := cloud.RunOCI(c.Context(), cloud.DNSRecordsArgs(dc.compartment, dc.zoneID, dc.auth.Profile, dc.auth.InstancePrincipal))
 	if err != nil {
 		return err
 	}
@@ -257,12 +262,19 @@ func runDNSRecords(d Deps, c *cobra.Command) error {
 }
 
 func runDNSAdd(d Deps, c *cobra.Command) error {
-	dc, name, rtype, value, ttl, err := dnsPrepare(d, c, true)
+	target, err := resolveAnyTarget(d, c)
+	if err != nil {
+		return err
+	}
+	dc, name, rtype, value, ttl, err := dnsPrepare(d, c, c.Context(), target, true)
+	if err != nil {
+		return err
+	}
 	if err != nil {
 		return err
 	}
 	domain := cloud.ResolveDomain(name, dc.zoneName)
-	rrsetOut, _ := cloud.RunOCI(c.Context(), cloud.DNSRRSetGetArgs(dc.compartment, dc.zoneID, domain, rtype, dc.profile, dc.ip))
+	rrsetOut, _ := cloud.RunOCI(c.Context(), cloud.DNSRRSetGetArgs(dc.compartment, dc.zoneID, domain, rtype, dc.auth.Profile, dc.auth.InstancePrincipal))
 	items, err := cloud.ParseRRSet(rrsetOut)
 	if err != nil {
 		return err
@@ -277,7 +289,7 @@ func runDNSAdd(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	if _, err := cloud.RunOCI(c.Context(), cloud.DNSRRSetUpdateArgs(dc.compartment, dc.zoneID, domain, rtype, itemsJSON, dc.profile, dc.ip)); err != nil {
+	if _, err := cloud.RunOCI(c.Context(), cloud.DNSRRSetUpdateArgs(dc.compartment, dc.zoneID, domain, rtype, itemsJSON, dc.auth.Profile, dc.auth.InstancePrincipal)); err != nil {
 		return fmt.Errorf("RRSet update failed for %s %s (zone %s): %w", domain, rtype, dc.zoneName, err)
 	}
 	fmt.Fprintf(d.Stdout, "[dns] added: %s %s %s (ttl %s)\n", domain, rtype, value, ttl)
@@ -285,12 +297,19 @@ func runDNSAdd(d Deps, c *cobra.Command) error {
 }
 
 func runDNSRm(d Deps, c *cobra.Command) error {
-	dc, name, rtype, value, _, err := dnsPrepare(d, c, true)
+	target, err := resolveAnyTarget(d, c)
+	if err != nil {
+		return err
+	}
+	dc, name, rtype, value, _, err := dnsPrepare(d, c, c.Context(), target, true)
+	if err != nil {
+		return err
+	}
 	if err != nil {
 		return err
 	}
 	domain := cloud.ResolveDomain(name, dc.zoneName)
-	rrsetOut, _ := cloud.RunOCI(c.Context(), cloud.DNSRRSetGetArgs(dc.compartment, dc.zoneID, domain, rtype, dc.profile, dc.ip))
+	rrsetOut, _ := cloud.RunOCI(c.Context(), cloud.DNSRRSetGetArgs(dc.compartment, dc.zoneID, domain, rtype, dc.auth.Profile, dc.auth.InstancePrincipal))
 	items, err := cloud.ParseRRSet(rrsetOut)
 	if err != nil {
 		return err
@@ -306,7 +325,7 @@ func runDNSRm(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	if _, err := cloud.RunOCI(c.Context(), cloud.DNSRRSetUpdateArgs(dc.compartment, dc.zoneID, domain, rtype, itemsJSON, dc.profile, dc.ip)); err != nil {
+	if _, err := cloud.RunOCI(c.Context(), cloud.DNSRRSetUpdateArgs(dc.compartment, dc.zoneID, domain, rtype, itemsJSON, dc.auth.Profile, dc.auth.InstancePrincipal)); err != nil {
 		return fmt.Errorf("RRSet update failed for %s %s (zone %s): %w", domain, rtype, dc.zoneName, err)
 	}
 	fmt.Fprintf(d.Stdout, "[dns] removed: %s %s %s\n", domain, rtype, value)

@@ -10,10 +10,9 @@
 //
 // Each subpackage owns one boundary of the outside world:
 //
-//	transport — ssh (os/exec of the ssh binary; same host/key resolution
-//	            ladder as the shell version: --ssh-key > KAMPODRA_SSH_KEY >
-//	            agent/ssh-config; --host > KAMPODRA_HOST > ESPELLAR_HOST
-//	            legacy)
+//	transport — ssh (os/exec of the ssh binary; host/key resolution
+//	            ladder: --ssh-key > KAMPODRA_SSH_KEY > agent/ssh-config;
+//	            --host > KAMPODRA_HOST)
 //	runtime   — podman containers/images on the VM
 //	init      — service supervision (OpenRC detection, service states)
 //	probe     — live edge health (kamal-proxy the app health endpoint, build-id.txt)

@@ -25,7 +25,7 @@ const (
 	statusPS     = "127.0.0.1:5000/kampodine-api:ccc3333\nlocalhost/kamal-proxy:latest"
 	statusDF     = "Filesystem     1K-blocks      Used Available Use% Mounted on\n/dev/vda3       82078644  50778644  2973092  62% /"
 	statusDFRoot = "Filesystem     1K-blocks      Used Available Use% Mounted on\n/dev/vda1        82078644  12345678  69732966  15% /"
-	statusSvcs   = "kampodine-api: running\nkamal-proxy: running\nwalshipper: not-running"
+	statusSvcs   = "app: running\nkamal-proxy: running\nsidecar: not-running"
 	statusDU     = "4096\t/var/lib/containers\n512\t/data"
 )
 
@@ -151,15 +151,18 @@ func TestStatusWithHost(t *testing.T) {
 		"disk    : 62% used on /var/lib/containers",
 		"images  : 4 sha-tagged deploy image(s); prune would remove 1 ddd4444 (~936 MB): kampodra deploy prune --dry-run",
 		"services:",
-		"kampodine-api: running",
+		"app: running",
 		"kamal-proxy: running",
-		"walshipper: not-running",
-		"== blue/green pair ==",
 	}
 	for _, w := range want {
 		if !strings.Contains(out, w) {
 			t.Errorf("output missing %q:\n%s", w, out)
 		}
+	}
+	// services outside the resolved project config (the fixture's
+	// "sidecar: not-running") must NOT be rendered.
+	if strings.Contains(out, "sidecar:") {
+		t.Errorf("unconfigured service leaked into status output:\n%s", out)
 	}
 }
 
@@ -268,7 +271,7 @@ func TestStatusHelpMatchesShellUsage(t *testing.T) {
 		"Usage:",
 		"kampodra status [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--verbose] [--all-profiles]",
 		"Examples:",
-		"kampodra status                          # deployments (ledger) + live health + blue/green pair",
+		"kampodra status                          # deployments (ledger) + live health",
 		"kampodra status --host root@203.0.113.10 # + VM disk usage, image/prune estimate, service states",
 		"kampodra status --profile prod           # resolve host/key from a config profile",
 		"kampodra status --all-profiles           # one full section per configured profile",
@@ -340,5 +343,58 @@ func TestStatusAllProfilesExplicitFlagStillWins(t *testing.T) {
 	}
 	if strings.Contains(out, "198.51.100.7") {
 		t.Errorf("profile host leaked past an explicit --host:\n%s", out)
+	}
+}
+
+func TestStatusGroupFilterRendersOnlyThatGroup(t *testing.T) {
+	deps, _, stdout := setupStatus(t)
+	writeStatusProfiles(t, deps.Home, `{"defaultProfile": "prod", "profiles": {
+		"web-1": {"host": "root@198.51.100.7", "group": "web"},
+		"web-2": {"host": "root@198.51.100.8", "group": "web"},
+		"db-1":  {"host": "root@198.51.100.9", "group": "db"},
+		"loose": {"host": "`+statusHost+`"}}}`)
+	if code := runStatus(t, deps, "--group", "web"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	out := stdout.String()
+	for _, want := range []string{"== profile: web-1 ==", "== profile: web-2 =="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--group web missing %q:\n%s", want, out)
+		}
+	}
+	for _, banned := range []string{"== profile: db-1 ==", "== profile: loose ==", "== profile: prod =="} {
+		if strings.Contains(out, banned) {
+			t.Errorf("--group web leaked %q:\n%s", banned, out)
+		}
+	}
+	if strings.Index(out, "== profile: web-1 ==") > strings.Index(out, "== profile: web-2 ==") {
+		t.Errorf("group members must render sorted:\n%s", out)
+	}
+}
+
+func TestStatusGroupEmptyGroupNamesKnownGroups(t *testing.T) {
+	deps, _, _ := setupStatus(t)
+	stderr := deps.Stderr.(*bytes.Buffer)
+	writeStatusProfiles(t, deps.Home, `{"profiles": {
+		"web-1": {"host": "root@198.51.100.7", "group": "web"},
+		"loose": {"host": "root@198.51.100.9"}}}`)
+	if code := runStatus(t, deps, "--group", "db"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "--group db: no profiles in that group") ||
+		!strings.Contains(stderr.String(), "known groups: web") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+func TestStatusGroupAndAllProfilesExclusive(t *testing.T) {
+	deps, _, _ := setupStatus(t)
+	stderr := deps.Stderr.(*bytes.Buffer)
+	writeStatusProfiles(t, deps.Home, `{"profiles": {"web-1": {"host": "root@198.51.100.7", "group": "web"}}}`)
+	if code := runStatus(t, deps, "--group", "web", "--all-profiles"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "--group and --all-profiles are exclusive") {
+		t.Errorf("stderr = %q", stderr.String())
 	}
 }

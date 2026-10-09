@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ManifestFileName is the repo-level project manifest's file name.
@@ -33,8 +34,11 @@ type Manifest struct {
 
 // ManifestFields is the kampodra.json schema: every ProjectConfig field,
 // all optional (empty = "not overridden"). Keys are camelCase; unknown keys
-// fail closed at parse time.
+// fail closed at parse time. The optional "$schema" key (JSON Schema
+// reference for editor tooling) is accepted and ignored — it is metadata,
+// not a project field, and never enters the resolution ladder.
 type ManifestFields struct {
+	Schema          string   `json:"$schema,omitempty"`
 	Container       string   `json:"container,omitempty"`
 	ShadowSuffix    string   `json:"shadowSuffix,omitempty"`
 	EnvFile         string   `json:"envFile,omitempty"`
@@ -51,16 +55,28 @@ type ManifestFields struct {
 	DeployedShaFile string   `json:"deployedShaFile,omitempty"`
 	EnvClearKeys    []string `json:"envClearKeys,omitempty"`
 	Dockerfile      string   `json:"dockerfile,omitempty"`
+	MigrateScript   string   `json:"migrateScript,omitempty"`
 }
+
+// manifestKeyHint lists the valid kampodra.json keys for parse errors.
+// Kept in lockstep with ManifestFields by TestManifestKeyHintMatchesStruct.
+const manifestKeyHint = "container, shadowSuffix, envFile, dataDir, bucket, " +
+	"objectPrefix, healthPath, proxyHost, services, imagePrefix, port, " +
+	"network, shadowProbePort, deployedShaFile, envClearKeys, dockerfile, " +
+	"migrateScript"
 
 // ParseManifest parses raw manifest bytes strictly: malformed JSON and
 // unknown keys FAIL CLOSED (error names the file and the offending
-// problem). An empty object is valid (no overrides).
+// problem; unknown keys also list the valid keys). An empty object is
+// valid (no overrides).
 func ParseManifest(path string, raw []byte) (Manifest, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	var fields ManifestFields
 	if err := dec.Decode(&fields); err != nil {
+		if strings.Contains(err.Error(), "unknown field ") {
+			return Manifest{}, fmt.Errorf("%s: %w\n  valid kampodra.json keys: %s", path, err, manifestKeyHint)
+		}
 		return Manifest{}, fmt.Errorf("%s: %w", path, err)
 	}
 	return Manifest{Path: path, Fields: fields}, nil

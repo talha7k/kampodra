@@ -33,6 +33,12 @@ type HostSpec struct {
 	// vm-prepare first-contact shape (bootstrapping a host whose key is not
 	// known yet). Ordinary deploy/status runs never set it.
 	AcceptNewHostKey bool
+	// KnownHostsFile overrides the user known-hosts file for this call
+	// (-o UserKnownHostsFile=…). The provision-inject phase sets it to a
+	// throwaway file: one IP serves two boots with two different host
+	// keys (platform image, then injected Alpine), and the operator's
+	// known_hosts must never wedge on the changed key. Empty = default.
+	KnownHostsFile string
 }
 
 // Runner executes composed remote commands over ssh (captured runs, stdin
@@ -98,6 +104,9 @@ func sshBaseArgs(host HostSpec, remoteCmd string, extra []string) []string {
 	args := []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes"}
 	if host.AcceptNewHostKey {
 		args = append(args, "-o", "StrictHostKeyChecking=accept-new")
+	}
+	if host.KnownHostsFile != "" {
+		args = append(args, "-o", "UserKnownHostsFile="+host.KnownHostsFile)
 	}
 	if host.SSHKey != "" {
 		args = append(args, "-i", host.SSHKey)

@@ -3,6 +3,10 @@
 # test scratch
 *.test
 coverage.out
+# working notes (never committed)
+/task-tracker/
+# agent session logs
+/test-results/
 # local build outputs (make build / tools/paritygen)
 /kampodra
 /paritygen

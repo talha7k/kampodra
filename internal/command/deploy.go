@@ -36,11 +36,11 @@ const (
 )
 
 const deployHelp = `Usage:
-  kampodra deploy [--host root@<ip>] [--profile <name>] [--version <sha7>] [--rollback [<sha7>]]
+  kampodra deploy [--host root@<ip>] [--profile <name>] [--sha <sha7>] [--rollback [<sha7>]]
                    [--rolling] [--drain-timeout <s>] [--dockerfile <path>] [--env-file <path>]
-                   [--ssh-key <path>] [--skip-smoke] [--refresh-config] [--require-disk <pct>]
+                   [--ssh-key <path>] [--skip-smoke] [--disk-threshold <pct>]
   kampodra deploy converge [--host root@<ip>] [--profile <name>] [<sha7>]   # finish an interrupted --rolling
-  kampodra deploy list   [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--all-profiles]
+  kampodra deploy list   [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--all-profiles] [--group <g>]
   kampodra deploy prune  [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--keep N] [--dry-run]
   kampodra deploy logs   [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--lines N] [--follow]
   kampodra deploy restart [--host root@<ip>] [--profile <name>] [--ssh-key <path>]
@@ -57,11 +57,13 @@ KAMPODRA_HOST; --ssh-key | profile sshKey | KAMPODRA_SSH_KEY | ssh-agent /
             env-file push (--env-file, 0600 + atomic mv, API_GIT_SHA
             stamped) → init restart → VM-side health gate (served-sha
             verified against the deployed tag) → kamal-proxy re-point →
-            public smoke → ledger append → disk report → keep-set image
-            cleanup (running + ts-rollback + newest 3 kept).
-            --require-disk <pct> fails closed BEFORE the build when the VM
+            public smoke → ledger append → disk report →
+            keep-set image cleanup (the running image, ts-rollback, and
+            the newest keep-set tags stay — kampodra deploy prune reclaims
+            the rest).
+            --disk-threshold <pct> fails closed BEFORE the build when the VM
             disk is at/over pct; >90% always warns loudly.
-  --version <sha7>  stream an EXISTING local build (no rebuild; the
+  --sha <sha7>  stream an EXISTING local build (no rebuild; the
             clean-tree gate is skipped — the build happened when that sha
             was HEAD). The sha is required, never inferred.
   --rollback [<sha7>]  instant image-tag rollback. The target resolves:
@@ -80,7 +82,8 @@ KAMPODRA_HOST; --ssh-key | profile sshKey | KAMPODRA_SSH_KEY | ssh-agent /
   list     deployment history: the VM's sha-tagged images (running one marked)
            merged with the local ledger (~/.kampodra/deployments.jsonl) with a
            "Total deployments" footer. VM unreachable degrades to a
-           ledger-only view. --all-profiles renders one section per profile.
+           ledger-only view. --all-profiles renders one section per profile;
+           --group <g> renders one section per profile in that group.
   prune    reclaim VM disk: removes OLD sha-tagged deploy images. ALWAYS kept:
            the currently-running image, ts-rollback, and the newest --keep N
            (default 2). --dry-run prints the exact podman rmi commands.
@@ -116,8 +119,8 @@ Examples:
   kampodra deploy --host root@203.0.113.10 --rolling --env-file ./ops/env.production
   kampodra deploy --host root@203.0.113.10 --rollback            # stamp-resolved
   kampodra deploy --host root@203.0.113.10 --rollback ccc3333    # explicit
-  kampodra deploy --host root@203.0.113.10 --version ccc3333 --skip-smoke
-  kampodra deploy --host root@203.0.113.10 --require-disk 85
+  kampodra deploy --host root@203.0.113.10 --sha ccc3333 --skip-smoke
+  kampodra deploy --host root@203.0.113.10 --disk-threshold 85
   kampodra deploy list --host root@203.0.113.10
   kampodra deploy prune --host root@203.0.113.10 --dry-run
   kampodra deploy logs --host root@203.0.113.10 --lines 200 --follow
@@ -127,35 +130,29 @@ Examples:
 
 func newDeployCommand(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "deploy [--host root@<ip>] [--profile <name>] [--version <sha7>] [--rollback [<sha7>]] [--rolling] [--dockerfile <path>] [--env-file <path>] [--ssh-key <path>] [--skip-smoke] [--refresh-config] [--require-disk <pct>]",
+		Use:   "deploy [--host root@<ip>] [--profile <name>] [--sha <sha7>] [--rollback [<sha7>]] [--rolling] [--dockerfile <path>] [--env-file <path>] [--ssh-key <path>] [--skip-smoke] [--disk-threshold <pct>]",
 		Short: "stream deploy (podman save | ssh podman load) with sha-verified health gate; --rollback [sha] = instant image-tag rollback; --rolling = zero-downtime shadow switch",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(c *cobra.Command, args []string) error {
 			return runDeployRoot(d, c, args)
 		},
 	}
-	cmd.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODRA_HOST and any profile")
-	cmd.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
-	cmd.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
+	cmd.PersistentFlags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODRA_HOST and any profile")
+	cmd.PersistentFlags().String("profile", "", "per-instance profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
+	cmd.PersistentFlags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
 	cmd.Flags().String("dockerfile", "", "Containerfile/Dockerfile to build (pipeline; context = the repo root) — default: the project config's dockerfile (kampodra.json/env/profile, else Dockerfile)")
-	cmd.Flags().String("version", "", "stream an existing local build of this sha (required, never inferred)")
+	cmd.Flags().String("sha", "", "stream an existing local build of this sha (required, never inferred)")
 	cmd.Flags().String("rollback", "", "instant image-tag rollback: explicit sha, else the VM's deployed-sha stamp, else die (never HEAD)")
 	cmd.Flags().Lookup("rollback").NoOptDefVal = "-" // bare --rollback = stamp-resolved
 	cmd.Flags().Bool("rolling", false, "zero-downtime: shadow container double re-point (see the ROLLING section in --help)")
 	cmd.Flags().Int("drain-timeout", deployRollingDrainTimeout, "seconds to wait for the proxy switch to confirm before continuing (--rolling only)")
-	cmd.Flags().String("require-disk", "", "fail closed when VM disk usage >= pct (pipeline)")
+	cmd.Flags().String("disk-threshold", "", "fail closed when VM disk usage >= pct (pipeline)")
 	cmd.Flags().String("env-file", "", "push this env file (0600 + atomic mv, API_GIT_SHA stamped) before restart (pipeline)")
 	cmd.Flags().Bool("skip-smoke", false, "skip the public smoke (pipeline)")
-	cmd.Flags().Bool("refresh-config", false, "accepted for script compatibility; the retired shell's ansible hook (a warning prints)")
 	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
 		fmt.Fprint(c.OutOrStdout(), deployHelp)
 	})
 
-	deployTargetFlags := func(c *cobra.Command) {
-		c.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODRA_HOST and any profile")
-		c.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
-		c.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
-	}
 	resolveDeploy := func(c *cobra.Command, profileOverride string) (Target, error) {
 		host, _ := c.Flags().GetString("host")
 		key, _ := c.Flags().GetString("ssh-key")
@@ -198,7 +195,6 @@ func newDeployCommand(d Deps) *cobra.Command {
 			return runDeployConverge(d, c.Context(), target, sha, drain)
 		},
 	}
-	deployTargetFlags(subConverge)
 	subConverge.Flags().Int("drain-timeout", deployRollingDrainTimeout, "drain budget carried from the interrupted deploy (s)")
 	subConverge.SetHelpFunc(func(c *cobra.Command, _ []string) {
 		fmt.Fprint(c.OutOrStdout(), deployHelp)
@@ -215,7 +211,8 @@ func newDeployCommand(d Deps) *cobra.Command {
 				return err
 			}
 			allProfiles, _ := c.Flags().GetBool("all-profiles")
-			names, err := fanOutProfileNames(cfg, allProfiles, state.ConfigPath(d.Home))
+			flagGroup, _ := c.Flags().GetString("group")
+			names, err := fanOutProfileNames(cfg, allProfiles, flagGroup, state.ConfigPath(d.Home))
 			if err != nil {
 				return err
 			}
@@ -237,8 +234,8 @@ func newDeployCommand(d Deps) *cobra.Command {
 			return nil
 		},
 	}
-	deployTargetFlags(subList)
 	subList.Flags().Bool("all-profiles", false, "render one history section per configured profile")
+	subList.Flags().String("group", "", "render history for every profile in this group (exclusive with --all-profiles/--host/--profile)")
 
 	// --- prune ---------------------------------------------------------------
 	subPrune := &cobra.Command{
@@ -257,13 +254,16 @@ func newDeployCommand(d Deps) *cobra.Command {
 			if !positiveIntRe.MatchString(keep) {
 				return fmt.Errorf("--keep must be a non-negative integer (got: %s)", keep)
 			}
-			keepN := 0
-			fmt.Sscanf(keep, "%d", &keepN)
+			// Validated non-negative by the regex above — Atoi cannot fail
+			// here; the error return exists so the check is explicit.
+			keepN, err := strconv.Atoi(keep)
+			if err != nil {
+				return fmt.Errorf("--keep must be a non-negative integer (got: %s)", keep)
+			}
 			dryRun, _ := c.Flags().GetBool("dry-run")
 			return runDeployPrune(d, c.Context(), target, keepN, dryRun)
 		},
 	}
-	deployTargetFlags(subPrune)
 	subPrune.Flags().String("keep", fmt.Sprintf("%d", deployKeepN), "newest N sha-tagged images to always keep")
 	subPrune.Flags().Bool("dry-run", false, "print the exact podman rmi commands and remove nothing")
 
@@ -288,7 +288,6 @@ func newDeployCommand(d Deps) *cobra.Command {
 			return runDeployLogs(d, c, target, lines, follow)
 		},
 	}
-	deployTargetFlags(subLogs)
 	subLogs.Flags().String("lines", deployLogLines, "number of lines to tail")
 	subLogs.Flags().Bool("follow", false, "stream the logs until ctrl-c (clean exit)")
 
@@ -308,7 +307,6 @@ func newDeployCommand(d Deps) *cobra.Command {
 			return runDeployRestart(d, c.Context(), target)
 		},
 	}
-	deployTargetFlags(subRestart)
 
 	// --- shell ---------------------------------------------------------------
 	subShell := &cobra.Command{
@@ -326,32 +324,30 @@ func newDeployCommand(d Deps) *cobra.Command {
 			return runDeployShell(d, c, target, args)
 		},
 	}
-	deployTargetFlags(subShell)
 
 	cmd.AddCommand(subConverge, subList, subPrune, subLogs, subRestart, subShell)
 	return cmd
 }
 
-// runDeployRoot dispatches the pipeline surface: --rollback / --version /
+// runDeployRoot dispatches the pipeline surface: --rollback / --sha /
 // plain (optionally --rolling), with the shell's argument grammar (a
 // positional in rollback mode is the sha; anything else is unknown).
 func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
 	host, _ := c.Flags().GetString("host")
 	key, _ := c.Flags().GetString("ssh-key")
 	profile, _ := c.Flags().GetString("profile")
-	versionArg, _ := c.Flags().GetString("version")
+	shaArg, _ := c.Flags().GetString("sha")
 	rollbackRaw, _ := c.Flags().GetString("rollback")
 	rollbackSet := c.Flags().Changed("rollback")
 	rolling, _ := c.Flags().GetBool("rolling")
 	drain, _ := c.Flags().GetInt("drain-timeout")
 	dockerfile, _ := c.Flags().GetString("dockerfile")
 	envFile, _ := c.Flags().GetString("env-file")
-	requireDisk, _ := c.Flags().GetString("require-disk")
+	diskThreshold, _ := c.Flags().GetString("disk-threshold")
 	skipSmoke, _ := c.Flags().GetBool("skip-smoke")
-	refreshCfg, _ := c.Flags().GetBool("refresh-config")
 
-	if versionSet := c.Flags().Changed("version"); versionSet && rollbackSet {
-		return fmt.Errorf("--rollback and --version are exclusive")
+	if versionSet := c.Flags().Changed("sha"); versionSet && rollbackSet {
+		return fmt.Errorf("--rollback and --sha are exclusive")
 	}
 	if rolling && rollbackSet {
 		return fmt.Errorf("--rolling and --rollback are exclusive (rollback is instant — the old image is already on the VM)")
@@ -362,13 +358,13 @@ func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
 	if drain < 0 {
 		return fmt.Errorf("--drain-timeout must be a non-negative number of seconds (got: %d)", drain)
 	}
-	if requireDisk != "" {
-		if n, err := strconv.Atoi(requireDisk); err != nil || n < 0 || n > 100 {
-			return fmt.Errorf("--require-disk must be a percentage 0-100 (got: %s)", requireDisk)
+	if diskThreshold != "" {
+		if n, err := strconv.Atoi(diskThreshold); err != nil || n < 0 || n > 100 {
+			return fmt.Errorf("--disk-threshold must be a percentage 0-100 (got: %s)", diskThreshold)
 		}
 	}
-	if versionSet := c.Flags().Changed("version"); versionSet && !shaFragmentRe.MatchString(versionArg) {
-		return fmt.Errorf("--version must be a git sha fragment (got: %s)", versionArg)
+	if versionSet := c.Flags().Changed("sha"); versionSet && !shaFragmentRe.MatchString(shaArg) {
+		return fmt.Errorf("--sha must be a git sha fragment (got: %s)", shaArg)
 	}
 	// positionals: only the rollback mode takes one (the sha)
 	rollbackSha := ""
@@ -408,13 +404,12 @@ func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
 	dockerfile = firstNonEmpty(dockerfile, target.Project.Dockerfile)
 
 	opts := deployOpts{
-		dockerfile:   dockerfile,
-		envFile:      envFile,
-		requireDisk:  requireDisk,
-		skipSmoke:    skipSmoke,
-		refreshCfg:   refreshCfg,
-		rolling:      rolling,
-		drainTimeout: drain,
+		dockerfile:    dockerfile,
+		envFile:       envFile,
+		diskThreshold: diskThreshold,
+		skipSmoke:     skipSmoke,
+		rolling:       rolling,
+		drainTimeout:  drain,
 	}
 	ctx := c.Context()
 
@@ -429,18 +424,18 @@ func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
 		return runDeployPipeline(d, ctx, target, sha, "rollback", opts)
 	}
 
-	ver := versionArg
+	ver := shaArg
 	mode := "deploy"
-	if c.Flags().Changed("version") {
+	if c.Flags().Changed("sha") {
 		// version mode: stream an EXISTING build — no rebuild, no clean-tree
 		// gate (the build already happened when that sha was HEAD).
-		mode = "version"
+		mode = "sha"
 	} else {
 		// deploy mode: build HEAD — the sha comes from git rev-parse (the
 		// clean-tree gate guarantees the tree shipped what HEAD names).
 		out, err := localOutput(ctx, "", "git", "rev-parse", "--short", "HEAD")
 		if err != nil {
-			return fmt.Errorf("cannot resolve HEAD (not a git repository?) — deploy stamps the git sha; from a non-repo directory use --version <sha7> to stream an existing build")
+			return fmt.Errorf("cannot resolve HEAD (not a git repository?) — deploy stamps the git sha; from a non-repo directory use --sha <sha7> to stream an existing build")
 		}
 		ver = strings.TrimSpace(out)
 	}
@@ -467,7 +462,40 @@ func resolveRollbackSha(d Deps, ctx context.Context, target Target, explicit str
 // fanOutProfileNames: single-shot resolution yields [""] (the normal
 // flag/env/default ladder); --all-profiles yields every configured profile
 // name sorted (one rendered section each).
-func fanOutProfileNames(cfg *state.Config, allProfiles bool, configPath string) ([]string, error) {
+// fanOutProfileNames resolves the profile set for the fan-out commands
+// (status, deploy list): default = the single resolved profile ([]string{""}),
+// --all-profiles = every configured profile, --group <g> = every profile in
+// that group. --group and --all-profiles are exclusive; an empty group is
+// an error naming the known groups.
+func fanOutProfileNames(cfg *state.Config, allProfiles bool, group string, configPath string) ([]string, error) {
+	if allProfiles && group != "" {
+		return nil, fmt.Errorf("--group and --all-profiles are exclusive")
+	}
+	if group != "" {
+		if len(cfg.Profiles) == 0 {
+			return nil, fmt.Errorf("--group %s: no profiles configured in %s", group, configPath)
+		}
+		names := make([]string, 0, len(cfg.Profiles))
+		groups := map[string]bool{}
+		for name, p := range cfg.Profiles {
+			if p.Group != "" {
+				groups[p.Group] = true
+			}
+			if p.Group == group {
+				names = append(names, name)
+			}
+		}
+		if len(names) == 0 {
+			known := make([]string, 0, len(groups))
+			for g := range groups {
+				known = append(known, g)
+			}
+			sort.Strings(known)
+			return nil, fmt.Errorf("--group %s: no profiles in that group (known groups: %s)", group, strings.Join(known, ", "))
+		}
+		sort.Strings(names)
+		return names, nil
+	}
 	if !allProfiles {
 		return []string{""}, nil
 	}
@@ -640,7 +668,7 @@ func runDeployShell(d Deps, c *cobra.Command, target Target, args []string) erro
 		if args[0] != "exec" {
 			return fmt.Errorf("unknown shell argument: %s (--help; one-shot is: kampodra deploy shell exec -- <cmd>)", args[0])
 		}
-		return fmt.Errorf("shell exec requires -- before the command: kampodra deploy shell exec -- <cmd>...")
+		return fmt.Errorf("shell exec requires -- before the command: kampodra deploy shell exec -- <cmd>")
 	}
 	argv := args[dash:]
 	if len(argv) == 0 {

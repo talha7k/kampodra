@@ -2,6 +2,7 @@ package command_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -128,7 +129,7 @@ func TestDNSRecordsRendersTable(t *testing.T) {
 	}
 	out := h.stdout.String()
 	for _, want := range []string{
-		"[dns] DNS records — zone example.com (ocid1.dns-zone.oc1..z1), profile default:",
+		"[dns] DNS records — zone example.com (ocid1.dns-zone.oc1..z1), auth profile: oci-cli default —",
 		"app.example.com", "A", "300", "203.0.113.10",
 		"CNAME", "3600", "edge.example.com.",
 	} {
@@ -136,9 +137,11 @@ func TestDNSRecordsRendersTable(t *testing.T) {
 			t.Errorf("records output missing %q:\n%s", want, out)
 		}
 	}
+	// Native resolution: no cloud block, no env → kampodra passes NO auth
+	// flags and the oci CLI resolves on its own.
 	for _, call := range h.ociCalls(t) {
-		if !strings.Contains(call, "--profile") {
-			t.Errorf("oci call without --profile: %s", call)
+		if strings.Contains(call, "--profile") || strings.Contains(call, "--auth") {
+			t.Errorf("native resolution must pass no auth flags: %s", call)
 		}
 	}
 }
@@ -160,8 +163,8 @@ func TestDNSAddHappyPath(t *testing.T) {
 		t.Errorf("the new value is not in the update items:\n%s", joined)
 	}
 	for _, call := range calls {
-		if !strings.Contains(call, "--profile") {
-			t.Errorf("oci call without --profile: %s", call)
+		if strings.Contains(call, "--profile") || strings.Contains(call, "--auth") {
+			t.Errorf("native resolution must pass no auth flags: %s", call)
 		}
 	}
 }
@@ -292,14 +295,44 @@ func TestDNSMultipleZonesNeedExplicitZone(t *testing.T) {
 	}
 }
 
-func TestDNSInstancePrincipal(t *testing.T) {
+// Cloud auth rides the instance profile's `cloud` block (or the provider
+// env): instance principal via the block, compartment via block or env.
+func TestDNSCloudBlockDrivesInstancePrincipal(t *testing.T) {
 	h := setupDNS(t, map[string]string{})
-	if code := h.run(t, "records", "--instance-principal"); code != 0 {
+	writeDNSProfile(t, h.deps.Home, "oci-vm", `{"host": "root@198.51.100.7", "cloud": {"instancePrincipal": true}}`)
+	if code := h.run(t, "records", "--profile", "oci-vm"); code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
 	}
 	for _, call := range h.ociCalls(t) {
 		if !strings.Contains(call, "--auth instance_principal") {
-			t.Errorf("instance-principal call missing --auth: %s", call)
+			t.Errorf("cloud-block instancePrincipal missing --auth: %s", call)
+		}
+	}
+}
+
+func TestDNSCloudBlockProfileSelectsConfigProfile(t *testing.T) {
+	h := setupDNS(t, map[string]string{})
+	writeDNSProfile(t, h.deps.Home, "tenancy", `{"host": "root@198.51.100.7", "cloud": {"profile": "myprof"}}`)
+	if code := h.run(t, "records", "--profile", "tenancy"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	joined := strings.Join(h.ociCalls(t), "\n")
+	if !strings.Contains(joined, "--profile myprof") {
+		t.Errorf("cloud-block profile did not reach the oci CLI as its config profile:\n%s", joined)
+	}
+}
+
+// With no cloud block and no env, the oci CLI resolves natively — kampodra
+// passes NO --profile flag (its config's default/DEFAULT/first precedence).
+func TestDNSNativeResolutionOmitsProfileFlag(t *testing.T) {
+	h := setupDNS(t, map[string]string{})
+	t.Setenv("OCI_PROFILE", "")
+	if code := h.run(t, "records"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	for _, call := range h.ociCalls(t) {
+		if strings.Contains(call, "--profile") || strings.Contains(call, "--auth") {
+			t.Errorf("native resolution must pass no auth flags: %s", call)
 		}
 	}
 }
@@ -342,13 +375,17 @@ func TestDNSNoCredentialMaterialStaticGate(t *testing.T) {
 	if !strings.Contains(combined, "--profile") {
 		t.Error("the dns surface does not support --profile (config-file auth)")
 	}
-	// The command itself carries the instance-principal flag.
+	// The command carries NO cloud flags: auth comes from the instance
+	// profile's `cloud` block or the provider env, and the oci CLI
+	// resolves natively otherwise.
 	cmdSrc, err := os.ReadFile(filepath.Join("..", "command", "dns.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(cmdSrc), "--instance-principal") {
-		t.Error("the dns command does not expose --instance-principal")
+	for _, banned := range []string{"--instance-principal", "--oci-profile"} {
+		if strings.Contains(string(cmdSrc), banned) {
+			t.Errorf("the dns command must not expose %s", banned)
+		}
 	}
 }
 
@@ -358,4 +395,34 @@ func matchesForbidden(pattern, s string) bool {
 		return false
 	}
 	return re.MatchString(s)
+}
+
+// writeDNSProfile writes one profile into the harness's config.json
+// (cloud blocks ride ordinary profiles — no special harness wiring).
+func writeDNSProfile(t *testing.T, home, name, profileJSON string) {
+	t.Helper()
+	dir := filepath.Join(home, ".kampodra")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.json")
+	cfg := map[string]any{"profiles": map[string]any{}}
+	if raw, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(raw, &cfg)
+	}
+	if cfg["profiles"] == nil {
+		cfg["profiles"] = map[string]any{}
+	}
+	var p any
+	if err := json.Unmarshal([]byte(profileJSON), &p); err != nil {
+		t.Fatal(err)
+	}
+	cfg["profiles"].(map[string]any)[name] = p
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }

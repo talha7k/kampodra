@@ -42,7 +42,7 @@ Examples:
 func newEnvCommand(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "env",
-		Short: "remote app env file (/etc/kampodra/env, 0600): list | push | pull | fingerprint | diff — values NEVER printed, fingerprints only",
+		Short: "remote app env file (project envFile, 0600): list | push | pull | fingerprint | diff — values NEVER printed, fingerprints only",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, args []string) error {
 			fmt.Fprint(c.OutOrStdout(), envHelp)
@@ -74,7 +74,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 			if err := requireHost(target); err != nil {
 				return err
 			}
-			raw, err := fetchRemoteEnv(d, c.Context(), target, target.Project.EnvFilePath)
+			raw, err := fetchRemoteEnv(d, c.Context(), target, target.Project.EnvFile)
 			if err != nil {
 				return err
 			}
@@ -107,7 +107,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 			if err := requireHost(target); err != nil {
 				return err
 			}
-			remote := target.Project.EnvFilePath
+			remote := target.Project.EnvFile
 			fmt.Fprintf(d.Stdout, "[env] pushing %s -> %s:%s (fingerprint summary below; values are NEVER printed)\n",
 				file, target.HostSpec.Host, remote)
 			fmt.Fprint(d.Stdout, envfile.Table(string(data)))
@@ -141,30 +141,15 @@ func newEnvCommand(d Deps) *cobra.Command {
 			if err := requireHost(target); err != nil {
 				return err
 			}
-			remote := target.Project.EnvFilePath
+			remote := target.Project.EnvFile
 			raw, err := fetchRemoteEnv(d, c.Context(), target, remote)
 			if err != nil {
 				return err
 			}
 			payload := strings.TrimRight(raw, "\n") + "\n"
 			if out, _ := c.Flags().GetString("out"); out != "" {
-				f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-				if err != nil {
-					return fmt.Errorf("cannot write %s", out)
-				}
-				if _, err := f.WriteString(payload); err != nil {
-					f.Close()
-					return fmt.Errorf("cannot write %s", out)
-				}
-				if err := f.Close(); err != nil {
-					return fmt.Errorf("cannot write %s", out)
-				}
-				if err := os.Chmod(out, 0o600); err != nil {
-					return fmt.Errorf("cannot write %s", out)
-				}
-				fmt.Fprintf(d.Stdout, "[env] wrote %s (0600) — fingerprint summary below (payload went to the file, stdout is free):\n", out)
-				fmt.Fprint(d.Stdout, envfile.Table(payload))
-				return nil
+				return writeSecretFile0600(d, out, payload,
+					"fingerprint summary below (payload went to the file, stdout is free):")
 			}
 			// stdout IS the payload (pipe into whatever needs the values);
 			// the human-readable summary goes to stderr, masked.
@@ -224,7 +209,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 			if err := requireHost(target); err != nil {
 				return err
 			}
-			remote := target.Project.EnvFilePath
+			remote := target.Project.EnvFile
 			raw, err := fetchRemoteEnv(d, c.Context(), target, remote)
 			if err != nil {
 				return err
@@ -269,13 +254,37 @@ func newEnvFromSchemaCommand(d Deps) *cobra.Command {
 	return sub
 }
 
+// writeSecretFile0600 writes secret content to out with 0600-from-creation
+// semantics (pre-created 0600, chmod after close) and prints the
+// fingerprint table — the single place secret payloads touch disk, so the
+// masking invariant lives here, not in each caller.
+func writeSecretFile0600(d Deps, out, content, wroteNote string) error {
+	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("cannot write %s", out)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		return fmt.Errorf("cannot write %s", out)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("cannot write %s", out)
+	}
+	if err := os.Chmod(out, 0o600); err != nil {
+		return fmt.Errorf("cannot write %s", out)
+	}
+	fmt.Fprintf(d.Stdout, "[env] wrote %s (0600) — %s\n", out, wroteNote)
+	fmt.Fprint(d.Stdout, envfile.Table(content))
+	return nil
+}
+
 func runEnvFromSchema(d Deps, c *cobra.Command) error {
 	repoFlag, _ := c.Flags().GetString("repo")
 	schema, _ := c.Flags().GetString("schema")
 	out, _ := c.Flags().GetString("out")
 
 	repoRoot := repoFlag
-	if resolved, err := gitRepoRoot(c.Context(), repoRoot); err == nil {
+	if resolved, err := gitRepoRoot(repoRoot); err == nil {
 		repoRoot = resolved
 	} else if repoFlag == "." {
 		return fmt.Errorf("no git repo at . — pass --repo <path>")
@@ -298,26 +307,11 @@ func runEnvFromSchema(d Deps, c *cobra.Command) error {
 	}
 
 	if out != "" {
-		f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-		if err != nil {
-			return fmt.Errorf("cannot write %s", out)
-		}
-		if _, err := f.WriteString(body); err != nil {
-			f.Close()
-			return fmt.Errorf("cannot write %s", out)
-		}
-		if err := f.Close(); err != nil {
-			return fmt.Errorf("cannot write %s", out)
-		}
-		if err := os.Chmod(out, 0o600); err != nil {
-			return fmt.Errorf("cannot write %s", out)
-		}
-		fmt.Fprintf(d.Stdout, "[env] wrote %s (0600) — fingerprint summary (values NEVER printed):\n", out)
-		fmt.Fprint(d.Stdout, envfile.Table(body))
-		return nil
+		return writeSecretFile0600(d, out, body,
+			"fingerprint summary (values NEVER printed):")
 	}
 
-	remote := target.Project.EnvFilePath
+	remote := target.Project.EnvFile
 	fmt.Fprintf(d.Stdout, "[env] pushing generated env -> %s:%s (fingerprint summary below; values are NEVER printed)\n",
 		target.HostSpec.Host, remote)
 	fmt.Fprint(d.Stdout, envfile.Table(body))
@@ -335,7 +329,7 @@ func runEnvFromSchema(d Deps, c *cobra.Command) error {
 
 // gitRepoRoot resolves the repo root via git (the shell's
 // `git rev-parse --show-toplevel`).
-func gitRepoRoot(ctx context.Context, dir string) (string, error) {
+func gitRepoRoot(dir string) (string, error) {
 	bin, err := exec.LookPath("git")
 	if err != nil {
 		return "", err

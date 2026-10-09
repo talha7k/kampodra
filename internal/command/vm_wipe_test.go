@@ -69,8 +69,8 @@ func setupWipe(t *testing.T, hostState string) *wipeHarness {
 // running the project stack.
 const healthyHostState = `case "$cmd" in
   "if command -v rc-service"*) echo openrc; echo httpc=wget; exit 0 ;;
-  "podman ps -a --format '{{.Names}}'") printf 'kampodine-api\nkamal-proxy\n'; exit 0 ;;
-  "for s in"*) echo "kampodine-api: running"; echo "kamal-proxy: running"; echo "walshipper: not-running"; exit 0 ;;
+  "podman ps -a --format '{{.Names}}'") printf 'app\nkamal-proxy\n'; exit 0 ;;
+  "for s in"*) echo "app: running"; echo "kamal-proxy: running"; exit 0 ;;
 esac`
 
 func TestVMWipeRequiresYes(t *testing.T) {
@@ -95,23 +95,37 @@ func TestVMWipeFullSequence(t *testing.T) {
 	calls := h.calls(t)
 	joined := strings.Join(calls, "\n")
 	for _, want := range []string{
-		"rc-service kampodine-api stop",
+		"rc-service app stop",
 		"rc-service kamal-proxy stop",
-		"rc-service walshipper stop",
-		"rc-update del kampodine-api default",
+		"rc-update del app default",
 		"rc-update del kamal-proxy default",
-		"rc-update del walshipper default",
-		"podman rm -f kampodine-api",
+		"podman rm -f app",
 		"podman rm -f kamal-proxy",
 		"podman image prune -a -f",
-		"rm -f /etc/kampodine/env",
-		"rm -f /etc/kampodine/deployed-sha",
-		"rm -rf /etc/kampodine",
-		"rm -rf /data/tenants",
+		"rm -f /etc/kampodra/env",
+		"rm -f /etc/kampodra/deployed-sha",
+		"rm -rf /data",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("wipe sequence missing %q:\n%s", want, joined)
 		}
+	}
+	// The env dir itself is NOT wiped: it may hold other services' files
+	// (monitoring agents) — managed files go individually, the dir stays.
+	if strings.Contains(joined, "rm -rf /etc/kampodra") {
+		t.Errorf("wipe must not rm -rf the env dir (collateral lives there):\n%s", joined)
+	}
+	if !strings.Contains(h.stdout.String(), "left in place (not kampodra-managed): /etc/kampodra/") {
+		t.Errorf("wipe must name the left-in-place env dir:\n%s", h.stdout.String())
+	}
+	// Unprofiled runs print <none>, never an empty paren.
+	if !strings.Contains(h.stdout.String(), "(profile: <none>)") {
+		t.Errorf("unprofiled wipe must print (profile: <none>):\n%s", h.stdout.String())
+	}
+	// No legacy third service: the roll call is exactly the project
+	// default's services (app + kamal-proxy).
+	if strings.Contains(joined, "walshipper") {
+		t.Errorf("wipe touched a service outside the project services:\n%s", joined)
 	}
 	// Safety ordering: services stop BEFORE containers are removed; files
 	// and the data dir go LAST (after the containers are down).
@@ -123,18 +137,18 @@ func TestVMWipeFullSequence(t *testing.T) {
 		}
 		return -1
 	}
-	if idx("rc-service kampodine-api stop") > idx("podman rm -f kampodine-api") {
+	if idx("rc-service app stop") > idx("podman rm -f app") {
 		t.Error("service stop must precede container removal")
 	}
 	if idx("podman image prune -a -f") < idx("podman rm -f kamal-proxy") {
 		t.Error("image prune must come after container removal")
 	}
-	if idx("rm -rf /data/tenants") < idx("podman rm -f kampodine-api") {
+	if idx("rm -rf /data") < idx("podman rm -f app") {
 		t.Error("data dir removal must come after containers are down")
 	}
 	// The summary names everything removed.
 	out := h.stdout.String()
-	for _, want := range []string{"removed:", "kampodine-api", "/etc/kampodine/env", "/data/tenants"} {
+	for _, want := range []string{"removed:", "app", "/etc/kampodra/env", "/data"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary missing %q:\n%s", want, out)
 		}
@@ -147,10 +161,10 @@ func TestVMWipeKeepDataPreservesDataDir(t *testing.T) {
 		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
 	}
 	joined := strings.Join(h.calls(t), "\n")
-	if strings.Contains(joined, "rm -rf /data/tenants") {
+	if strings.Contains(joined, "rm -rf /data") {
 		t.Errorf("--keep-data must not touch the data dir:\n%s", joined)
 	}
-	if !strings.Contains(h.stdout.String(), "kept: /data/tenants") {
+	if !strings.Contains(h.stdout.String(), "kept: /data") {
 		t.Errorf("summary must record the kept data dir:\n%s", h.stdout.String())
 	}
 }

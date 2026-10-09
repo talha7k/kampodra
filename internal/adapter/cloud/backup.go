@@ -31,8 +31,55 @@ func AuthArgs(instancePrincipal bool) []string {
 	return nil
 }
 
+// CloudAuth is the instance profile's `cloud` block: kampodra's ONLY
+// cloud-auth surface. It names overrides for the provider CLI's own config
+// (provider, profile, compartment, auth mode) — never credentials. Empty
+// block = the provider CLI resolves everything natively (its default
+// profile, its env, its own precedence).
+type CloudAuth struct {
+	Provider          string `json:"provider"`
+	Profile           string `json:"profile"`
+	Compartment       string `json:"compartment"`
+	InstancePrincipal bool   `json:"instancePrincipal"`
+}
+
+// SupportedProviders lists the cloud providers kampodra speaks. OCI is
+// the only one today; the `provider` field exists so a second provider
+// slots in without renaming anything.
+func SupportedProviders() []string {
+	return []string{"oci"}
+}
+
+// CheckProvider fails closed on an unknown provider name (empty = the
+// default). Call it on every path that actually calls a provider CLI —
+// never on paths that don't need the cloud at all.
+func CheckProvider(auth CloudAuth) error {
+	if auth.Provider == "" || auth.Provider == "oci" {
+		return nil
+	}
+	return fmt.Errorf("unsupported cloud provider %q (supported: %s) — set the instance profile's \"cloud\" block provider, or omit it for the default", auth.Provider, strings.Join(SupportedProviders(), ", "))
+}
+
+// ParseCloudAuth parses the profile's raw `cloud` block. Fail-open like the
+// profile project block: nil or corrupt input resolves to zero (native
+// provider-CLI auth) — a live config typo must not brick cloud access.
+// (An unknown *provider name* still fails closed via CheckProvider —
+// typos there must not silently resolve to OCI.)
+func ParseCloudAuth(raw json.RawMessage) CloudAuth {
+	var auth CloudAuth
+	if len(raw) == 0 {
+		return auth
+	}
+	_ = json.Unmarshal(raw, &auth) // corrupt block = native auth, never an error
+	return auth
+}
+
 func withProfile(args []string, profile string, instancePrincipal bool) []string {
-	args = append(args, "--profile", profile)
+	if profile != "" {
+		// Explicit override only: an empty profile lets the oci CLI resolve
+		// natively (its config's default/DEFAULT/first-profile precedence).
+		args = append(args, "--profile", profile)
+	}
 	return append(args, AuthArgs(instancePrincipal)...)
 }
 
@@ -107,6 +154,9 @@ func ParseObjectList(listJSON string) ([]BackupObject, error) {
 	}
 	if err := json.Unmarshal([]byte(listJSON), &parsed); err != nil {
 		return nil, fmt.Errorf("object list: %w", err)
+	}
+	if len(parsed.Data) == 0 || string(parsed.Data) == "null" {
+		return nil, fmt.Errorf("object list: response has no .data — unexpected oci CLI output (want an objects array or {\"data\":{\"objects\":[…]}}); check the bucket/namespace and oci CLI version")
 	}
 	var rows []objectListRow
 	if payload := strings.TrimSpace(string(parsed.Data)); strings.HasPrefix(payload, "[") {

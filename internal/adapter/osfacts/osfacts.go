@@ -42,7 +42,7 @@ func DiskUsedPct(dfOutput string) (int, bool) {
 }
 
 // DiskVerdict ports disk_verdict: fail when usage >= require (the
-// --require-disk fail-closed gate), warn when usage > 90, ok otherwise,
+// --disk-threshold fail-closed gate), warn when usage > 90, ok otherwise,
 // unknown when the percentage is missing or unparseable.
 func DiskVerdict(pct, require string) Verdict {
 	p, err := strconv.Atoi(pct)

@@ -283,6 +283,20 @@ func TestConfigShowExplicitProfileAndUnknown(t *testing.T) {
 	}
 }
 
+// config show resolves the profile through the SAME ladder as print/deploy:
+// explicit --profile > KAMPODRA_PROFILE env > config defaultProfile.
+func TestConfigShowHonorsProfileEnv(t *testing.T) {
+	deps, home, stdout, stderr := setupConfig(t)
+	writeTwoProfiles(t, home)
+	t.Setenv("KAMPODRA_PROFILE", "staging")
+	if code := runConfig(t, deps, "show"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "profile: staging\n") {
+		t.Errorf("config show ignored KAMPODRA_PROFILE:\n%s", stdout.String())
+	}
+}
+
 func TestConfigSetDefault(t *testing.T) {
 	deps, home, stdout, stderr := setupConfig(t)
 	writeTwoProfiles(t, home)
@@ -366,5 +380,78 @@ func TestConfigRemoveRequiresName(t *testing.T) {
 	deps, _, _, stderr := setupConfig(t)
 	if code := runConfig(t, deps, "remove"); code != 1 || !strings.Contains(stderr.String(), "usage: kampodra config remove <name>") {
 		t.Errorf("exit=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestConfigCloneCopiesAndOverrides(t *testing.T) {
+	deps, home, stdout, stderr := setupConfig(t)
+	key := filepath.Join(home, "id_ed25519")
+	os.WriteFile(key, []byte("k"), 0o600)
+	runConfig(t, deps, "init", "--name", "prod", "--host", "root@203.0.113.9",
+		"--ssh-key", key, "--proxy-host", "app.example.com", "--group", "web")
+
+	code := runConfig(t, deps, "clone", "prod", "prod-2", "--host", "root@203.0.113.10")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+	}
+	cfg := loadConfigFile(t, home)
+	p := cfg.Profiles["prod-2"]
+	if p.Host != "root@203.0.113.10" {
+		t.Errorf("clone host = %q, want the --host override", p.Host)
+	}
+	// everything not overridden copies explicitly — no live link to src
+	if p.SSHKey != key || p.ProxyHost != "app.example.com" || p.Group != "web" {
+		t.Errorf("clone = %+v, want copied ssh-key/proxy-host/group", p)
+	}
+	if cfg.DefaultProfile != "prod" {
+		t.Errorf("clone must not steal the default (got %q)", cfg.DefaultProfile)
+	}
+	if !strings.Contains(stdout.String(), "cloned 'prod' -> 'prod-2'") {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+}
+
+func TestConfigCloneRequiresHost(t *testing.T) {
+	deps, _, _, stderr := setupConfig(t)
+	runConfig(t, deps, "init", "--name", "prod", "--host", "root@203.0.113.9", "--ssh-key", "/tmp/k")
+	code := runConfig(t, deps, "clone", "prod", "prod-2")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (--host required)", code)
+	}
+	if !strings.Contains(stderr.String(), "--host is required") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+func TestConfigCloneUnknownSrcAndExistingTarget(t *testing.T) {
+	deps, _, _, stderr := setupConfig(t)
+	runConfig(t, deps, "init", "--name", "prod", "--host", "root@203.0.113.9", "--ssh-key", "/tmp/k")
+	if code := runConfig(t, deps, "clone", "nope", "prod-2", "--host", "root@203.0.113.10"); code != 1 {
+		t.Fatalf("unknown src: exit = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "unknown profile 'nope'") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+	stderr.Reset()
+	// first clone creates prod-2 …
+	if code := runConfig(t, deps, "clone", "prod", "prod-2", "--host", "root@203.0.113.10"); code != 0 {
+		t.Fatalf("first clone: exit = %d, stderr: %s", code, stderr.String())
+	}
+	stderr.Reset()
+	// … so a second clone onto the same name refuses without --force
+	if code := runConfig(t, deps, "clone", "prod", "prod-2", "--host", "root@203.0.113.11"); code != 1 {
+		t.Fatalf("existing target: exit = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "already exists — pass --force") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+	if code := runConfig(t, deps, "clone", "prod", "prod-2", "--host", "root@203.0.113.10", "--force"); code != 0 {
+		t.Fatalf("--force overwrite: exit = %d", code)
+	}
+	if code := runConfig(t, deps, "clone", "prod", "prod-3", "--host", "root@203.0.113.10", "--set-default"); code != 0 {
+		t.Fatalf("--set-default clone: exit = %d", code)
+	}
+	if cfg := loadConfigFile(t, deps.Home); cfg.DefaultProfile != "prod-3" {
+		t.Errorf("defaultProfile = %q, want prod-3", cfg.DefaultProfile)
 	}
 }

@@ -20,9 +20,10 @@ const migrateHelp = `Usage:
   kampodra migrate [--allow-running] [--profile <name>] [--host <user@ip>] [--ssh-key <path>]
                    [--repo-root <path>] [--jobs <n>]
 
-Tenant db migrations over SSH: drizzle apply per db file VIA THE REPO ON THE
-VM (the app's own scripts/libsql-migrate/migrate-db.ts — the same code path
-as local seeding, no parallel implementation). Order: root.db first (the
+Tenant db migrations over SSH: apply per db file VIA THE REPO ON THE
+VM (the app's own migrate script — the project's migrateScript config,
+resolved like every project field; the same code path as local seeding,
+no parallel implementation). Order: root.db first (the
 auth/org plane; root/root.db preferred, legacy flat root.db honored), then
 tenant_*.db sorted, bounded-parallel (--jobs, default 4; MIGRATE_JOBS env).
 Per-file failures are COLLECTED (files are independent — one bad tenant must
@@ -140,14 +141,14 @@ func runMigrate(d Deps, c *cobra.Command) error {
 	}
 
 	// --- one-round-trip probe: preconditions + db listing ------------------
-	probeOut, err := run(migrateadapter.ProbeCommand(repoRoot, pj.DataDir))
+	probeOut, err := run(migrateadapter.ProbeCommand(repoRoot, pj.MigrateScript, pj.DataDir))
 	if err != nil {
 		return fmt.Errorf("cannot reach VM %s (ssh failed) — nothing to migrate", target.HostSpec.Host)
 	}
 	probe := migrateadapter.ParseProbe(probeOut)
 	// The shell's check order: repo root, pnpm, tenant dir.
 	if !probe.RepoOK {
-		return fmt.Errorf("repo root not found at %s (checked for %s)", repoRoot, "apps/api/scripts/libsql-migrate/migrate-db.ts")
+		return fmt.Errorf("repo root not found at %s (migrateScript %q missing — configure migrateScript in kampodra.json, the profile project block, or KAMPODRA_MIGRATE_SCRIPT)", repoRoot, pj.MigrateScript)
 	}
 	if !probe.PnpmOK {
 		return fmt.Errorf("pnpm not found in PATH on %s", target.HostSpec.Host)
@@ -176,7 +177,7 @@ func runMigrate(d Deps, c *cobra.Command) error {
 	migrateOne := func(j migrateadapter.Job) bool {
 		rel := strings.TrimPrefix(j.Path, pj.DataDir+"/")
 		say("[migrate] migrating %s (ns: %s)\n", rel, j.NS)
-		if _, err := run(migrateadapter.MigrateCommand(repoRoot, j)); err != nil {
+		if _, err := run(migrateadapter.MigrateCommand(repoRoot, pj.MigrateScript, j)); err != nil {
 			outMu.Lock()
 			fmt.Fprintf(d.Stderr, "[migrate][FAIL] migration failed for %s\n", j.Path)
 			outMu.Unlock()

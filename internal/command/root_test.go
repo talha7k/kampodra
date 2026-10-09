@@ -42,7 +42,7 @@ func assertIndexShape(t *testing.T, out string) {
 	if !strings.Contains(out, "kampodra — kamal-alternative CLI for Alpine + Podman deploys, built on kamal-proxy") {
 		t.Errorf("index lost the mission line:\n%s", out)
 	}
-	// Groups in the frozen-spec order, with the kampodra-native HOST group.
+	// Groups in index order.
 	wantGroups := []string{"DEPLOY\n", "DEPLOY LIFECYCLE\n", "INFRA\n", "DNS\n", "ENV\n", "CONFIG\n", "HOST\n", "METRICS\n", "BACKUP\n"}
 	last := -1
 	for _, g := range wantGroups {
@@ -56,8 +56,9 @@ func assertIndexShape(t *testing.T, out string) {
 		}
 		last = i
 	}
-	// Every frozen-spec command appears, plus the kampodra-native ssh.
-	for _, c := range []string{"deploy", "bluegreen", "migrate", "vm-prepare", "image-import", "status", "dns", "env", "config", "metrics", "backup", "ssh"} {
+	// Every implemented command appears in the index — unimplemented
+	// commands are unlisted, so the index lists exactly the real surface.
+	for _, c := range []string{"deploy", "migrate", "vm-prepare", "status", "dns", "env", "config", "metrics", "backup", "ssh", "vm-wipe"} {
 		if !strings.Contains(out, c) {
 			t.Errorf("index missing command %q:\n%s", c, out)
 		}
@@ -65,9 +66,11 @@ func assertIndexShape(t *testing.T, out string) {
 	if !strings.Contains(out, "Every command supports --help with usage + examples.") {
 		t.Errorf("index lost its footer:\n%s", out)
 	}
-	// Unported spec surface is honestly marked in the index.
-	if !strings.Contains(out, "NOT_YET_PORTED") {
-		t.Errorf("index must mark unported commands:\n%s", out)
+	// Unimplemented commands are never advertised.
+	for _, dead := range []string{"bluegreen", "image-import", "NOT_YET_PORTED"} {
+		if strings.Contains(out, dead) {
+			t.Errorf("index must not list unimplemented %q:\n%s", dead, out)
+		}
 	}
 }
 

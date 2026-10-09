@@ -18,8 +18,8 @@ import (
 // shell — fixture-tested through the PATH ssh shim, never a real VM.
 
 const (
-	deployContainer = "kampodine-api"
-	deployImageRepo = "127.0.0.1:5000/kampodine-api"
+	deployContainer = "app"
+	deployImageRepo = "127.0.0.1:5000/app"
 )
 
 const deployLedger = `{"ts":"2026-10-08T10:05:00Z","host":"root@203.0.113.9","sha":"aaa1111000000000000000000000000000000000","tag":"aaa1111","result":"success","duration_ms":182000,"subject":"feat: ledger merge"}
@@ -52,7 +52,7 @@ func setupDeploy(t *testing.T) (deps command.Deps, stubDir string, stdout, stder
 	fPS := fixture("ps", statusPS)
 	fDF := fixture("df", statusDF)
 	fLogs := fixture("logs", "10:00:00 starting api\n10:00:01 listening on :8080\n")
-	fSvcs := fixture("svcs", "kampodine-api: running\n")
+	fSvcs := fixture("svcs", "app: running\n")
 
 	shim := "#!/bin/bash\n" +
 		"printf '%s\\n' \"$*\" >> '" + inv + "'\n" +
@@ -115,9 +115,11 @@ func TestDeployListMergesVMTagsWithLedger(t *testing.T) {
 		"== deployment history for " + statusHost + " (ledger: ",
 		"TAG       CREATED           STATE     RESULT    SUBJECT",
 		// VM rows, newest first; the running one marked; ledger enrichment.
-		"aaa1111   2026-10-08 10:00  on VM     success   feat: ledger merge",
+		// aaa1111's ledger deploy (10:05) is newer than its image build
+		// (10:00): same-tag rows merge and show the LATEST timestamp.
+		"aaa1111   2026-10-08 10:05  on VM     success   feat: ledger merge",
 		"bbb2222   2026-10-07 09:00  on VM     -         -",
-		"ccc3333   2026-10-06 08:00  RUNNING   rollback  fix: tls edge",
+		"ccc3333   2026-10-08 11:00  RUNNING   rollback  fix: tls edge",
 		"ddd4444   2026-10-05 07:00  on VM     -         -",
 		// Ledger-only row (pruned on the VM), and only for THIS host. The
 		// full ISO ts overflows its %-17s column — exactly one separator

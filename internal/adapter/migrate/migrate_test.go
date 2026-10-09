@@ -11,9 +11,9 @@ import (
 // busybox-safe remote composition, no OS knowledge in the command layer.
 
 func TestProbeCommandShape(t *testing.T) {
-	cmd := ProbeCommand("/srv/app", "/data/tenants")
+	cmd := ProbeCommand("/srv/app", "scripts/migrate-db.ts", "/data/tenants")
 	for _, want := range []string{
-		"/srv/app/apps/api/scripts/libsql-migrate/migrate-db.ts",
+		"/srv/app/scripts/migrate-db.ts",
 		"command -v pnpm",
 		"/data/tenants",
 		"db=",
@@ -24,13 +24,23 @@ func TestProbeCommandShape(t *testing.T) {
 	}
 }
 
+func TestProbeCommandUsesTheConfiguredScript(t *testing.T) {
+	cmd := ProbeCommand("/srv/app", "ops/migrate.ts", "/data")
+	if !strings.Contains(cmd, "/srv/app/ops/migrate.ts") || strings.Contains(cmd, "migrate-db.ts") {
+		t.Errorf("probe must check the CONFIGURED migrate script, not a hardcoded path:\n%s", cmd)
+	}
+}
+
 func TestProbeCommandQuotesPaths(t *testing.T) {
-	cmd := ProbeCommand("/srv/app's", "/data/ten ants")
+	cmd := ProbeCommand("/srv/app's", "scripts/mi grate.ts", "/data/ten ants")
 	if !strings.Contains(cmd, `/srv/app'\''s`) {
 		t.Errorf("repo path must be single-quote escaped:\n%s", cmd)
 	}
 	if !strings.Contains(cmd, `/data/ten ants`) {
 		t.Errorf("data dir must stay one argument:\n%s", cmd)
+	}
+	if !strings.Contains(cmd, `'/srv/app'\''s/scripts/mi grate.ts'`) {
+		t.Errorf("the configured script path must be quote-escaped inside the check:\n%s", cmd)
 	}
 }
 
@@ -142,15 +152,22 @@ func TestPlanNoRootNoTenants(t *testing.T) {
 }
 
 func TestMigrateCommandShape(t *testing.T) {
-	cmd := MigrateCommand("/srv/app", Job{Path: "/data/tenants/tenant_a.db", NS: "tenant_a"})
+	cmd := MigrateCommand("/srv/app", "scripts/migrate-db.ts", Job{Path: "/data/tenants/tenant_a.db", NS: "tenant_a"})
 	for _, want := range []string{
 		"cd '/srv/app'",
-		"pnpm --filter api exec tsx scripts/libsql-migrate/migrate-db.ts",
+		"pnpm exec tsx 'scripts/migrate-db.ts'",
 		"--db 'file:/data/tenants/tenant_a.db'",
 		"--ns 'tenant_a'",
 	} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("migrate command missing %q:\n%s", want, cmd)
 		}
+	}
+}
+
+func TestMigrateCommandUsesTheConfiguredScript(t *testing.T) {
+	cmd := MigrateCommand("/srv/app", "ops/migrate.ts", Job{Path: "/data/tenant_a.db", NS: "tenant_a"})
+	if !strings.Contains(cmd, "pnpm exec tsx 'ops/migrate.ts'") || strings.Contains(cmd, "migrate-db.ts") {
+		t.Errorf("migrate command must run the CONFIGURED script, not a hardcoded path:\n%s", cmd)
 	}
 }

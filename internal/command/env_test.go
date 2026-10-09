@@ -36,7 +36,7 @@ func setupEnv(t *testing.T) (deps command.Deps, stubDir string, stdout, stderr *
 		"printf '%s\\n' \"$*\" >> '" + inv + "'\n" +
 		"cmd=\"${*: -1}\"\n" +
 		"case \"$cmd\" in\n" +
-		"  \"cat /etc/kampodine/env\") cat '" + fixture + "'; exit 0 ;;\n" +
+		"  \"cat /etc/kampodra/env\") cat '" + fixture + "'; exit 0 ;;\n" +
 		"  \"umask 077; cat >\"*) cat > '" + uploaded + "'; exit 0 ;;\n" +
 		"  \"chmod 600\"*) exit 0 ;;\n" +
 		"  *) exit 0 ;;\n" +
@@ -123,7 +123,7 @@ func TestEnvListRemoteReadFailureNamesTheRemedy(t *testing.T) {
 	if code := runEnv(t, deps, "--host", envHost, "list"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	if !strings.Contains(stderr.String(), "cannot read /etc/kampodine/env on "+envHost) {
+	if !strings.Contains(stderr.String(), "cannot read /etc/kampodra/env on "+envHost) {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "env push --file") {
@@ -142,12 +142,12 @@ func TestEnvPushUploadsVerbatimWithAtomicInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	commands := string(inv)
-	if !strings.Contains(commands, "umask 077; cat > /etc/kampodine/env.tmp.") {
+	if !strings.Contains(commands, "umask 077; cat > /etc/kampodra/env.tmp.") {
 		t.Errorf("push never created the 0600-from-creation remote temp:\n%s", commands)
 	}
-	if !strings.Contains(commands, "chmod 600 /etc/kampodine/env.tmp.") ||
-		!strings.Contains(commands, "mv -f /etc/kampodine/env.tmp.") ||
-		!strings.Contains(commands, "/etc/kampodine/env") {
+	if !strings.Contains(commands, "chmod 600 /etc/kampodra/env.tmp.") ||
+		!strings.Contains(commands, "mv -f /etc/kampodra/env.tmp.") ||
+		!strings.Contains(commands, "/etc/kampodra/env") {
 		t.Errorf("push never performed the atomic install (chmod 600 + mv -f):\n%s", commands)
 	}
 	uploaded, err := os.ReadFile(filepath.Join(stubDir, "uploaded"))
@@ -161,7 +161,7 @@ func TestEnvPushUploadsVerbatimWithAtomicInstall(t *testing.T) {
 	if strings.Contains(out, "hushhush") || strings.Contains(out, "SECRET_KEY=hushhush") {
 		t.Errorf("push leaked a raw value:\n%s", out)
 	}
-	if !strings.Contains(out, "installed /etc/kampodine/env (0600) on "+envHost) {
+	if !strings.Contains(out, "installed /etc/kampodra/env (0600) on "+envHost) {
 		t.Errorf("push must confirm the install:\n%s", out)
 	}
 	if !strings.Contains(out, "restart to apply") {
@@ -234,7 +234,7 @@ func TestEnvPullWithoutOutStreamsPayloadToStdout(t *testing.T) {
 	if got := stdout.String(); got != remoteEnvFixture {
 		t.Errorf("stdout = %q, want the raw payload (exactly one trailing newline)", got)
 	}
-	if !strings.Contains(stderr.String(), "fingerprint summary for /etc/kampodine/env on "+envHost) {
+	if !strings.Contains(stderr.String(), "fingerprint summary for /etc/kampodra/env on "+envHost) {
 		t.Errorf("stderr = %q, want the masked summary", stderr.String())
 	}
 	if strings.Contains(stderr.String(), "APP_MODE=production") {
@@ -276,7 +276,7 @@ func TestEnvDiffClassifiesAndNeverLeaksValues(t *testing.T) {
 	}
 	out := stdout.String()
 	for _, want := range []string{
-		"== env diff: " + local + " vs " + envHost + ":/etc/kampodine/env ==",
+		"== env diff: " + local + " vs " + envHost + ":/etc/kampodra/env ==",
 		"+ NEW_KEY",
 		"- LEGACY_KEY",
 		"~ APP_MODE",

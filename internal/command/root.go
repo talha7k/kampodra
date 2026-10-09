@@ -1,9 +1,8 @@
-// Package command is kampodra's cobra command tree — ported from the
-// frozen shell 0.6.0 spec (see internal/parity/golden.json). Commands
-// orchestrate adapters and render; every business decision lives in
-// internal/adapter/* or in pure helpers here, and the command-parity guard
-// (parity_guard_test.go) keeps the frozen spec covered while allowing
-// review-flagged kampodra-native additions.
+// Package command is kampodra's cobra command tree. Commands orchestrate
+// adapters and render; every business decision lives in
+// internal/adapter/* or in pure helpers here. The public command set is
+// pinned by surface_test.go: exactly the implemented commands, each with
+// a Use and a Short.
 package command
 
 import (
@@ -19,16 +18,14 @@ import (
 	"github.com/talha7k/kampodra/internal/adapter/transport"
 )
 
-// rootIndex is the vercel-style command index: the frozen-spec surface,
-// marked "(not yet ported)" where only the spec entry exists, plus the
-// kampodra-native additions at the end.
+// rootIndex is the vercel-style bare-invocation index: one screen listing
+// every implemented command, grouped by job.
 const rootIndex = `kampodra — kamal-alternative CLI for Alpine + Podman deploys, built on kamal-proxy
 
 Usage: kampodra <command> [args...]
 
 DEPLOY
   deploy         the full pipeline: build → save|load stream → env → restart → health gate → proxy re-point → smoke; --rollback [sha]; --rolling; converge
-  bluegreen      reserved-IP blue/green pair (NOT_YET_PORTED): status | init | provision | flip | rollback
   migrate        tenant db migrations over SSH: root.db first, then tenants bounded-parallel; stop-first guard; --allow-running
 
 DEPLOY LIFECYCLE
@@ -45,8 +42,7 @@ DEPLOY LIFECYCLE
 INFRA
   vm-wipe        kampodra-native teardown: stop+disable services, remove project containers, prune images, delete env/stamps/state (--yes gated; --keep-data)
   vm-prepare     first-run bootstrap of a bare Alpine host: gates, sshd hardening, podman stack, OpenRC services, kamal-proxy edge, anchor watcher; --pull-images; --ansible <playbook>
-  image-import   golden qcow2 -> OCI custom image (NOT_YET_PORTED)
-  status         live health + deployment count + VM disk/image/service state + metrics (--verbose) + the blue/green pair view; --all-profiles renders every profile
+  status         live health + deployment count + VM disk/image/service state + metrics (--verbose); --all-profiles renders every profile
 
 DNS
   dns            OCI DNS records, oci auth only (never credential material): records | add | rm
@@ -62,7 +58,7 @@ HOST
   ssh            host-level ssh passthrough through the profile's host/key (no command = interactive login) — kampodra-native
 
 METRICS
-  metrics        one-shot VM snapshot over SSH: load, memory, disk, containers, top procs; --warn-disk gates
+  metrics        one-shot VM snapshot over SSH: load, memory, disk, containers, top procs; --disk-threshold gates
 
 BACKUP
   backup         OCI Object Storage backups: list | download | verify | restore-plan (restore-plan never executes)
@@ -128,8 +124,8 @@ func (d Deps) manifestFor() (*project.Manifest, error) {
 	return &mf, nil
 }
 
-// exitError carries a specific process exit code (cli.js parity: unknown
-// commands exit 2, everything else 1).
+// exitError carries a specific process exit code: unknown commands exit 2
+// (distinct from "ran and failed", which exits 1).
 type exitError struct{ code int }
 
 func (e *exitError) Error() string { return fmt.Sprintf("exit %d", e.code) }
@@ -149,8 +145,8 @@ func NewRoot(version string, deps Deps) *cobra.Command {
 				fmt.Fprint(d.Stdout, rootIndex)
 				return nil
 			}
-			// cli.js parity: unknown command names the offender, reprints
-			// the index on stderr, exits 2.
+			// Unknown-command contract: name the offender, reprint the
+			// index on stderr, exit 2.
 			fmt.Fprintf(d.Stderr, "kampodra: unknown command: %s\n\n%s", args[0], rootIndex)
 			return &exitError{code: 2}
 		},
@@ -177,6 +173,8 @@ func NewRoot(version string, deps Deps) *cobra.Command {
 	root.AddCommand(newMetricsCommand(d))
 	root.AddCommand(newDNSCommand(d))
 	root.AddCommand(newMigrateCommand(d))
+	root.AddCommand(newBluegreenCommand(d))
+	root.AddCommand(newImageImportCommand(d))
 	return root
 }
 

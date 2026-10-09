@@ -12,9 +12,8 @@ import (
 	"github.com/talha7k/kampodra/internal/adapter/state"
 )
 
-// vmWipeHelp — vm-wipe is kampodra-NATIVE (beyond the frozen shell spec;
-// the parity guard review-flags it). It exists so a full fresh-VM rebuild
-// can run entirely through kampodra: wipe first, vm-prepare after.
+// vmWipeHelp — vm-wipe is kampodra-native. It exists so a full fresh-VM
+// rebuild can run entirely through kampodra: wipe first, vm-prepare after.
 const vmWipeHelp = `Usage:
   kampodra vm-wipe --yes [--keep-data] [--force] [--host root@<ip>] [--profile <name>] [--ssh-key <path>]
 
@@ -130,7 +129,11 @@ func runVMWipe(d Deps, c *cobra.Command) error {
 		return fmt.Errorf("no kampodra services found on %s — refusing to wipe (wrong host, or wrong profile? use a matching --profile, or --force to mean it)", target.HostSpec.Host)
 	}
 
-	fmt.Fprintf(d.Stdout, "[vm-wipe] tearing down %s (profile: %s)\n", target.HostSpec.Host, target.ProfileName)
+	profileLabel := target.ProfileName
+	if profileLabel == "" {
+		profileLabel = "<none>"
+	}
+	fmt.Fprintf(d.Stdout, "[vm-wipe] tearing down %s (profile: %s)\n", target.HostSpec.Host, profileLabel)
 	var removed []string
 
 	// --- 1. stop + disable every project service (init-aware) -------------
@@ -160,13 +163,15 @@ func runVMWipe(d Deps, c *cobra.Command) error {
 	runTolerant("podman image prune -a -f")
 	removed = append(removed, "podman images (pruned)")
 
-	// --- 4. remove env file, stamps, state dirs; data dir last ------------
-	envDir := pathDir(pj.EnvFilePath)
-	runTolerant("rm -f " + pj.EnvFilePath)
+	// --- 4. remove MANAGED files only; the env DIR may hold other services'
+	// files (monitoring agents, etc.) — never rm -rf it. Name the leftovers
+	// so the operator can clean them deliberately.
+	envDir := pathDir(pj.EnvFile)
+	runTolerant("rm -f " + pj.EnvFile)
 	runTolerant("rm -f " + pj.DeployedShaFile)
 	runTolerant("rm -f " + envDir + "/anchor.conf")
-	runTolerant("rm -rf " + envDir)
-	removed = append(removed, pj.EnvFilePath+" (env file)", pj.DeployedShaFile+" (stamp)", envDir+" (state dir)")
+	removed = append(removed, pj.EnvFile+" (env file)", pj.DeployedShaFile+" (stamp)", envDir+"/anchor.conf (anchor config)")
+	fmt.Fprintf(d.Stdout, "[vm-wipe] left in place (not kampodra-managed): %s/ — inspect and remove if nothing else needs it\n", envDir)
 	if keepData {
 		fmt.Fprintf(d.Stdout, "[vm-wipe] kept: %s (tenant data — --keep-data)\n", pj.DataDir)
 	} else {
@@ -177,8 +182,8 @@ func runVMWipe(d Deps, c *cobra.Command) error {
 	for _, r := range removed {
 		fmt.Fprintf(d.Stdout, "[vm-wipe] removed: %s\n", r)
 	}
-	fmt.Fprintf(d.Stdout, "[vm-wipe] DONE — %s is clean; rebuild with: kampodra vm-prepare --profile %s\n",
-		target.HostSpec.Host, target.ProfileName)
+	fmt.Fprintf(d.Stdout, "[vm-wipe] DONE — %s is clean; rebuild with: kampodra vm-prepare --host %s\n",
+		target.HostSpec.Host, target.HostSpec.Host)
 	return nil
 }
 

@@ -152,7 +152,7 @@ func Generate(ctx context.Context, repoRoot, schemaPath string, clearKeys []stri
 	if err := os.MkdirAll(scratch, 0o700); err != nil {
 		return "", fmt.Errorf("scratch create: %w", err)
 	}
-	defer os.RemoveAll(scratch)
+	defer func() { _ = os.RemoveAll(scratch) }()
 
 	tarData, err := GitArchive(ctx, repoRoot, schemaPath)
 	if err != nil {

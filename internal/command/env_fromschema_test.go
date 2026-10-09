@@ -78,8 +78,12 @@ LIBSQL_API_MOUNT=1
 STATIC_SPA_MOUNT=1
 `
 
+// The default drop-set is the project's envClearKeys default (NODE_ENV,
+// PORT — the generic CLEAR vars the init script owns). App-specific keys in
+// the varlock output pass through unless the operator overrides envClearKeys.
 func wantFromSchemaEnv() string {
-	return "API_SESSION_SECRET=s3cret-value\nLIBSQL_URL=file:/data/tenants/x.db\n"
+	return "API_SESSION_SECRET=s3cret-value\nLIBSQL_URL=file:/data/tenants/x.db\n" +
+		"LIBSQL_TENANT_DIR=/data/tenants\nLIBSQL_API_MOUNT=1\nSTATIC_SPA_MOUNT=1\n"
 }
 
 func TestEnvFromSchemaWritesLocalOut(t *testing.T) {
@@ -124,6 +128,27 @@ func TestEnvFromSchemaPushesThroughEnvFamily(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "s3cret-value") {
 		t.Errorf("push leaked a secret value:\n%s", stdout.String())
+	}
+}
+
+// KAMPODRA_ENV_CLEAR_KEYS overrides the drop-set: the named keys are
+// stripped from the varlock output before it lands on the VM.
+func TestEnvFromSchemaEnvClearKeysOverrideDropsKeys(t *testing.T) {
+	deps, _, stderr, repo, uploaded := setupFromSchema(t, fromSchemaVarlockFixture)
+	t.Setenv("KAMPODRA_ENV_CLEAR_KEYS", "LIBSQL_TENANT_DIR STATIC_SPA_MOUNT")
+
+	if code := command.Execute("test", deps, []string{"env", "from-schema", "--repo", repo,
+		"--host", "root@203.0.113.9"}); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+	}
+	data, err := os.ReadFile(uploaded)
+	if err != nil {
+		t.Fatalf("upload captured nothing: %v", err)
+	}
+	want := "API_SESSION_SECRET=s3cret-value\nLIBSQL_URL=file:/data/tenants/x.db\n" +
+		"NODE_ENV=production\nPORT=8080\nLIBSQL_API_MOUNT=1\n"
+	if string(data) != want {
+		t.Errorf("pushed env = %q, want %q (the overridden clear keys dropped; the default NODE_ENV/PORT pass through)", data, want)
 	}
 }
 

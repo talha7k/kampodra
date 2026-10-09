@@ -1,6 +1,8 @@
 package command
 
 import (
+	"encoding/json"
+
 	"github.com/talha7k/kampodra/internal/adapter/project"
 	"github.com/talha7k/kampodra/internal/adapter/state"
 	"github.com/talha7k/kampodra/internal/adapter/transport"
@@ -15,6 +17,7 @@ type Target struct {
 	ProfileName string
 	ProfileInit string // cached init verdict from the profile (probe skip)
 	Project     project.Config
+	Cloud       json.RawMessage // raw profile "cloud" block (provider-CLI auth overrides)
 }
 
 // ResolveTarget is the pure profile_resolve port shared by every host-aware
@@ -61,6 +64,7 @@ func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, man
 		ProfileName: name,
 		ProfileInit: profile.Init,
 		Project:     pc,
+		Cloud:       profile.Cloud,
 	}, nil
 }
 

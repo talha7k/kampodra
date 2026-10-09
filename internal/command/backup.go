@@ -3,6 +3,7 @@ package command
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	crand "crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -26,14 +27,16 @@ const restoreVerifyBin = "/usr/local/bin/restore-verify"
 
 // backupHelp is the shell backup.sh usage heredoc, kampodra-fied.
 const backupHelp = `Usage:
-  kampodra backup list [--prefix <prefix>] [--bucket <name>] [--profile <oci>] [--instance-principal]
-  kampodra backup download <object> [--out <file>] [--bucket <name>] [--profile <oci>] [--instance-principal]
-  kampodra backup verify <local.db|.tgz> [--host <user@ip>] [--ssh-key <path>] [--kampodine-profile <name>]
+  kampodra backup list [--prefix <prefix>] [--bucket <name>]
+  kampodra backup download <object> [--out <file>] [--bucket <name>]
+  kampodra backup verify <local.db|.tgz> [--host <user@ip>] [--ssh-key <path>] [--profile <name>]
   kampodra backup restore-plan <object> [--bucket <name>]
 
-Auth is the oci CLI's own — its config file (--profile) or instance
-principal. kampodra never accepts, stores, or logs credential material.
-Bucket: --bucket (default from the project config, KAMPODRA_BACKUP_BUCKET
+Auth is the oci CLI's own — kampodra passes no auth flags unless the
+instance profile's "cloud" block overrides it (profile, compartment,
+instancePrincipal); OCI_PROFILE / OCI_COMPARTMENT env are the escape
+hatch. kampodra never accepts, stores, or logs credential material.
+Bucket: --bucket (default from the project config; KAMPODRA_BUCKET
 overrides). LIST-denied by policy is not fatal for download/verify — GET
 works with just the object name; ` + "`list`" + ` prints the exact policy shape
 when denied. verify uploads each .db member to a VM scratch file and runs
@@ -45,12 +48,11 @@ executes anything.
 
 Examples:
   kampodra backup list --prefix tenants/
-  kampodra backup list --bucket my-backups --profile my-oci-profile
   kampodra backup download tenants/acme/20261008T050000Z.db --out /tmp/restore.db
   kampodra backup verify /tmp/restore.db --host root@203.0.113.10
   kampodra backup verify ./bundle.tgz          # every .db member, read-only
   kampodra backup restore-plan tenants/acme/20261008T050000Z.db
-`
+ `
 
 func newBackupCommand(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
@@ -66,14 +68,12 @@ func newBackupCommand(d Deps) *cobra.Command {
 		fmt.Fprint(c.OutOrStdout(), backupHelp)
 	})
 	pf := cmd.PersistentFlags()
-	pf.String("bucket", "", "object-storage bucket (default: project config bucket; KAMPODRA_BACKUP_BUCKET overrides)")
+	pf.String("bucket", "", "object-storage bucket (default: project config bucket; KAMPODRA_BUCKET overrides)")
 	pf.String("prefix", "", "object name prefix for list")
 	pf.String("out", "", "download destination (default: the object's basename)")
-	pf.String("profile", "", "OCI CONFIG profile (dns convention; default: OCI_PROFILE env > default)")
-	pf.Bool("instance-principal", false, "authenticate as the instance principal (when run ON a VM)")
+	pf.String("profile", "", "kampodra INSTANCE profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
 	pf.String("host", "", "VM target for verify (user@ip or ssh-config alias)")
 	pf.String("ssh-key", "", "identity file for verify — beats KAMPODRA_SSH_KEY")
-	pf.String("kampodine-profile", "", "kampodra INSTANCE profile for verify's ssh leg (frozen-spec flag name)")
 	pf.Bool("migrated-topology", false, "verify: pass restore-verify's --migrated-topology drill flag (migration-fallout chain shape → warnings)")
 
 	cmd.AddCommand(
@@ -132,32 +132,53 @@ func requireBackupObject(args []string, usage string) (string, error) {
 	return args[0], nil
 }
 
-// backupBucket resolves the bucket: --bucket flag > KAMPODRA_BACKUP_BUCKET >
-// the project config's bucket (the ONE place the name lives).
-func backupBucket(d Deps, c *cobra.Command, projectBucket string) string {
+// backupBucket resolves the bucket: --bucket flag > the project config's
+// bucket — the ladder-resolved value (KAMPODRA_BUCKET > profile project
+// block > manifest > default already applied inside it; the ONE place the
+// name lives).
+func backupBucket(c *cobra.Command, projectBucket string) string {
 	if v := flagString(c, "bucket"); v != "" {
-		return v
-	}
-	if v, ok := d.Env("KAMPODRA_BACKUP_BUCKET"); ok && v != "" {
 		return v
 	}
 	return projectBucket
 }
 
-// ociProfile resolves the OCI CONFIG profile: --profile > OCI_PROFILE >
-// "default" (the dns convention).
-func ociProfile(d Deps, c *cobra.Command) string {
-	if v := flagString(c, "profile"); v != "" {
-		return v
+// cloudAuthFor resolves the provider-CLI auth overrides for one run:
+// the instance profile's `cloud` block, with the provider's own env vars
+// as the escape hatch. Everything empty = the oci CLI resolves natively
+// (its config's default/DEFAULT/first-profile precedence) — kampodra
+// passes no auth flags at all. Credentials NEVER appear here: the block
+// names config entries, and the provider CLI reads them itself.
+func cloudAuthFor(d Deps, target Target) cloud.CloudAuth {
+	auth := cloud.ParseCloudAuth(target.Cloud)
+	if auth.Profile == "" {
+		if v, ok := d.Env("OCI_PROFILE"); ok {
+			auth.Profile = v
+		}
 	}
-	if v, ok := d.Env("OCI_PROFILE"); ok && v != "" {
-		return v
+	if auth.Compartment == "" {
+		if v, ok := d.Env("OCI_COMPARTMENT"); ok {
+			auth.Compartment = v
+		}
 	}
-	return "default"
+	return auth
 }
 
-func authDeniedGuidance(d Deps, profile, bucket string) {
-	fmt.Fprintf(d.Stderr, "[backup] FAIL: LIST denied — this identity (profile %s / instance principal) lacks INSPECT+READ on bucket %s.\n", profile, bucket)
+// profileLabel renders the auth identity for human output: the configured
+// profile name, or a marker for the empty (oci-CLI-native) case.
+func profileLabel(auth cloud.CloudAuth) string {
+	if auth.Profile != "" {
+		return auth.Profile
+	}
+	if auth.InstancePrincipal {
+		return "instance-principal"
+	}
+	return "oci-cli default"
+}
+
+func authDeniedGuidance(d Deps, auth cloud.CloudAuth, bucket string) {
+	identity := profileLabel(auth)
+	fmt.Fprintf(d.Stderr, "[backup] FAIL: LIST denied — this identity (%s) lacks INSPECT+READ on bucket %s.\n", identity, bucket)
 	fmt.Fprintln(d.Stderr, "The bucket compartment needs a policy like:")
 	fmt.Fprintln(d.Stderr, "  Allow dynamic-group <your-dg> to read buckets in compartment <compartment>")
 	fmt.Fprintln(d.Stderr, "  Allow dynamic-group <your-dg> to read objects in compartment <compartment>")
@@ -170,13 +191,15 @@ func runBackupList(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	bucket := backupBucket(d, c, target.Project.Bucket)
-	profile := ociProfile(d, c)
-	instancePrincipal := flagBool(c, "instance-principal")
+	bucket := backupBucket(c, target.Project.Bucket)
+	auth := cloudAuthFor(d, target)
+	if err := cloud.CheckProvider(auth); err != nil {
+		return err
+	}
 	prefix := flagString(c, "prefix")
 
-	suffix := fmt.Sprintf(" (profile: %s", profile)
-	if instancePrincipal {
+	suffix := fmt.Sprintf(" (profile: %s", profileLabel(auth))
+	if auth.InstancePrincipal {
 		suffix += ", instance-principal"
 	}
 	suffix += "):"
@@ -186,11 +209,11 @@ func runBackupList(d Deps, c *cobra.Command) error {
 		fmt.Fprintf(d.Stdout, "[backup] objects in bucket %s%s\n", bucket, suffix)
 	}
 
-	out, err := cloud.RunOCI(c.Context(), cloud.ObjectListArgs(bucket, prefix, profile, instancePrincipal))
+	out, err := cloud.RunOCI(c.Context(), cloud.ObjectListArgs(bucket, prefix, auth.Profile, auth.InstancePrincipal))
 	if err != nil {
 		msg := err.Error()
 		if cloud.IsAuthDenied(msg) {
-			authDeniedGuidance(d, profile, bucket)
+			authDeniedGuidance(d, auth, bucket)
 			return &exitError{code: 1}
 		}
 		return fmt.Errorf("object list failed: %s", msg)
@@ -219,16 +242,18 @@ func runBackupDownload(d Deps, c *cobra.Command, obj string) error {
 	if err != nil {
 		return err
 	}
-	bucket := backupBucket(d, c, target.Project.Bucket)
-	profile := ociProfile(d, c)
-	instancePrincipal := flagBool(c, "instance-principal")
+	bucket := backupBucket(c, target.Project.Bucket)
+	auth := cloudAuthFor(d, target)
+	if err := cloud.CheckProvider(auth); err != nil {
+		return err
+	}
 
 	out := flagString(c, "out")
 	if out == "" {
 		out = filepath.Base(obj)
 	}
 
-	headJSON, _ := cloud.RunOCI(c.Context(), cloud.ObjectHeadArgs(bucket, obj, profile, instancePrincipal))
+	headJSON, _ := cloud.RunOCI(c.Context(), cloud.ObjectHeadArgs(bucket, obj, auth.Profile, auth.InstancePrincipal))
 	expected := cloud.ExpectedDigest(headJSON)
 
 	// 0600 FROM CREATION: pre-create the file 0600, oci get truncates into it.
@@ -237,7 +262,7 @@ func runBackupDownload(d Deps, c *cobra.Command, obj string) error {
 		return fmt.Errorf("cannot write %s", out)
 	}
 	f.Close()
-	if _, err := cloud.RunOCI(c.Context(), cloud.ObjectGetArgs(bucket, obj, out, profile, instancePrincipal)); err != nil {
+	if _, err := cloud.RunOCI(c.Context(), cloud.ObjectGetArgs(bucket, obj, out, auth.Profile, auth.InstancePrincipal)); err != nil {
 		return fmt.Errorf("object get failed for %s (bucket %s): %w", obj, bucket, err)
 	}
 	if err := os.Chmod(out, 0o600); err != nil {
@@ -293,45 +318,23 @@ func runBackupVerify(d Deps, c *cobra.Command, obj string) error {
 	if _, err := os.Stat(obj); err != nil {
 		return fmt.Errorf("no such file: %s", obj)
 	}
-	// The ssh leg resolves through the standard ladder; --kampodine-profile
-	// is the frozen-spec flag name for the instance profile here.
+	// The ssh leg resolves through the standard ladder (--host > profile
+	// host > KAMPODRA_HOST; --profile > KAMPODRA_PROFILE > defaultProfile).
 	target, err := resolveAnyTarget(d, c)
 	if err != nil {
 		return err
 	}
 	if err := requireHost(target); err != nil {
-		return fmt.Errorf("verify needs a VM target: --host root@<ip>, --kampodine-profile <name>, KAMPODRA_PROFILE, config defaultProfile, or KAMPODRA_HOST")
+		return fmt.Errorf("verify needs a VM target: --host root@<ip>, --profile <name>, KAMPODRA_PROFILE, config defaultProfile, or KAMPODRA_HOST")
 	}
 	ctx := c.Context()
 	migrated := flagBool(c, "migrated-topology")
-	seq := 0
-	run := func(remote string) (string, error) {
-		return d.Runner.Run(ctx, target.HostSpec, remote)
-	}
-	// verifyOneDb uploads one local db image to a VM scratch file, runs
-	// restore-verify -db on it, and always removes the scratch — the data
-	// dir is never touched.
-	verifyOneDb := func(label, localPath string) error {
-		seq++
-		scratch := verifyScratchPath(seq)
-		defer run("rm -f " + scratch) // tolerant: cleanup never masks the verdict
-		if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, "umask 077; cat > "+scratch, mustOpen(localPath)); err != nil {
-			return fmt.Errorf("scratch upload for %s: %w", label, err)
-		}
-		out, err := run(restoreVerifyCmd(scratch, migrated))
-		if out != "" {
-			fmt.Fprint(d.Stdout, out)
-		}
-		if err != nil {
-			return fmt.Errorf("restore-verify FAILED for %s: %w", label, err)
-		}
-		return nil
-	}
+	verifier := &dbVerifier{d: d, ctx: ctx, target: target, migrated: migrated}
 	switch mode {
 	case "db":
 		fmt.Fprintf(d.Stdout, "[backup] uploading %s to VM scratch + restore-verify -db on %s (read-only; scratch only — NEVER writes into %s)\n",
 			obj, target.HostSpec.Host, target.Project.DataDir)
-		if err := verifyOneDb(filepath.Base(obj), obj); err != nil {
+		if err := verifier.verifyOneDb(filepath.Base(obj), obj); err != nil {
 			return err
 		}
 		fmt.Fprintln(d.Stdout, "[backup] OK — restore-verify accepted the db image")
@@ -340,7 +343,7 @@ func runBackupVerify(d Deps, c *cobra.Command, obj string) error {
 		if err != nil {
 			return fmt.Errorf("scratch dir: %w", err)
 		}
-		defer os.RemoveAll(scratch)
+		defer func() { _ = os.RemoveAll(scratch) }()
 		if err := extractTgz(obj, scratch); err != nil {
 			return err
 		}
@@ -352,6 +355,7 @@ func runBackupVerify(d Deps, c *cobra.Command, obj string) error {
 			return fmt.Errorf("no .db/.sqlite members in %s — nothing to verify", obj)
 		}
 		fmt.Fprintf(d.Stdout, "[backup] verifying every .db member of %s on %s via VM scratch files (read-only; local scratch %s)\n", obj, target.HostSpec.Host, scratch)
+		verified := 0
 		for _, m := range members {
 			rel, _ := filepath.Rel(scratch, m)
 			if isRootDbMember(rel) {
@@ -359,11 +363,57 @@ func runBackupVerify(d Deps, c *cobra.Command, obj string) error {
 				continue
 			}
 			fmt.Fprintf(d.Stdout, "[backup] verify member: %s\n", rel)
-			if err := verifyOneDb(rel, m); err != nil {
+			if err := verifier.verifyOneDb(rel, m); err != nil {
 				return err
 			}
+			verified++
+		}
+		if verified == 0 {
+			return fmt.Errorf("nothing verified — bundle contains only the schema-only root db")
 		}
 		fmt.Fprintln(d.Stdout, "[backup] OK — every db member passed restore-verify")
+	}
+	return nil
+}
+
+// dbVerifier carries one verify run's context: the Deps, request context,
+// target, and the --migrated-topology passthrough. Extracted from
+// runBackupVerify so the per-member flow reads linearly instead of
+// nesting three closures deep.
+type dbVerifier struct {
+	d        Deps
+	ctx      context.Context
+	target   Target
+	migrated bool
+	seq      int
+}
+
+// runCleanup executes the scratch rm against context.Background() —
+// cleanup must survive ctrl-C/pipeline cancellation (tenant db bytes must
+// never linger on the VM), and its failure must never mask the verify
+// verdict.
+func (v *dbVerifier) runCleanup(remote string) {
+	if _, err := v.d.Runner.Run(context.Background(), v.target.HostSpec, remote); err != nil {
+		fmt.Fprintf(v.d.Stderr, "[backup] WARNING: scratch cleanup failed (%s): %v\n", remote, err)
+	}
+}
+
+// verifyOneDb uploads one local db image to a VM scratch file, runs
+// restore-verify -db on it, and always removes the scratch — the data dir
+// is never touched.
+func (v *dbVerifier) verifyOneDb(label, localPath string) error {
+	v.seq++
+	scratch := verifyScratchPath(v.seq)
+	defer v.runCleanup("rm -f " + scratch) // tolerant: cleanup never masks the verdict
+	if _, err := v.d.Runner.RunWithStdin(v.ctx, v.target.HostSpec, "umask 077; cat > "+scratch, mustOpen(localPath)); err != nil {
+		return fmt.Errorf("scratch upload for %s: %w", label, err)
+	}
+	out, err := v.d.Runner.Run(v.ctx, v.target.HostSpec, restoreVerifyCmd(scratch, v.migrated))
+	if out != "" {
+		fmt.Fprint(v.d.Stdout, out)
+	}
+	if err != nil {
+		return fmt.Errorf("restore-verify FAILED for %s: %w", label, err)
 	}
 	return nil
 }
@@ -416,7 +466,7 @@ func extractTgz(archivePath, scratch string) error {
 	if err != nil {
 		return fmt.Errorf("%s is not a gzip archive", archivePath)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	tr := tar.NewReader(gz)
 	scratchAbs, err := filepath.Abs(scratch)
 	if err != nil {
@@ -462,10 +512,20 @@ func dbMembers(scratch string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
+			// Skip dotfile-prefixed junk dirs too (.hidden, .DS_Store
+			// siblings) — WalkDir would otherwise descend into them.
+			if strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		switch filepath.Ext(path) {
 		case ".db", ".sqlite", ".sqlite3":
+			// Skip dotfile-prefixed junk (macOS AppleDouble `._*.db` sidecars
+			// ride mac bundles into tarballs — never feed them to the verifier).
+			if strings.HasPrefix(d.Name(), ".") {
+				return nil
+			}
 			members = append(members, path)
 		}
 		return nil
@@ -479,7 +539,7 @@ func runBackupRestorePlan(d Deps, c *cobra.Command, obj string) error {
 	if err != nil {
 		return err
 	}
-	bucket := backupBucket(d, c, target.Project.Bucket)
+	bucket := backupBucket(c, target.Project.Bucket)
 	// PRINT-ONLY by design: no oci, no ssh, no mutation — the plan is
 	// documentation bound to this object, never a runner.
 	container := target.Project.Container
@@ -513,15 +573,15 @@ Notes:
 	return nil
 }
 
-// resolveAnyTarget resolves the verify leg's target. ONLY
-// --kampodine-profile selects the INSTANCE profile here (--profile is the
-// OCI CONFIG profile, the dns convention — the frozen spec keeps the two
-// namespaces apart); a missing profile/host is NOT an error — callers
+// resolveAnyTarget resolves the target through the standard ladder:
+// --profile selects the INSTANCE profile (CLI-wide meaning; KAMPODRA_PROFILE
+// and config defaultProfile fill in below it), --host/--ssh-key ride the
+// usual host/key ladder; a missing profile/host is NOT an error — callers
 // decide what a target is required for.
 func resolveAnyTarget(d Deps, c *cobra.Command) (Target, error) {
 	host := flagString(c, "host")
 	key := flagString(c, "ssh-key")
-	profile := flagString(c, "kampodine-profile")
+	profile := flagString(c, "profile")
 	cfg, err := state.LoadConfig(d.Home)
 	if err != nil {
 		return Target{}, err

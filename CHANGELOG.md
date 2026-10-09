@@ -1,5 +1,88 @@
 # Changelog
 
+## Unreleased
+
+- **Cloud `provider` field**: the profile `cloud` block takes
+  `"provider"` (default `"oci"`; unknown values fail naming the
+  supported set) — the extension point a second cloud slots into
+  without renaming anything. Shared `cloud.ResolveCompartment` seam
+  (dns/bluegreen/image-import resolve through it); all `ocid1.*` shape
+  knowledge centralized behind `cloud.IsOCID`.
+- **Declared OS contract**: `vm-prepare` fails fast on non-Alpine
+  guests (`GateAlpineOS` runs before every other gate) — a second guest
+  OS arrives as a sibling provisioner, documented in the package doc.
+- **`bluegreen`** (`status | init | provision | flip | rollback`) —
+  OCI reserved-IP pair cutovers, ACME-first with auto-rollback,
+  native-or-inject provisioning, neutral `<container>-<color>` naming.
+- **`image-import`** — qcow2 staging + custom-image import with the
+  firmware verdict (`--keep-object`, `--name-prefix`).
+- **Lint gate**: `.golangci.yml` (dupl + gocognit/gocyclo + errcheck +
+  staticcheck + dead-code), `make lint`, CI step; a shared-secret-file
+  helper extracted, five fresh functions factored under the bar,
+  grandfathered pre-existing complexity allowlisted in DEBTS.md.
+- **Cloud auth without vendor flags** — `--oci-profile` and
+  `--instance-principal` are gone. The instance profile's `cloud` block
+  (`{"profile": "…", "compartment": "…", "instancePrincipal": true}`)
+  overrides; `OCI_PROFILE`/`OCI_COMPARTMENT` env are the escape hatch;
+  with neither set the oci CLI resolves natively (its own
+  default/DEFAULT/first precedence) — kampodra passes no auth flags at
+  all. `--profile` now selects the instance everywhere including `dns`.
+
+## Unreleased — cloud-auth redesign + debts batch
+
+- **Cloud auth without vendor flags** — `--oci-profile` and
+  `--instance-principal` are gone. The instance profile's `cloud` block
+  (`{"profile": "…", "compartment": "…", "instancePrincipal": true}`)
+  overrides; `OCI_PROFILE`/`OCI_COMPARTMENT` env are the escape hatch;
+  with neither set the oci CLI resolves natively (its own
+  default/DEFAULT/first precedence) — kampodra passes no auth flags at
+  all. `--profile` now selects the instance everywhere including `dns`.
+- `vm-wipe`: unprofiled runs print `(profile: <none>)`; the env dir is
+  never `rm -rf`'d (managed files only, leftovers named explicitly).
+- `deploy list`: same-tag rows merge showing the newest deploy timestamp.
+- `dbMembers` (backup verify): dotfile-prefixed junk skipped.
+- `vm-prepare`: `--pull-images` removed (dead weight on a VM-local prefix).
+- `make cross-compile` stamps `main.version` from package.json;
+  `make release-check` (wired into `make publish`) asserts the shipped
+  host binary reports it.
+
+## Unreleased — clean-tool pass
+
+- **Flag semantics unified** — `--profile` now means the kampodra INSTANCE
+  profile on every command; OCI config-profile selection is `--oci-profile`
+  (backup/dns). Removed the legacy branded verify flag (verify's ssh leg
+  rides the standard ladder), the `--refresh-config` compat no-op, and the
+  `KAMPODRA_BACKUP_BUCKET` env duplicate (`KAMPODRA_BUCKET` is canonical).
+- **`deploy --version` → `deploy --sha`** (no more clash with the root
+  `--version`); `--require-disk`/`--warn-disk` unified as **`--disk-threshold`**.
+- **Neutral built-in defaults** (`app`, `/etc/kampodra/env`, `app-backups`,
+  `/up`, `services: [app kamal-proxy]`, `/data`, …) — predecessor-branded
+  values are gone from code, not just docs. `migrateScript` joins the
+  manifest as the 17th field (default `scripts/migrate-db.ts`,
+  `KAMPODRA_MIGRATE_SCRIPT` overrides); `vm-prepare`'s generated unit is
+  generic (`NODE_ENV`/`PORT` only). Profile blocks accept the canonical
+  `envFile` key (legacy `envFilePath` still loads).
+- **Frozen-spec parity apparatus retired** — `internal/parity/`,
+  `tools/paritygen/`, and the guard test are gone; one plain
+  `TestCommandSurface` guards the command set. `bluegreen`/`image-import`
+  unlisted until implemented (roadmap).
+- **Profiles: fleets without inheritance** — `--group <g>` filters
+  `status`/`deploy list` (exclusive with `--all-profiles`); `config clone
+  <src> <new> --host …` stamps out siblings with explicit copies.
+- **Config errors that instruct** — unknown `kampodra.json` keys list the
+  valid keys (lockstep-tested); `backup list` names unexpected oci CLI
+  output shapes.
+- **Robustness** — backup verify: false-OK on all-skipped (root-only)
+  bundles now fails closed; scratch cleanup survives ctrl-C
+  (context.Background + stderr warning); vm-prepare's ansible run is
+  killable (command context); k=1 shell-parse fixes in the ansible
+  inventory path.
+- **Docs** — generic user-facing rewrite: README, GETTING_STARTED, cli.md
+  command reference, ARCHITECTURE, and a spec-compliant installable agent
+  skill (`skills/kampodra/`, `npx skills add`-discoverable), plus
+  `docs/kampodra.schema.json` + an accepted `"$schema"` manifest key for
+  editor autocomplete.
+
 ## 0.7.0-beta.2 — 2026-10-09
 
 - **`migrate` ported (the last small frozen-spec family)** — tenant db

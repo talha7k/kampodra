@@ -180,12 +180,11 @@ func jsonEscapeStr(s string) string {
 	return r.Replace(s)
 }
 
-// Project is the raw "project" block — its shape belongs to the project
-// adapter (state never interprets it, keeping adapters sibling-clean).
 // Profile is one flat per-instance config entry — no inheritance (owner
 // decision): host/sshKey/proxyHost/group + the cached init verdict.
-// Project is the raw "project" block — its shape belongs to the project
-// adapter (state never interprets it, keeping adapters sibling-clean).
+// Project is the raw "project" block; Cloud is the raw "cloud" block (the
+// provider-CLI auth overrides — profile/compartment/instancePrincipal; its
+// shape belongs to the cloud adapter). Both pass through state untouched.
 type Profile struct {
 	Host      string          `json:"host"`
 	SSHKey    string          `json:"sshKey"`
@@ -193,6 +192,7 @@ type Profile struct {
 	Group     string          `json:"group"`
 	Init      string          `json:"init"`
 	Project   json.RawMessage `json:"project,omitempty"`
+	Cloud     json.RawMessage `json:"cloud,omitempty"`
 }
 
 // Config is ~/.kampodra/config.json.

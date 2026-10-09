@@ -76,7 +76,7 @@ func (r *deployRun) executeRolling() error {
 	r.say("[rolling] shadow %s from %s:%s (network %s, loopback probe :%s)…",
 		shadow, pj.ImagePrefix, r.ver, pj.Network, pj.ShadowProbePort)
 	runCmd := fmt.Sprintf("podman run -d --name %s --network %s --env-file %s -p 127.0.0.1:%s:%s %s:%s",
-		shadow, pj.Network, pj.EnvFilePath, pj.ShadowProbePort, pj.Port, pj.ImagePrefix, r.ver)
+		shadow, pj.Network, pj.EnvFile, pj.ShadowProbePort, pj.Port, pj.ImagePrefix, r.ver)
 	if _, err := r.vm(runCmd); err != nil {
 		return fmt.Errorf("shadow container failed to start: %w", err)
 	}
