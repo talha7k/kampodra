@@ -119,6 +119,8 @@ type SSHRunner struct {
 
 // Run executes remoteCmd on host and returns stdout. Stderr is captured and
 // included in the error (fail closed, with the remote's words attached).
+// On a remote failure the captured stdout is STILL returned — a failing
+// command's report (restore-verify's FAIL lines) is the diagnosis.
 func (r *SSHRunner) Run(ctx context.Context, host HostSpec, remoteCmd string) (string, error) {
 	bin, err := exec.LookPath("ssh")
 	if err != nil {
@@ -132,9 +134,9 @@ func (r *SSHRunner) Run(ctx context.Context, host HostSpec, remoteCmd string) (s
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
-			return "", fmt.Errorf("ssh %s: %w", host.Host, err)
+			return stdout.String(), fmt.Errorf("ssh %s: %w", host.Host, err)
 		}
-		return "", fmt.Errorf("ssh %s: %s: %w", host.Host, msg, err)
+		return stdout.String(), fmt.Errorf("ssh %s: %s: %w", host.Host, msg, err)
 	}
 	return stdout.String(), nil
 }

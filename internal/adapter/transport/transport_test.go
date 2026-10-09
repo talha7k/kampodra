@@ -158,4 +158,30 @@ func TestSSHRunnerFailsClosedWithoutSSHBinary(t *testing.T) {
 	}
 }
 
+// A remote failure must not discard the remote's captured stdout — the
+// restore-verify report IS the diagnosis (2026-10-09 live fire: exit 1 with
+// the FAIL lines printed to stdout and swallowed by the error path).
+func TestSSHRunnerReturnsStdoutAlongsideRemoteFailure(t *testing.T) {
+	stubDir := t.TempDir()
+	shim := "#!/bin/sh\n" +
+		"echo '[FAIL] pih_linkage: artifact scan failed'\n" +
+		"echo 'RESULT: NOT SAFE' \n" +
+		"echo 'some stderr detail' >&2\n" +
+		"exit 1\n"
+	os.WriteFile(filepath.Join(stubDir, "ssh"), []byte(shim), 0o755)
+	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
+
+	r := &SSHRunner{}
+	out, err := r.Run(t.Context(), HostSpec{Host: "root@203.0.113.9"}, "restore-verify -db /tmp/x.db")
+	if err == nil {
+		t.Fatal("Run() must surface the remote failure")
+	}
+	if !strings.Contains(out, "[FAIL] pih_linkage") || !strings.Contains(out, "RESULT: NOT SAFE") {
+		t.Errorf("Run() discarded the remote report on failure: out=%q err=%v", out, err)
+	}
+	if !strings.Contains(err.Error(), "some stderr detail") {
+		t.Errorf("Run() error must still carry stderr: %v", err)
+	}
+}
+
 func quote(s string) string { return "'" + s + "'" }

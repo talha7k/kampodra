@@ -94,21 +94,36 @@ type BackupObject struct {
 
 // ParseObjectList ports the jq row extraction
 // (.data.objects[]? | [.name, (.size|tostring), (.timeCreated // "-")]).
+// The oci CLI's `os object list` returns rows DIRECTLY as an array under
+// .data; the raw-API shape nests them under .data.objects — both parse.
 func ParseObjectList(listJSON string) ([]BackupObject, error) {
+	type objectListRow struct {
+		Name        string      `json:"name"`
+		Size        json.Number `json:"size"`
+		TimeCreated *string     `json:"timeCreated"`
+	}
 	var parsed struct {
-		Data struct {
-			Objects []struct {
-				Name        string      `json:"name"`
-				Size        json.Number `json:"size"`
-				TimeCreated *string     `json:"timeCreated"`
-			} `json:"objects"`
-		} `json:"data"`
+		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(listJSON), &parsed); err != nil {
 		return nil, fmt.Errorf("object list: %w", err)
 	}
-	objs := make([]BackupObject, 0, len(parsed.Data.Objects))
-	for _, o := range parsed.Data.Objects {
+	var rows []objectListRow
+	if payload := strings.TrimSpace(string(parsed.Data)); strings.HasPrefix(payload, "[") {
+		if err := json.Unmarshal(parsed.Data, &rows); err != nil {
+			return nil, fmt.Errorf("object list: %w", err)
+		}
+	} else {
+		var objShape struct {
+			Objects []objectListRow `json:"objects"`
+		}
+		if err := json.Unmarshal(parsed.Data, &objShape); err != nil {
+			return nil, fmt.Errorf("object list: %w", err)
+		}
+		rows = objShape.Objects
+	}
+	objs := make([]BackupObject, 0, len(rows))
+	for _, o := range rows {
 		size, _ := o.Size.Int64()
 		tc := "-"
 		if o.TimeCreated != nil && *o.TimeCreated != "" {

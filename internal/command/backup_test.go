@@ -60,7 +60,10 @@ func setupBackup(t *testing.T) *backupHarness {
 	sshShim := "#!/bin/bash\n" +
 		"printf '%s\\n' \"$*\" >> '" + sshLog + "'\n" +
 		"cmd=\"${*: -1}\"\n" +
-		"if [ \"$cmd\" = \"/usr/local/bin/restore-verify /dev/stdin\" ]; then cat >> '" + stdinLog + "'; exit 0; fi\n" +
+		"case \"$cmd\" in\n" +
+		"  *\"cat > \"/tmp/kampodra-verify-*) cat >> '" + stdinLog + "'; exit 0 ;;\n" +
+		"  *restore-verify*) exit 0 ;;\n" +
+		"esac\n" +
 		"exit 0\n"
 	os.WriteFile(filepath.Join(stubDir, "ssh"), []byte(sshShim), 0o755)
 
@@ -95,6 +98,15 @@ func (h *backupHarness) run(t *testing.T, args ...string) int {
 func (h *backupHarness) ociInvocations(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile(h.ociLog)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func (h *backupHarness) sshInvocations(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(h.sshLog)
 	if err != nil {
 		return ""
 	}
@@ -246,7 +258,11 @@ func TestBackupRestorePlanPrintsOnly(t *testing.T) {
 	}
 }
 
-func TestBackupVerifyDbPipesOverSSHStdin(t *testing.T) {
+// The 2026-10-09 live-fire contract: restore-verify is FILE-based
+// (restore-verify -db <path>, RUNBOOK drill shape) — never stdin. verify
+// uploads each member to a VM scratch file (`umask 077; cat > …`), runs
+// restore-verify -db on it, then rm's the scratch — NEVER the data dir.
+func TestBackupVerifyDbUploadsToScratchThenVerifies(t *testing.T) {
 	h := setupBackup(t)
 	dbFile := filepath.Join(t.TempDir(), "dump.db")
 	os.WriteFile(dbFile, []byte("db-bytes"), 0o600)
@@ -258,9 +274,17 @@ func TestBackupVerifyDbPipesOverSSHStdin(t *testing.T) {
 	if err != nil || string(piped) != "db-bytes" {
 		t.Fatalf("ssh stdin = %q, %v (want the db image verbatim)", piped, err)
 	}
-	out := h.stdout.String()
-	if !strings.Contains(out, "piping "+dbFile+" over ssh stdin to /usr/local/bin/restore-verify on root@203.0.113.9") ||
-		!strings.Contains(out, "OK — restore-verify accepted the db image") {
+	calls := h.sshInvocations(t)
+	if !strings.Contains(calls, "/usr/local/bin/restore-verify -db /tmp/kampodra-verify") {
+		t.Errorf("no restore-verify -db call on a scratch path:\n%s", calls)
+	}
+	if strings.Contains(calls, "/dev/stdin") {
+		t.Errorf("stale /dev/stdin contract in:\n%s", calls)
+	}
+	if !strings.Contains(calls, "rm -f /tmp/kampodra-verify") {
+		t.Errorf("scratch file never cleaned up:\n%s", calls)
+	}
+	if out := h.stdout.String(); !strings.Contains(out, "OK — restore-verify accepted the db image") {
 		t.Errorf("verify output wrong:\n%s", out)
 	}
 }
@@ -285,7 +309,57 @@ func TestBackupVerifyTgzExtractsAndVerifiesEveryMember(t *testing.T) {
 	}
 	stdin, _ := os.ReadFile(h.stdinLog)
 	if string(stdin) != "aaabbb" {
-		t.Errorf("piped members = %q, want a.db then sub/b.db in order", stdin)
+		t.Errorf("uploaded members = %q, want a.db then sub/b.db in order", stdin)
+	}
+	calls := h.sshInvocations(t)
+	if got := strings.Count(calls, "/usr/local/bin/restore-verify -db /tmp/kampodra-verify"); got != 2 {
+		t.Errorf("restore-verify -db calls = %d, want 2 (one per member):\n%s", got, calls)
+	}
+	if got := strings.Count(calls, "rm -f /tmp/kampodra-verify"); got != 2 {
+		t.Errorf("scratch cleanup calls = %d, want 2:\n%s", got, calls)
+	}
+}
+
+func TestBackupVerifyMigratedTopologyFlagReachesTheRemoteCall(t *testing.T) {
+	h := setupBackup(t)
+	dbFile := filepath.Join(t.TempDir(), "dump.db")
+	os.WriteFile(dbFile, []byte("db"), 0o600)
+	if code := h.run(t, "verify", dbFile, "--host", "root@203.0.113.9", "--migrated-topology"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	calls := h.sshInvocations(t)
+	if !strings.Contains(calls, "restore-verify -db /tmp/kampodra-verify") || !strings.Contains(calls, "--migrated-topology") {
+		t.Errorf("--migrated-topology did not reach the remote command:\n%s", calls)
+	}
+}
+
+// The root db is schema-only and NOT in restore-verify's tenant scope
+// (esellar RUNBOOK: "root.db … not in restore-verify scope") — the tgz
+// loop must skip it, not fail the whole verify on it.
+func TestBackupVerifyTgzSkipsRootDb(t *testing.T) {
+	h := setupBackup(t)
+	tgz := filepath.Join(t.TempDir(), "bundle.tgz")
+	buildFixtureTgz(t, tgz, map[string]string{
+		"data/tenants/root/root.db":              "root-schema-bytes",
+		"data/tenants/tenant_acme-restaurant.db": "tenant-bytes",
+	})
+	if code := h.run(t, "verify", tgz, "--host", "root@203.0.113.9"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	out := h.stdout.String()
+	if !strings.Contains(out, "skipping data/tenants/root/root.db") {
+		t.Errorf("root-db skip line missing:\n%s", out)
+	}
+	calls := h.sshInvocations(t)
+	if got := strings.Count(calls, "/usr/local/bin/restore-verify -db /tmp/kampodra-verify"); got != 1 {
+		t.Errorf("restore-verify -db calls = %d, want 1 (root.db must NOT be fed to restore-verify):\n%s", got, calls)
+	}
+	stdin, _ := os.ReadFile(h.stdinLog)
+	if string(stdin) != "tenant-bytes" {
+		t.Errorf("uploaded members = %q, want ONLY the tenant db", stdin)
+	}
+	if !strings.Contains(out, "OK — every db member passed restore-verify") {
+		t.Errorf("OK line missing:\n%s", out)
 	}
 }
 
