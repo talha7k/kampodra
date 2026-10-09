@@ -494,3 +494,18 @@ func TestVMPrepareUbuntuSystemdGateFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// TestVMPrepareEnsuresDataDir: the app unit bind-mounts the project
+// dataDir — vm-prepare must ENSURE it exists. A volume-less host's
+// datamount tolerates absence and only mkdirs WHEN MOUNTING a volume, so
+// the first deploy's podman run crash-loops on `statfs /data/tenants: no
+// such file or directory` (2026-10-09 live fire, disposable VM).
+func TestVMPrepareEnsuresDataDir(t *testing.T) {
+	h := setupPrepare(t)
+	if code := h.run(t, "--host", "root@203.0.113.9"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.calls(t), "mkdir -p /data") {
+		t.Errorf("vm-prepare must ensure the dataDir exists:\n%s", h.calls(t))
+	}
+}
