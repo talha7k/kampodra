@@ -53,14 +53,22 @@ proof where noted). Last updated: 2026-10-09 (Ubuntu 24.04 guest support,
       drill (disposable VM or quiet window), (b) two consecutive clean
       rolling prod deploys. Keep `--in-place` documented as the escape
       hatch forever.
-- [ ] **lint-debt burn-down** — ten pre-existing functions sit above the
-      gocognit/gocyclo bar, allowlisted in `.golangci.yml` (the gate fails
-      on anything new): `ResolveTraced`, `newDeployCommand`,
-      `runDeployRoot`, `deployRun.execute`, `newEnvCommand`, `runMetrics`,
-      `runMigrate`, `statusBody`, `runVMPrepare`, `runVMWipe`
-      (+ `TestNoProjectMagicStringsOutsideProjectDotGo`). Burn down one by
-      one, deleting an allowlist line each time. New code must stay under
-      the bar at authoring time.
+- [x] **lint-debt burn-down** — COMPLETE (2026-10-09): all ten grandfathered
+      functions refactored under the gocognit 25 / gocyclo 20 bar
+      (ResolveTraced → per-layer resolver methods; newDeployCommand →
+      per-subcommand builders; newEnvCommand likewise; (*deployRun).execute
+      → preflight/primaryImage/inPlaceSwitch phases; runDeployRoot →
+      validateDeployArgs + assembleDeployRun + positionalRollbackSha;
+      runMigrate → flags/stop-guard/probe-check/run-all helpers;
+      statusBody → section renderers; runMetrics → flag-parse + snapshot
+      helpers; runVMWipe → match-check + teardown-phase helpers;
+      runVMPrepare was already under the bar from the Ubuntu dispatch
+      refactor; the guard test → walk/scan helpers). The grandfather
+      exclusion is DELETED from .golangci.yml — the gate now fails on any
+      function above the bar, new or old. Behavior byte-identical
+      throughout; evidence: full suite 14/14 ok
+      (test-results/burndown-integration.log), golangci 0 issues with the
+      allowlist gone.
 - [x] **Cloud auth without vendor flags** (replaces the old "OCI
       default-profile resolution" item) — the provider CLI resolves
       natively when kampodra passes no auth: instance profiles carry a

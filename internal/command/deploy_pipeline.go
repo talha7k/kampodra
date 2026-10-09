@@ -158,10 +158,50 @@ func (r *deployRun) appendLedger(result, subject string) error {
 // mode=rollback (no build, no clean gate, stream only when the VM lacks
 // the tag, no stamp write).
 func (r *deployRun) execute() error {
-	target := r.target
-	pj := target.Project
+	pj := r.target.Project
 
-	// --- preflight: repo identity + clean-tree gate (deploy mode only) ----
+	if err := r.preflight(); err != nil {
+		return err
+	}
+	if err := r.primaryImage(); err != nil {
+		return err
+	}
+
+	// --- env file (the env family: 0600 temp + atomic mv, fingerprints
+	// only on stdout; the deploy stamps API_GIT_SHA into the payload) -----
+	if r.opts.envFile != "" {
+		if err := r.pushEnvFile(); err != nil {
+			return err
+		}
+	} else {
+		r.say("no --env-file — leaving %s unchanged", pj.EnvFile)
+	}
+
+	// --- init detection (one round-trip; cached in the profile) ----------
+	initSys, _, _ := initadapter.Detect(r.ctx, func(_ context.Context, remote string) (string, error) {
+		return r.vm(remote)
+	}, r.target.ProfileInit)
+	r.initSys = initSys
+
+	if r.opts.rolling {
+		if err := r.executeRolling(); err != nil {
+			return err
+		}
+		return r.epilogue()
+	}
+
+	if err := r.inPlaceSwitch(); err != nil {
+		return err
+	}
+	return r.epilogue()
+}
+
+// preflight runs the fail-before-mutating checks in order: repo identity
+// + clean-tree gate (deploy mode only — the build stamps the git sha, so
+// the tree must BE what HEAD names), podman reachability (deploy/version
+// always build or stream), the VM disk gate — then flips the run into the
+// EXIT-trap recording window.
+func (r *deployRun) preflight() error {
 	if r.mode == "deploy" {
 		root, err := localOutput(r.ctx, "", "git", "rev-parse", "--show-toplevel")
 		if err != nil {
@@ -176,22 +216,24 @@ func (r *deployRun) execute() error {
 			return fmt.Errorf("dirty tree — deploys must ship COMMITTED files (build identity stamps the git sha); commit first, or stream an existing build with --sha <sha7>")
 		}
 	}
-
-	// --- preflight: podman (deploy/version always build or stream) --------
 	if r.mode != "rollback" {
 		if _, err := localOutput(r.ctx, "", "podman", "info"); err != nil {
 			return fmt.Errorf("podman machine not reachable (podman machine start): %w", err)
 		}
 	}
-
-	// --- disk gate (pre-deploy, may fail) ---------------------------------
 	if err := r.vmDiskCheck("gate"); err != nil {
 		return err
 	}
-
 	// from here on, every outcome is recorded (the EXIT-trap contract)
 	r.recording = true
+	return nil
+}
 
+// primaryImage carries the primary app image through build → stream →
+// retag → sidecars (the ROLLING path retags later, inside the switch —
+// see the retag guard below).
+func (r *deployRun) primaryImage() error {
+	pj := r.target.Project
 	// --- build (deploy mode always builds; version/rollback never) --------
 	if r.mode == "deploy" {
 		r.say("building linux/arm64 (GIT_SHA=%s, -f %s) — build identity, never remove…", r.ver, r.opts.dockerfile)
@@ -249,36 +291,17 @@ func (r *deployRun) execute() error {
 	// it only re-points the primary; sidecars are :latest-rolling by
 	// contract (an old sidecar is never needed).
 	if r.mode == "deploy" {
-		if err := r.streamSidecars(); err != nil {
-			return err
-		}
+		return r.streamSidecars()
 	}
+	return nil
+}
 
-	// --- env file (the env family: 0600 temp + atomic mv, fingerprints
-	// only on stdout; the deploy stamps API_GIT_SHA into the payload) -----
-	if r.opts.envFile != "" {
-		if err := r.pushEnvFile(); err != nil {
-			return err
-		}
-	} else {
-		r.say("no --env-file — leaving %s unchanged", pj.EnvFile)
-	}
-
-	// --- init detection (one round-trip; cached in the profile) ----------
-	initSys, _, _ := initadapter.Detect(r.ctx, func(_ context.Context, remote string) (string, error) {
-		return r.vm(remote)
-	}, target.ProfileInit)
-	r.initSys = initSys
-
-	if r.opts.rolling {
-		if err := r.executeRolling(); err != nil {
-			return err
-		}
-		return r.epilogue()
-	}
-
-	// --- restart (the init system re-runs podman run on the retagged :latest)
-	restartCmd, err := initadapter.ActionCommand(initSys, pj.Container, "restart")
+// inPlaceSwitch is the non-rolling tail of the pipeline: restart (the
+// init system re-runs podman run on the retagged :latest) → VM-side
+// health gate → kamal-proxy re-point → public smoke.
+func (r *deployRun) inPlaceSwitch() error {
+	pj := r.target.Project
+	restartCmd, err := initadapter.ActionCommand(r.initSys, pj.Container, "restart")
 	if err != nil {
 		return err
 	}
@@ -286,22 +309,13 @@ func (r *deployRun) execute() error {
 	if _, err := r.vm(restartCmd); err != nil {
 		return fmt.Errorf("%s failed: %w", restartCmd, err)
 	}
-
-	// --- VM-side health gate (served-sha verify against the deployed tag)
 	if err := r.healthGate(pj.Port, r.ver); err != nil {
 		return err
 	}
-
-	// --- kamal-proxy re-point --------------------------------------------
 	if err := r.proxyRepoint(pj.Container + ":" + pj.Port); err != nil {
 		return err
 	}
-
-	// --- public smoke ------------------------------------------------------
-	if err := r.publicSmoke(); err != nil {
-		return err
-	}
-	return r.epilogue()
+	return r.publicSmoke()
 }
 
 // skipStream marks the rollback fast path (tag already on the VM); the

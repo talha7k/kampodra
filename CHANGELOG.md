@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Lint-debt burn-down complete** — every function is now under the
+  gocognit 25 / gocyclo 20 bar; the grandfather allowlist is DELETED
+  from `.golangci.yml` (the gate fails on anything above the bar, new
+  or old). Behavior byte-identical: layered extraction only (resolver
+  methods per config layer, per-subcommand command builders, pipeline
+  phase methods, section renderers, teardown-phase helpers).
 - **Sidecar images** — the repo manifest's `images.sidecars` block
   (`[{"name", "dockerfile"}]`, strict-parse + fail-closed validation)
   makes `deploy` build, stream (`podman save | ssh podman load`), and

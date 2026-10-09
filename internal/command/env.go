@@ -53,21 +53,35 @@ func newEnvCommand(d Deps) *cobra.Command {
 		fmt.Fprint(c.OutOrStdout(), envHelp)
 	})
 
-	envFlags := func(c *cobra.Command) {
-		c.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODRA_HOST and any profile")
-		c.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
-		c.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
-	}
-	resolve := func(c *cobra.Command) (Target, error) {
-		return resolveEnvTarget(d, c)
-	}
+	subList := newEnvListSub(d)
+	subPush := newEnvPushSub(d)
+	subPull := newEnvPullSub(d)
+	subFingerprint := newEnvFingerprintSub(d)
+	subDiff := newEnvDiffSub(d)
 
-	subList := &cobra.Command{
+	subFromSchema := newEnvFromSchemaCommand(d)
+	envTargetFlags(subFromSchema)
+	cmd.AddCommand(subList, subPush, subPull, subFingerprint, subDiff, subFromSchema)
+	return cmd
+}
+
+// envTargetFlags registers the shared env-family target flags (the same
+// three every remote env subcommand takes).
+func envTargetFlags(c *cobra.Command) {
+	c.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODRA_HOST and any profile")
+	c.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
+	c.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
+}
+
+// newEnvListSub is env's `list` subcommand: KEY + fingerprint table of the
+// remote env file (NEVER values).
+func newEnvListSub(d Deps) *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "KEY + fingerprint table of the remote env file (NEVER values)",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
-			target, err := resolve(c)
+			target, err := resolveEnvTarget(d, c)
 			if err != nil {
 				return err
 			}
@@ -82,9 +96,15 @@ func newEnvCommand(d Deps) *cobra.Command {
 			return nil
 		},
 	}
-	envFlags(subList)
+	envTargetFlags(cmd)
+	return cmd
+}
 
-	subPush := &cobra.Command{
+// newEnvPushSub is env's `push` subcommand: upload a local env file —
+// 0600 from creation remotely (umask 077) + atomic mv within the same
+// directory, byte-equal to the shell flow.
+func newEnvPushSub(d Deps) *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "push",
 		Short: "upload a local env file: 0600 temp + atomic mv + restart hint (values NEVER printed)",
 		Args:  cobra.NoArgs,
@@ -100,7 +120,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 			if envfile.CountKeyLines(string(data)) == 0 {
 				return fmt.Errorf("no KEY=VALUE lines in %s — nothing to push", file)
 			}
-			target, err := resolve(c)
+			target, err := resolveEnvTarget(d, c)
 			if err != nil {
 				return err
 			}
@@ -112,8 +132,6 @@ func newEnvCommand(d Deps) *cobra.Command {
 				file, target.HostSpec.Host, remote)
 			fmt.Fprint(d.Stdout, envfile.Table(string(data)))
 
-			// 0600 FROM CREATION remotely (umask 077) + atomic mv within the
-			// same directory — busybox-safe, byte-equal to the shell flow.
 			tmp := envfile.RemoteTmpPath(remote, os.Getpid())
 			if _, err := d.Runner.RunWithStdin(c.Context(), target.HostSpec, "umask 077; cat > "+tmp, strings.NewReader(string(data))); err != nil {
 				return fmt.Errorf("upload failed")
@@ -126,15 +144,20 @@ func newEnvCommand(d Deps) *cobra.Command {
 			return nil
 		},
 	}
-	envFlags(subPush)
-	subPush.Flags().String("file", "", "local env file to upload (verbatim — what you push is what lands)")
+	envTargetFlags(cmd)
+	cmd.Flags().String("file", "", "local env file to upload (verbatim — what you push is what lands)")
+	return cmd
+}
 
-	subPull := &cobra.Command{
+// newEnvPullSub is env's `pull` subcommand: raw payload to stdout/--out
+// (0600), masked fingerprint summary follows.
+func newEnvPullSub(d Deps) *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "pull",
 		Short: "raw payload to stdout/--out (0600); masked fingerprint summary follows",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
-			target, err := resolve(c)
+			target, err := resolveEnvTarget(d, c)
 			if err != nil {
 				return err
 			}
@@ -159,10 +182,15 @@ func newEnvCommand(d Deps) *cobra.Command {
 			return nil
 		},
 	}
-	envFlags(subPull)
-	subPull.Flags().String("out", "", "write the raw payload to this file (0600) instead of stdout")
+	envTargetFlags(cmd)
+	cmd.Flags().String("out", "", "write the raw payload to this file (0600) instead of stdout")
+	return cmd
+}
 
-	subFingerprint := &cobra.Command{
+// newEnvFingerprintSub is env's `fingerprint` subcommand: preview the
+// masking for a LOCAL file / stdin (never values).
+func newEnvFingerprintSub(d Deps) *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "fingerprint",
 		Short: "preview the masking for a LOCAL file / stdin (never values)",
 		Args:  cobra.NoArgs,
@@ -185,9 +213,14 @@ func newEnvCommand(d Deps) *cobra.Command {
 			return nil
 		},
 	}
-	subFingerprint.Flags().String("file", "", "local env file to preview (default: stdin)")
+	cmd.Flags().String("file", "", "local env file to preview (default: stdin)")
+	return cmd
+}
 
-	subDiff := &cobra.Command{
+// newEnvDiffSub is env's `diff` subcommand: fingerprint-level diff of a
+// local env file vs the remote one (exit 1 = differs — GNU convention).
+func newEnvDiffSub(d Deps) *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "diff <local-file>",
 		Short: "fingerprint-level diff of a local env file vs the remote one (exit 1 = differs)",
 		Args: func(_ *cobra.Command, args []string) error {
@@ -202,7 +235,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("no such file: %s", localPath)
 			}
-			target, err := resolve(c)
+			target, err := resolveEnvTarget(d, c)
 			if err != nil {
 				return err
 			}
@@ -226,11 +259,7 @@ func newEnvCommand(d Deps) *cobra.Command {
 			return nil
 		},
 	}
-	envFlags(subDiff)
-
-	subFromSchema := newEnvFromSchemaCommand(d)
-	envFlags(subFromSchema)
-	cmd.AddCommand(subList, subPush, subPull, subFingerprint, subDiff, subFromSchema)
+	envTargetFlags(cmd)
 	return cmd
 }
 

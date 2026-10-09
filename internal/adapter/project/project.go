@@ -219,83 +219,118 @@ var envBindingKeys = map[string]string{
 // overrides a field only when it PROVIDES a value (non-empty string /
 // non-empty list), so the returned traces always point at the winning
 // layer. config print renders these; other callers use Resolve.
-func ResolveTraced(flags map[string]string, lookup func(string) (string, bool), rawOverrides json.RawMessage, manifest *Manifest) (Config, []FieldTrace) {
-	cfg := LoadDefault()
-	traces := make(map[string]FieldTrace, len(fieldBindings))
-	set := func(key string, src Source, origin string, value string, list []string) {
-		i := bindingIndex(key)
-		if i < 0 {
-			return
-		}
-		b := fieldBindings[i]
-		if list != nil {
-			b.apply(&cfg, strings.Join(list, " "))
-		} else {
-			b.apply(&cfg, value)
-		}
-		traces[key] = FieldTrace{Field: key, Source: src, Origin: origin}
-	}
+// resolver accumulates one ResolveTraced run: the config-so-far plus the
+// winning-layer trace per field. One apply* method per layer, lowest
+// first — each overrides a field only when it PROVIDES a value.
+type resolver struct {
+	cfg    Config
+	traces map[string]FieldTrace
+}
 
-	// 1. repo manifest (lowest override layer; parse already failed closed)
-	if manifest != nil {
-		for _, b := range fieldBindings {
-			if b.source != nil {
-				if v := manifestListField(manifest.Fields, b.key); len(v) > 0 {
-					set(b.key, SourceRepoFile, manifest.Path, "", v)
-				}
-				continue
-			}
-			if v := manifestStringField(manifest.Fields, b.key); v != "" {
-				set(b.key, SourceRepoFile, manifest.Path, v, nil)
-			}
-		}
+// set applies a value (scalar or list) through its binding and records
+// the winning trace. Unknown keys are ignored (the binding table is the
+// schema).
+func (r *resolver) set(key string, src Source, origin string, value string, list []string) {
+	i := bindingIndex(key)
+	if i < 0 {
+		return
 	}
+	b := fieldBindings[i]
+	if list != nil {
+		b.apply(&r.cfg, strings.Join(list, " "))
+	} else {
+		b.apply(&r.cfg, value)
+	}
+	r.traces[key] = FieldTrace{Field: key, Source: src, Origin: origin}
+}
 
-	// 2. the profile's raw "project" block (corrupt block fails open)
-	if len(rawOverrides) > 0 {
-		var o Overrides
-		if json.Unmarshal(rawOverrides, &o) == nil {
-			for _, b := range fieldBindings {
-				if b.source != nil {
-					if v := overridesListField(o, b.key); len(v) > 0 {
-						set(b.key, SourceProfile, "", "", v)
-					}
-					continue
-				}
-				if v := overridesStringField(o, b.key); v != "" {
-					set(b.key, SourceProfile, "", v, nil)
-				}
+// applyManifest is layer 1 — the repo manifest (lowest override layer;
+// parse already failed closed).
+func (r *resolver) applyManifest(manifest *Manifest) {
+	if manifest == nil {
+		return
+	}
+	for _, b := range fieldBindings {
+		if b.source != nil {
+			if v := manifestListField(manifest.Fields, b.key); len(v) > 0 {
+				r.set(b.key, SourceRepoFile, manifest.Path, "", v)
 			}
+			continue
+		}
+		if v := manifestStringField(manifest.Fields, b.key); v != "" {
+			r.set(b.key, SourceRepoFile, manifest.Path, v, nil)
 		}
 	}
+}
 
-	// 3. KAMPODRA_* env (session-scoped beats the persisted layers)
-	if lookup != nil {
-		for _, b := range fieldBindings {
-			if key, ok := envBindingKeys[b.key]; ok {
-				if v, ok := lookup(key); ok && v != "" {
-					set(b.key, SourceEnv, key, v, nil)
-				}
+// applyProfile is layer 2 — the profile's raw "project" block (a corrupt
+// block fails open to the layers beneath it).
+func (r *resolver) applyProfile(rawOverrides json.RawMessage) {
+	if len(rawOverrides) == 0 {
+		return
+	}
+	var o Overrides
+	if json.Unmarshal(rawOverrides, &o) != nil {
+		return
+	}
+	for _, b := range fieldBindings {
+		if b.source != nil {
+			if v := overridesListField(o, b.key); len(v) > 0 {
+				r.set(b.key, SourceProfile, "", "", v)
+			}
+			continue
+		}
+		if v := overridesStringField(o, b.key); v != "" {
+			r.set(b.key, SourceProfile, "", v, nil)
+		}
+	}
+}
+
+// applyEnv is layer 3 — KAMPODRA_* env (session-scoped beats the
+// persisted layers).
+func (r *resolver) applyEnv(lookup func(string) (string, bool)) {
+	if lookup == nil {
+		return
+	}
+	for _, b := range fieldBindings {
+		if key, ok := envBindingKeys[b.key]; ok {
+			if v, ok := lookup(key); ok && v != "" {
+				r.set(b.key, SourceEnv, key, v, nil)
 			}
 		}
 	}
+}
 
-	// 4. explicit flags (highest layer)
+// applyFlags is layer 4 — explicit flags (highest layer).
+func (r *resolver) applyFlags(flags map[string]string) {
 	for key, v := range flags {
 		if v != "" {
-			set(key, SourceFlag, key, v, nil)
+			r.set(key, SourceFlag, key, v, nil)
 		}
 	}
+}
 
+// tracesInOrder renders the traces in binding-table order; unprovided
+// fields trace to the default layer.
+func (r *resolver) tracesInOrder() []FieldTrace {
 	out := make([]FieldTrace, 0, len(fieldBindings))
 	for _, b := range fieldBindings {
-		if tr, ok := traces[b.key]; ok {
+		if tr, ok := r.traces[b.key]; ok {
 			out = append(out, tr)
 		} else {
 			out = append(out, FieldTrace{Field: b.key, Source: SourceDefault})
 		}
 	}
-	return cfg, out
+	return out
+}
+
+func ResolveTraced(flags map[string]string, lookup func(string) (string, bool), rawOverrides json.RawMessage, manifest *Manifest) (Config, []FieldTrace) {
+	r := &resolver{cfg: LoadDefault(), traces: make(map[string]FieldTrace, len(fieldBindings))}
+	r.applyManifest(manifest)
+	r.applyProfile(rawOverrides)
+	r.applyEnv(lookup)
+	r.applyFlags(flags)
+	return r.cfg, r.tracesInOrder()
 }
 
 // manifestStringField reads one scalar field off a parsed manifest without
