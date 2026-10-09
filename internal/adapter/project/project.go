@@ -16,23 +16,24 @@ import (
 
 // Config is the resolved project shape for one run.
 type Config struct {
-	Container       string   `json:"container"`       // the api container / service name
-	ShadowSuffix    string   `json:"shadowSuffix"`    // blue/green shadow container suffix
-	EnvFile         string   `json:"envFile"`         // remote env file (0600)
-	DataDir         string   `json:"dataDir"`         // tenant/app data dir on the VM
-	Bucket          string   `json:"bucket"`          // object-storage backup bucket
-	ObjectPrefix    string   `json:"objectPrefix"`    // backup object prefix
-	HealthPath      string   `json:"healthPath"`      // app health endpoint behind the proxy
-	ProxyHost       string   `json:"proxyHost"`       // public TLS edge hostname
-	Services        []string `json:"services"`        // the service roll call
-	ImagePrefix     string   `json:"imagePrefix"`     // VM-local registry path for deploy images
-	Port            string   `json:"port"`            // the container's published/listening port (health gate + proxy target)
-	Network         string   `json:"network"`         // the podman network shared with kamal-proxy
-	ShadowProbePort string   `json:"shadowProbePort"` // the shadow container's loopback-only probe port
-	DeployedShaFile string   `json:"deployedShaFile"` // the VM's deployed-sha stamp (rollback's fallback resolution)
-	EnvClearKeys    []string `json:"envClearKeys"`    // env keys OWNED by the init script — env from-schema drops them from varlock output
-	Dockerfile      string   `json:"dockerfile"`      // the Containerfile/Dockerfile deploy builds (context = the repo root)
-	MigrateScript   string   `json:"migrateScript"`   // the repo-relative db migrate script migrate runs on the VM
+	Container          string   `json:"container"`          // the api container / service name
+	PairInstancePrefix string   `json:"pairInstancePrefix"` // blue/green pair instance display-name prefix ("" = container)
+	ShadowSuffix       string   `json:"shadowSuffix"`       // blue/green shadow container suffix
+	EnvFile            string   `json:"envFile"`            // remote env file (0600)
+	DataDir            string   `json:"dataDir"`            // tenant/app data dir on the VM
+	Bucket             string   `json:"bucket"`             // object-storage backup bucket
+	ObjectPrefix       string   `json:"objectPrefix"`       // backup object prefix
+	HealthPath         string   `json:"healthPath"`         // app health endpoint behind the proxy
+	ProxyHost          string   `json:"proxyHost"`          // public TLS edge hostname
+	Services           []string `json:"services"`           // the service roll call
+	ImagePrefix        string   `json:"imagePrefix"`        // VM-local registry path for deploy images
+	Port               string   `json:"port"`               // the container's published/listening port (health gate + proxy target)
+	Network            string   `json:"network"`            // the podman network shared with kamal-proxy
+	ShadowProbePort    string   `json:"shadowProbePort"`    // the shadow container's loopback-only probe port
+	DeployedShaFile    string   `json:"deployedShaFile"`    // the VM's deployed-sha stamp (rollback's fallback resolution)
+	EnvClearKeys       []string `json:"envClearKeys"`       // env keys OWNED by the init script — env from-schema drops them from varlock output
+	Dockerfile         string   `json:"dockerfile"`         // the Containerfile/Dockerfile deploy builds (context = the repo root)
+	MigrateScript      string   `json:"migrateScript"`      // the repo-relative db migrate script migrate runs on the VM
 }
 
 // LoadDefault returns today's values as NAMED DEFAULTS — the single file
@@ -64,23 +65,24 @@ func LoadDefault() Config {
 // Overrides is the profile "project" block (config.json): every field
 // optional, empty = "not overridden".
 type Overrides struct {
-	Container       string   `json:"container,omitempty"`
-	ShadowSuffix    string   `json:"shadowSuffix,omitempty"`
-	EnvFile         string   `json:"envFile,omitempty"` // remote env file (0600); legacy key "envFilePath" still accepted (UnmarshalJSON)
-	DataDir         string   `json:"dataDir,omitempty"`
-	Bucket          string   `json:"bucket,omitempty"`
-	ObjectPrefix    string   `json:"objectPrefix,omitempty"`
-	HealthPath      string   `json:"healthPath,omitempty"`
-	ProxyHost       string   `json:"proxyHost,omitempty"`
-	Services        []string `json:"services,omitempty"`
-	ImagePrefix     string   `json:"imagePrefix,omitempty"`
-	Port            string   `json:"port,omitempty"`
-	Network         string   `json:"network,omitempty"`
-	ShadowProbePort string   `json:"shadowProbePort,omitempty"`
-	DeployedShaFile string   `json:"deployedShaFile,omitempty"`
-	EnvClearKeys    []string `json:"envClearKeys,omitempty"`
-	Dockerfile      string   `json:"dockerfile,omitempty"`
-	MigrateScript   string   `json:"migrateScript,omitempty"`
+	Container          string   `json:"container,omitempty"`
+	PairInstancePrefix string   `json:"pairInstancePrefix,omitempty"`
+	ShadowSuffix       string   `json:"shadowSuffix,omitempty"`
+	EnvFile            string   `json:"envFile,omitempty"` // remote env file (0600); legacy key "envFilePath" still accepted (UnmarshalJSON)
+	DataDir            string   `json:"dataDir,omitempty"`
+	Bucket             string   `json:"bucket,omitempty"`
+	ObjectPrefix       string   `json:"objectPrefix,omitempty"`
+	HealthPath         string   `json:"healthPath,omitempty"`
+	ProxyHost          string   `json:"proxyHost,omitempty"`
+	Services           []string `json:"services,omitempty"`
+	ImagePrefix        string   `json:"imagePrefix,omitempty"`
+	Port               string   `json:"port,omitempty"`
+	Network            string   `json:"network,omitempty"`
+	ShadowProbePort    string   `json:"shadowProbePort,omitempty"`
+	DeployedShaFile    string   `json:"deployedShaFile,omitempty"`
+	EnvClearKeys       []string `json:"envClearKeys,omitempty"`
+	Dockerfile         string   `json:"dockerfile,omitempty"`
+	MigrateScript      string   `json:"migrateScript,omitempty"`
 }
 
 // UnmarshalJSON accepts both env-file key spellings: `envFile` (canonical —
@@ -115,6 +117,18 @@ func (o *Overrides) UnmarshalJSON(data []byte) error {
 // any future consumer can never drift from the naming.
 func (c Config) SidecarImageRef(name string) string {
 	return c.ImagePrefix + "-" + name
+}
+
+// PairInstancePrefixEffective is the blue/green pair's instance
+// display-name prefix: the configured PairInstancePrefix, else the
+// container (the neutral default). Legacy estates whose instances predate
+// container-derived naming set the prefix so the pair machinery resolves
+// the RUNNING sibling instead of seeing the pair as not-provisioned.
+func (c Config) PairInstancePrefixEffective() string {
+	if c.PairInstancePrefix != "" {
+		return c.PairInstancePrefix
+	}
+	return c.Container
 }
 
 // Resolve layers the config, lowest layer first: LoadDefault, then the
@@ -161,6 +175,7 @@ type fieldBinding struct {
 // fieldBindings is the complete Config field catalog in display order.
 var fieldBindings = []fieldBinding{
 	{"container", func(c Config) string { return c.Container }, func(c *Config, v string) { c.Container = v }, nil},
+	{"pairInstancePrefix", func(c Config) string { return c.PairInstancePrefixEffective() }, func(c *Config, v string) { c.PairInstancePrefix = v }, nil},
 	{"shadowSuffix", func(c Config) string { return c.ShadowSuffix }, func(c *Config, v string) { c.ShadowSuffix = v }, nil},
 	{"envFile", func(c Config) string { return c.EnvFile }, func(c *Config, v string) { c.EnvFile = v }, nil},
 	{"dataDir", func(c Config) string { return c.DataDir }, func(c *Config, v string) { c.DataDir = v }, nil},
@@ -191,23 +206,24 @@ func bindingIndex(key string) int {
 // envBindingKeys maps each field's JSON key to its KAMPODRA_* env override
 // (key order matches fieldBindings).
 var envBindingKeys = map[string]string{
-	"container":       "KAMPODRA_CONTAINER",
-	"shadowSuffix":    "KAMPODRA_SHADOW_SUFFIX",
-	"envFile":         "KAMPODRA_ENV_FILE",
-	"dataDir":         "KAMPODRA_DATA_DIR",
-	"bucket":          "KAMPODRA_BUCKET",
-	"objectPrefix":    "KAMPODRA_OBJECT_PREFIX",
-	"healthPath":      "KAMPODRA_HEALTH_PATH",
-	"proxyHost":       "KAMPODRA_PROXY_HOST",
-	"services":        "KAMPODRA_SERVICES",
-	"imagePrefix":     "KAMPODRA_IMAGE_PREFIX",
-	"port":            "KAMPODRA_PORT",
-	"network":         "KAMPODRA_NETWORK",
-	"shadowProbePort": "KAMPODRA_SHADOW_PROBE_PORT",
-	"deployedShaFile": "KAMPODRA_DEPLOYED_SHA_FILE",
-	"envClearKeys":    "KAMPODRA_ENV_CLEAR_KEYS",
-	"dockerfile":      "KAMPODRA_DOCKERFILE",
-	"migrateScript":   "KAMPODRA_MIGRATE_SCRIPT",
+	"container":          "KAMPODRA_CONTAINER",
+	"pairInstancePrefix": "KAMPODRA_PAIR_INSTANCE_PREFIX",
+	"shadowSuffix":       "KAMPODRA_SHADOW_SUFFIX",
+	"envFile":            "KAMPODRA_ENV_FILE",
+	"dataDir":            "KAMPODRA_DATA_DIR",
+	"bucket":             "KAMPODRA_BUCKET",
+	"objectPrefix":       "KAMPODRA_OBJECT_PREFIX",
+	"healthPath":         "KAMPODRA_HEALTH_PATH",
+	"proxyHost":          "KAMPODRA_PROXY_HOST",
+	"services":           "KAMPODRA_SERVICES",
+	"imagePrefix":        "KAMPODRA_IMAGE_PREFIX",
+	"port":               "KAMPODRA_PORT",
+	"network":            "KAMPODRA_NETWORK",
+	"shadowProbePort":    "KAMPODRA_SHADOW_PROBE_PORT",
+	"deployedShaFile":    "KAMPODRA_DEPLOYED_SHA_FILE",
+	"envClearKeys":       "KAMPODRA_ENV_CLEAR_KEYS",
+	"dockerfile":         "KAMPODRA_DOCKERFILE",
+	"migrateScript":      "KAMPODRA_MIGRATE_SCRIPT",
 }
 
 // ResolveTraced applies the FULL ladder with per-field provenance:
@@ -340,6 +356,8 @@ func manifestStringField(o ManifestFields, key string) string {
 	switch key {
 	case "container":
 		return o.Container
+	case "pairInstancePrefix":
+		return o.PairInstancePrefix
 	case "shadowSuffix":
 		return o.ShadowSuffix
 	case "envFile":
@@ -391,6 +409,8 @@ func overridesStringField(o Overrides, key string) string {
 	switch key {
 	case "container":
 		return o.Container
+	case "pairInstancePrefix":
+		return o.PairInstancePrefix
 	case "shadowSuffix":
 		return o.ShadowSuffix
 	case "envFile":

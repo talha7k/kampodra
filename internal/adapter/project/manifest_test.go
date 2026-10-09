@@ -210,7 +210,7 @@ func TestManifestKeyHintMatchesStruct(t *testing.T) {
 		keys = append(keys, name)
 	}
 	want := strings.Join(keys, ", ")
-	if manifestKeyHint != "container, shadowSuffix, envFile, dataDir, bucket, "+
+	if manifestKeyHint != "container, pairInstancePrefix, shadowSuffix, envFile, dataDir, bucket, "+
 		"objectPrefix, healthPath, proxyHost, services, imagePrefix, port, "+
 		"network, shadowProbePort, deployedShaFile, envClearKeys, dockerfile, "+
 		"migrateScript, images" {
@@ -333,5 +333,22 @@ func TestParseManifestSidecarFailsClosed(t *testing.T) {
 		if !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: error = %v, want it to contain %q", tc.name, err, tc.want)
 		}
+	}
+}
+
+// TestParseManifestPairInstancePrefix: the blue/green pair's instance
+// display-name prefix is a valid manifest key (the 2026-10-09 live fire
+// hit the legacy-name estate: instances predate the tool's
+// container-derived naming). Unknown keys elsewhere still fail closed.
+func TestParseManifestPairInstancePrefix(t *testing.T) {
+	m, err := ParseManifest("/repo/kampodra.json", []byte(`{"pairInstancePrefix": "esellar"}`))
+	if err != nil {
+		t.Fatalf("pairInstancePrefix must parse: %v", err)
+	}
+	if m.Fields.PairInstancePrefix != "esellar" {
+		t.Errorf("PairInstancePrefix = %q, want esellar", m.Fields.PairInstancePrefix)
+	}
+	if _, err := ParseManifest("/repo/kampodra.json", []byte(`{"pairInstancePrefix": 17}`)); err == nil {
+		t.Error("non-string pairInstancePrefix must fail closed")
 	}
 }

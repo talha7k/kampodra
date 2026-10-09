@@ -198,8 +198,8 @@ func TestResolveTracedNoLayersGivesAllDefaults(t *testing.T) {
 			t.Errorf("%s rendered empty — every default must render", v.Key)
 		}
 	}
-	if len(traces) != 17 {
-		t.Errorf("traces = %d rows, want 17 (every Config field)", len(traces))
+	if len(traces) != 18 {
+		t.Errorf("traces = %d rows, want 18 (every Config field)", len(traces))
 	}
 }
 
@@ -250,5 +250,31 @@ func TestManifestLayerInResolve(t *testing.T) {
 func TestLoadDefaultDockerfileNamed(t *testing.T) {
 	if strings.TrimSpace(LoadDefault().Dockerfile) == "" {
 		t.Fatal("Dockerfile default is empty — every field must carry a named default")
+	}
+}
+
+// TestPairInstancePrefixLadder: the pair-instance prefix resolves through
+// the same ladder (default empty = fall back to container), and the env
+// override beats the manifest.
+func TestPairInstancePrefixLadder(t *testing.T) {
+	manifest := &Manifest{
+		Path:   "/repo/kampodra.json",
+		Fields: ManifestFields{PairInstancePrefix: "mf-pair"},
+	}
+	cfg := Resolve(manifest, nil, nil)
+	if cfg.PairInstancePrefix != "mf-pair" {
+		t.Errorf("manifest layer lost: %q", cfg.PairInstancePrefix)
+	}
+	cfg = Resolve(nil, nil, lookupOf(map[string]string{"KAMPODRA_PAIR_INSTANCE_PREFIX": "env-pair"}))
+	if cfg.PairInstancePrefix != "env-pair" {
+		t.Errorf("env layer lost: %q", cfg.PairInstancePrefix)
+	}
+	profile := []byte(`{"pairInstancePrefix": "pf-pair"}`)
+	cfg = Resolve(manifest, profile, lookupOf(map[string]string{"KAMPODRA_PAIR_INSTANCE_PREFIX": "env-pair"}))
+	if cfg.PairInstancePrefix != "env-pair" {
+		t.Errorf("env must beat profile+manifest: %q", cfg.PairInstancePrefix)
+	}
+	if got := Resolve(nil, nil, nil).PairInstancePrefix; got != "" {
+		t.Errorf("default must be empty (fallback to container): %q", got)
 	}
 }

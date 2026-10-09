@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/talha7k/kampodra/internal/adapter/project"
 )
 
 // The golden-image OS parameterization helpers must fail closed on an
@@ -112,3 +114,26 @@ func TestStageGoldenDiskConvertsAndFailsClosed(t *testing.T) {
 		t.Errorf("gunzipped disk = %q %v, want the qemu-img copy of the qcow2", raw, err)
 	}
 }
+
+// TestColorNameUsesPairInstancePrefix: the pair's instance display names
+// derive from PairInstancePrefix when set (legacy estates whose instances
+// predate container-derived naming — esellar-green vs esellar-api-green),
+// else from container (the neutral default).
+func TestColorNameUsesPairInstancePrefix(t *testing.T) {
+	// resolveBGPair wires instancePrefix from the project config's effective
+	// prefix — mirror that here so both the fallback and the override are
+	// proven end to end.
+	p := bgPair{container: "esellar-api",
+		instancePrefix: project.Config{Container: "esellar-api"}.PairInstancePrefixEffective()}
+	if got := p.colorName("green"); got != "esellar-api-green" {
+		t.Errorf("default colorName = %q, want esellar-api-green", got)
+	}
+	p.instancePrefix = project.Config{Container: "esellar-api", PairInstancePrefix: "esellar"}.PairInstancePrefixEffective()
+	if got := p.colorName("green"); got != "esellar-green" {
+		t.Errorf("prefixed colorName = %q, want esellar-green", got)
+	}
+	if got := p.colorName("blue"); got != "esellar-blue" {
+		t.Errorf("prefixed colorName(blue) = %q, want esellar-blue", got)
+	}
+}
+

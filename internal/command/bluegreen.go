@@ -165,22 +165,27 @@ func goldenImagePrefix(container, guestOS string) (string, error) {
 }
 
 // bgPair is the resolved pair context: OCI compartment + auth, and the
-// container name the pair's display names derive from.
+// instance display-name prefix + container name the pair's names derive
+// from.
 type bgPair struct {
-	auth        cloud.CloudAuth
-	container   string
-	compName    string
-	compOCID    string
-	anchorConf  string // guest anchor.conf path (EnvDir-derived — matches OUR watcher)
-	healthPath  string
-	port        string
-	envFile     string
-	deployedSha string
+	auth           cloud.CloudAuth
+	container      string
+	instancePrefix string // pair instance display names: <instancePrefix>-<color>
+	sshKey         string // the RESOLVED target identity — every guest ssh leg rides it
+	compName       string
+	compOCID       string
+	anchorConf     string // guest anchor.conf path (EnvDir-derived — matches OUR watcher)
+	healthPath     string
+	port           string
+	envFile        string
+	deployedSha    string
 }
 
-// colorName renders the pair instance display name (<container>-<color>).
+// colorName renders the pair instance display name
+// (<instancePrefix>-<color>; the prefix falls back to container —
+// project.Config.PairInstancePrefixEffective).
 func (p bgPair) colorName(color string) string {
-	return p.container + "-" + color
+	return p.instancePrefix + "-" + color
 }
 
 // resolveBGPair resolves the OCI compartment (flag override > cloud block
@@ -204,15 +209,17 @@ func resolveBGPair(d Deps, target Target, compartmentOverride string) (bgPair, e
 	}
 	p := target.Project
 	return bgPair{
-		auth:        auth,
-		container:   p.Container,
-		compName:    name,
-		compOCID:    ocid,
-		anchorConf:  path.Dir(p.EnvFile) + "/anchor.conf",
-		healthPath:  p.HealthPath,
-		port:        p.Port,
-		envFile:     p.EnvFile,
-		deployedSha: p.DeployedShaFile,
+		auth:           auth,
+		container:      p.Container,
+		instancePrefix: p.PairInstancePrefixEffective(),
+		sshKey:         target.HostSpec.SSHKey,
+		compName:       name,
+		compOCID:       ocid,
+		anchorConf:     path.Dir(p.EnvFile) + "/anchor.conf",
+		healthPath:     p.HealthPath,
+		port:           p.Port,
+		envFile:        p.EnvFile,
+		deployedSha:    p.DeployedShaFile,
 	}, nil
 }
 
@@ -256,12 +263,14 @@ func bgAnchorIP(ctx context.Context, pair bgPair, vnic string) (string, error) {
 }
 
 // instanceHealthy gates on the target's OWN IP: service up + loopback app
-// check (wget with a curl fallback — golden images are minimal).
-func instanceHealthy(ctx context.Context, d Deps, ip, container, port, healthPath string) bool {
+// check (wget with a curl fallback — golden images are minimal). The ssh
+// leg rides the resolved target identity — a bare spec only worked when
+// the agent happened to hold the ops key (2026-10-09 live fire).
+func instanceHealthy(ctx context.Context, d Deps, ip, sshKey, container, port, healthPath string) bool {
 	if ip == "" {
 		return false
 	}
-	spec := transport.HostSpec{Host: "root@" + ip}
+	spec := transport.HostSpec{Host: "root@" + ip, SSHKey: sshKey}
 	probe := fmt.Sprintf("rc-service %s status >/dev/null 2>&1 && (busybox wget -q -O /dev/null http://127.0.0.1:%s%s || curl -s -m 8 -o /dev/null http://127.0.0.1:%s%s)",
 		container, port, healthPath, port, healthPath)
 	_, err := d.Runner.Run(ctx, spec, probe)
@@ -304,7 +313,7 @@ func runBluegreenStatus(d Deps, c *cobra.Command) error {
 			continue
 		}
 		verdict := "UNHEALTHY/unreachable"
-		if instanceHealthy(ctx, d, inst.PublicIP, pair.container, pair.port, pair.healthPath) {
+		if instanceHealthy(ctx, d, inst.PublicIP, pair.sshKey, pair.container, pair.port, pair.healthPath) {
 			verdict = "HEALTHY"
 		}
 		fmt.Fprintf(d.Stdout, "%s : %s  ip=%s  app=%s\n", pair.colorName(color), inst.OCID, orNone(inst.PublicIP), verdict)
@@ -423,7 +432,7 @@ func runBluegreenProvision(d Deps, c *cobra.Command, color string) error {
 	if err != nil {
 		return err
 	}
-	if err := bgInjectGuest(d, ctx, pair.container, color, newRow.PublicIP, qcow2, sshKeyFile, platformUser, guestOS); err != nil {
+	if err := bgInjectGuest(d, ctx, pair.container, color, newRow.PublicIP, qcow2, sshKeyFile, platformUser, pair.sshKey, guestOS); err != nil {
 		return err
 	}
 	return nil
@@ -617,7 +626,7 @@ func stageGoldenDisk(d Deps, ctx context.Context, qcow2 string) (string, error) 
 // ubuntu). The two boots share one IP with two different host keys: a
 // throwaway known-hosts file keeps the operator's known_hosts untouched;
 // the instance record keeps the platform image metadata.
-func bgInjectGuest(d Deps, ctx context.Context, container, color, ip, qcow2, sshKeyFile, platformUser, guestOS string) error {
+func bgInjectGuest(d Deps, ctx context.Context, container, color, ip, qcow2, sshKeyFile, platformUser, targetKey, guestOS string) error {
 	osName := osDisplayName(guestOS)
 	verifyCmd, verifyPattern, err := osReleaseCheck(guestOS)
 	if err != nil {
@@ -671,10 +680,13 @@ func bgInjectGuest(d Deps, ctx context.Context, container, color, ip, qcow2, ssh
 		fmt.Fprintf(d.Stdout, "inject: reboot call ended (%v) — continuing to the %s verify\n", err, osName)
 	}
 	// The injected golden guest boots a NEW host key under the SAME ip —
-	// scrub the phase file so the probes below accept-new fresh.
+	// scrub the phase file so the probes below accept-new fresh. The ssh
+	// identity is the RESOLVED target key (the golden image bakes the ops
+	// pubkey) — never the platform --platform-key file (a .pub path is not
+	// a usable identity; relying on agent fallback breaks headless runs).
 	os.WriteFile(khPath, nil, 0o600)
 	fmt.Fprintf(d.Stdout, "inject: waiting for %s ssh (root@%s)…\n", osName, ip)
-	guest := transport.HostSpec{Host: "root@" + ip, AcceptNewHostKey: true, KnownHostsFile: khPath}
+	guest := transport.HostSpec{Host: "root@" + ip, SSHKey: targetKey, AcceptNewHostKey: true, KnownHostsFile: khPath}
 	rel := ""
 	for i := 0; i < 60; i++ {
 		out, err := d.Runner.Run(ctx, guest, verifyCmd)
@@ -765,13 +777,13 @@ func runBluegreenFlip(d Deps, c *cobra.Command) error {
 	}
 	fmt.Fprintf(d.Stdout, "flip[2/4]: guest answers on %s — reserved %s -> %s (anchor %s)\n", taddr, rip.Address, pair.colorName(to), tpip)
 	if _, err := cloud.RunOCI(ctx, cloud.PublicIPUpdateArgs(pair.auth, rip.OCID, tpip, "ASSIGNED")); err != nil {
-		bgCleanupTargetAnchor(ctx, d, trow.PublicIP, pair.anchorConf, taddr)
+		bgCleanupTargetAnchor(ctx, d, trow.PublicIP, pair.sshKey, pair.anchorConf, taddr)
 		return fmt.Errorf("OCI flip call failed — guest conf removed; run 'kampodra bluegreen status': %w", err)
 	}
 	fmt.Fprintf(d.Stdout, "flip[3/4]: reserved IP ASSIGNED — registering %s on %s's kamal-proxy (ACME HTTP-01 through the reserved ip)…\n", rhost, pair.colorName(to))
 	acme := fmt.Sprintf("podman exec kamal-proxy kamal-proxy deploy %s --host=%s --target=%s:%s --tls --health-check-path=%s",
 		pair.container, rhost, pair.container, pair.port, pair.healthPath)
-	if _, err := d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + trow.PublicIP}, acme); err != nil {
+	if _, err := d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + trow.PublicIP, SSHKey: pair.sshKey}, acme); err != nil {
 		bgFlipFailureRollback(ctx, d, pair, to, ob, rip.OCID, trow.PublicIP, taddr)
 		return &exitError{code: 1}
 	}
@@ -781,7 +793,7 @@ func runBluegreenFlip(d Deps, c *cobra.Command) error {
 		return &exitError{code: 1}
 	}
 	served := ""
-	if stamp := bgReadDeployedSha(ctx, d, trow.PublicIP, pair.deployedSha); stamp != "" {
+	if stamp := bgReadDeployedSha(ctx, d, trow.PublicIP, pair.sshKey, pair.deployedSha); stamp != "" {
 		if body, ok := d.Prober.ResolveStatus(ctx, rip.Address, rhost, pair.healthPath); ok {
 			served = strings.TrimSpace(body)
 			if !probe.BodyServesSha(body, stamp) {
@@ -842,7 +854,7 @@ func bgFlipResolveTarget(ctx context.Context, d Deps, pair bgPair, to string, fo
 	if !cloud.IsOCID(tpip, "privateip") {
 		return ft, fmt.Errorf("could not resolve/create the reserved-anchor secondary private ip on %s", pair.colorName(to))
 	}
-	if instanceHealthy(ctx, d, trow.PublicIP, pair.container, pair.port, pair.healthPath) {
+	if instanceHealthy(ctx, d, trow.PublicIP, pair.sshKey, pair.container, pair.port, pair.healthPath) {
 		fmt.Fprintf(d.Stdout, "target health: %s app HEALTHY on its own IP\n", pair.colorName(to))
 	} else if !force {
 		return ft, fmt.Errorf("%s app UNHEALTHY — refusing flip (override: --force)", pair.colorName(to))
@@ -884,26 +896,26 @@ func bgFlipAnchor(ctx context.Context, d Deps, pair bgPair, to string, trow clou
 		return "", fmt.Errorf("could not resolve the anchor private address on %s", pair.colorName(to))
 	}
 	taddr := tanchor + "/" + strings.SplitN(tcidr, "/", 2)[1]
-	if err := bgWriteAnchorConf(ctx, d, trow.PublicIP, pair.anchorConf, taddr); err != nil {
+	if err := bgWriteAnchorConf(ctx, d, trow.PublicIP, pair.sshKey, pair.anchorConf, taddr); err != nil {
 		return "", fmt.Errorf("anchor.conf write failed on %s (%s) — nothing mutated, flip aborted: %w", pair.colorName(to), trow.PublicIP, err)
 	}
-	if !bgPollAddr(ctx, d, trow.PublicIP, taddr, flipAddrTries) {
-		bgCleanupTargetAnchor(ctx, d, trow.PublicIP, pair.anchorConf, taddr)
+	if !bgPollAddr(ctx, d, trow.PublicIP, pair.sshKey, taddr, flipAddrTries) {
+		bgCleanupTargetAnchor(ctx, d, trow.PublicIP, pair.sshKey, pair.anchorConf, taddr)
 		return "", fmt.Errorf("guest watcher never configured %s on %s — is the kampodra-anchor service running? (conf removed, NOTHING mutated)", taddr, pair.colorName(to))
 	}
 	return taddr, nil
 }
-func bgWriteAnchorConf(ctx context.Context, d Deps, ip, confPath, addr string) error {
+func bgWriteAnchorConf(ctx context.Context, d Deps, ip, sshKey, confPath, addr string) error {
 	remote := fmt.Sprintf("umask 077; mkdir -p %s && printf 'ANCHOR_ADDR=%%s\\nANCHOR_IFACE=\\n' '%s' > %s && echo ANCHOR_CONF_WRITTEN",
 		bgQuote(path.Dir(confPath)), addr, confPath)
-	_, err := d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + ip}, remote)
+	_, err := d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + ip, SSHKey: sshKey}, remote)
 	return err
 }
 
 // bgPollAddr waits for the guest watcher to configure the anchor address.
-func bgPollAddr(ctx context.Context, d Deps, ip, addr string, tries int) bool {
+func bgPollAddr(ctx context.Context, d Deps, ip, sshKey, addr string, tries int) bool {
 	for i := 0; i < tries; i++ {
-		if _, err := d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + ip},
+		if _, err := d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + ip, SSHKey: sshKey},
 			fmt.Sprintf("ip -4 addr show | grep -qF -- '%s'", addr)); err == nil {
 			return true
 		}
@@ -925,8 +937,8 @@ func bgPollHTTPS(ctx context.Context, d Deps, raddr, rhost, healthPath string, t
 
 // bgReadDeployedSha reads the VM's deployed-sha stamp (empty = skip the
 // served-sha comparison, like a stamp-less first deploy).
-func bgReadDeployedSha(ctx context.Context, d Deps, ip, stampPath string) string {
-	out, err := d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + ip}, "cat "+stampPath+" 2>/dev/null || true")
+func bgReadDeployedSha(ctx context.Context, d Deps, ip, sshKey, stampPath string) string {
+	out, err := d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + ip, SSHKey: sshKey}, "cat "+stampPath+" 2>/dev/null || true")
 	if err != nil {
 		return ""
 	}
@@ -936,17 +948,17 @@ func bgReadDeployedSha(ctx context.Context, d Deps, ip, stampPath string) string
 // bgCleanupTargetAnchor removes the conf then deletes the address (retry:
 // the add-only watcher may have sourced the conf just before removal and
 // re-added it once).
-func bgCleanupTargetAnchor(ctx context.Context, d Deps, ip, confPath, addr string) {
+func bgCleanupTargetAnchor(ctx context.Context, d Deps, ip, sshKey, confPath, addr string) {
 	// Best-effort by design (cleanup after a failed flip): errors are
 	// swallowed here — the caller already reports the flip failure.
 	tolerant := func(remote string) {
-		_, _ = d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + ip}, remote)
+		_, _ = d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + ip, SSHKey: sshKey}, remote)
 	}
 	tolerant("rm -f " + confPath + " >/dev/null 2>&1 || true")
 	for i := 0; i < 3; i++ {
 		tolerant(
 			fmt.Sprintf(`iface=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}'); [ -n "$iface" ] && ip addr del '%s' dev "$iface" 2>/dev/null; true`, addr))
-		if _, err := d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + ip},
+		if _, err := d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + ip, SSHKey: sshKey},
 			fmt.Sprintf("ip -4 addr show | grep -qF -- '%s'", addr)); err != nil {
 			return
 		}
@@ -979,12 +991,12 @@ func bgFlipFailureRollback(ctx context.Context, d Deps, pair bgPair, to, ob, roc
 		if _, err := cloud.RunOCI(ctx, cloud.PublicIPUpdateArgs(pair.auth, rocid, "", "AVAILABLE")); err == nil {
 			fmt.Fprintf(d.Stderr, "reserved ip UNASSIGNED (dormant) — no existing anchor on %s\n", pair.colorName(ob))
 		} else {
-			bgCleanupTargetAnchor(ctx, d, tpub, pair.anchorConf, taddr)
+			bgCleanupTargetAnchor(ctx, d, tpub, pair.sshKey, pair.anchorConf, taddr)
 			fmt.Fprintf(d.Stderr, "AUTO-ROLLBACK FAILED — reserved ip state unknown; flip manually via console: %s\n", rocid)
 			return
 		}
 	}
-	bgCleanupTargetAnchor(ctx, d, tpub, pair.anchorConf, taddr)
+	bgCleanupTargetAnchor(ctx, d, tpub, pair.sshKey, pair.anchorConf, taddr)
 	fmt.Fprintf(d.Stderr, "%s cleaned (anchor.conf removed, anchor address deleted) — investigate before retrying\n", pair.colorName(to))
 }
 
@@ -1042,8 +1054,8 @@ func runBluegreenRollback(d Deps, c *cobra.Command) error {
 		fmt.Fprintf(d.Stdout, "warning: reserved %s held by an anchor of neither RUNNING color (terminated instance?) — unassigning without guest cleanup\n", rip.Address)
 	} else {
 		fmt.Fprintf(d.Stdout, "current holder: %s (%s) — cleaning the guest anchor, then unassigning\n", pair.colorName(holderColor), holderIP)
-		confAddr := bgReadAnchorAddr(ctx, d, holderIP, pair.anchorConf)
-		bgCleanupTargetAnchor(ctx, d, holderIP, pair.anchorConf, confAddr)
+		confAddr := bgReadAnchorAddr(ctx, d, holderIP, pair.sshKey, pair.anchorConf)
+		bgCleanupTargetAnchor(ctx, d, holderIP, pair.sshKey, pair.anchorConf, confAddr)
 		fmt.Fprintf(d.Stdout, "%s guest cleaned (anchor.conf removed%s)\n", pair.colorName(holderColor), orAddrDeleted(confAddr))
 	}
 	fmt.Fprintf(d.Stdout, "unassigning reserved %s (-> dormant)…\n", rip.Address)
@@ -1056,8 +1068,8 @@ func runBluegreenRollback(d Deps, c *cobra.Command) error {
 
 // bgReadAnchorAddr reads the guest's current ANCHOR_ADDR (with prefix) or
 // "". Quotes stripped — the conf is shell-sourceable by the watcher.
-func bgReadAnchorAddr(ctx context.Context, d Deps, ip, confPath string) string {
-	out, err := d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + ip},
+func bgReadAnchorAddr(ctx context.Context, d Deps, ip, sshKey, confPath string) string {
+	out, err := d.Runner.Run(ctx, transport.HostSpec{Host: "root@" + ip, SSHKey: sshKey},
 		fmt.Sprintf(`grep -h "^ANCHOR_ADDR=" %s 2>/dev/null | head -n 1`, confPath))
 	if err != nil {
 		return ""

@@ -519,3 +519,30 @@ func TestBluegreenSubcommandHelpHermetic(t *testing.T) {
 		t.Errorf("help must work without config: exit=%d", code)
 	}
 }
+
+// TestBluegreenGuestLegsCarryResolvedKey: every bluegreen ssh leg at the
+// guest (health probe, anchor write/poll/cleanup, sha read, ACME) rides
+// the RESOLVED target ssh key — a bare HostSpec only worked when the
+// agent happened to hold the ops key (the 2026-10-09 live fire: the
+// status probe reported the healthy green UNHEALTHY because the probe
+// spec dropped --ssh-key).
+func TestBluegreenGuestLegsCarryResolvedKey(t *testing.T) {
+	h := setupBG(t, map[string]string{
+		"reserved":        "ocid1.publicip.r1 203.0.113.50 ocid1.privateip.anchor",
+		"instances-green": greenRow(),
+	}, map[string]string{"HEALTHY": "0"})
+	// greenRow() gives the pair instance a public ip — the status probe
+	// sshes to it; the key must be on that invocation.
+	if code := h.run(t, "status", "--ssh-key", "/tmp/livefire-ops-key"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	calls := h.sshCalls(t)
+	if len(calls) == 0 {
+		t.Fatal("no ssh calls recorded")
+	}
+	for i, call := range calls {
+		if !strings.Contains(call, "-i /tmp/livefire-ops-key") {
+			t.Errorf("ssh call %d missing the resolved identity:\n%s", i, call)
+		}
+	}
+}

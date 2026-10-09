@@ -39,25 +39,26 @@ type Manifest struct {
 // reference for editor tooling) is accepted and ignored — it is metadata,
 // not a project field, and never enters the resolution ladder.
 type ManifestFields struct {
-	Schema          string          `json:"$schema,omitempty"`
-	Container       string          `json:"container,omitempty"`
-	ShadowSuffix    string          `json:"shadowSuffix,omitempty"`
-	EnvFile         string          `json:"envFile,omitempty"`
-	DataDir         string          `json:"dataDir,omitempty"`
-	Bucket          string          `json:"bucket,omitempty"`
-	ObjectPrefix    string          `json:"objectPrefix,omitempty"`
-	HealthPath      string          `json:"healthPath,omitempty"`
-	ProxyHost       string          `json:"proxyHost,omitempty"`
-	Services        []string        `json:"services,omitempty"`
-	ImagePrefix     string          `json:"imagePrefix,omitempty"`
-	Port            string          `json:"port,omitempty"`
-	Network         string          `json:"network,omitempty"`
-	ShadowProbePort string          `json:"shadowProbePort,omitempty"`
-	DeployedShaFile string          `json:"deployedShaFile,omitempty"`
-	EnvClearKeys    []string        `json:"envClearKeys,omitempty"`
-	Dockerfile      string          `json:"dockerfile,omitempty"`
-	MigrateScript   string          `json:"migrateScript,omitempty"`
-	Images          *ManifestImages `json:"images,omitempty"`
+	Schema             string          `json:"$schema,omitempty"`
+	Container          string          `json:"container,omitempty"`
+	PairInstancePrefix string          `json:"pairInstancePrefix,omitempty"`
+	ShadowSuffix       string          `json:"shadowSuffix,omitempty"`
+	EnvFile            string          `json:"envFile,omitempty"`
+	DataDir            string          `json:"dataDir,omitempty"`
+	Bucket             string          `json:"bucket,omitempty"`
+	ObjectPrefix       string          `json:"objectPrefix,omitempty"`
+	HealthPath         string          `json:"healthPath,omitempty"`
+	ProxyHost          string          `json:"proxyHost,omitempty"`
+	Services           []string        `json:"services,omitempty"`
+	ImagePrefix        string          `json:"imagePrefix,omitempty"`
+	Port               string          `json:"port,omitempty"`
+	Network            string          `json:"network,omitempty"`
+	ShadowProbePort    string          `json:"shadowProbePort,omitempty"`
+	DeployedShaFile    string          `json:"deployedShaFile,omitempty"`
+	EnvClearKeys       []string        `json:"envClearKeys,omitempty"`
+	Dockerfile         string          `json:"dockerfile,omitempty"`
+	MigrateScript      string          `json:"migrateScript,omitempty"`
+	Images             *ManifestImages `json:"images,omitempty"`
 }
 
 // ManifestImages is the kampodra.json "images" block: secondary (sidecar)
@@ -84,7 +85,7 @@ var sidecarNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 // manifestKeyHint lists the valid kampodra.json keys for parse errors.
 // Kept in lockstep with ManifestFields by TestManifestKeyHintMatchesStruct.
-const manifestKeyHint = "container, shadowSuffix, envFile, dataDir, bucket, " +
+const manifestKeyHint = "container, pairInstancePrefix, shadowSuffix, envFile, dataDir, bucket, " +
 	"objectPrefix, healthPath, proxyHost, services, imagePrefix, port, " +
 	"network, shadowProbePort, deployedShaFile, envClearKeys, dockerfile, " +
 	"migrateScript, images"

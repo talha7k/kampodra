@@ -50,10 +50,16 @@ type ReservedIP struct {
 	Assigned  bool
 }
 
-// ReservedIPListArgs lists the compartment's RESERVED public IPs.
+// ReservedIPListArgs lists the compartment's RESERVED public IPs as the
+// raw TSV triple ParseReservedIPRow consumes (id, ip-address,
+// private-ip-id; a null private-ip-id renders as `-` = dormant). The
+// 2026-10-09 live fire caught the args↔parser drift: without this query
+// the CLI dumps full JSON and the parser ate `("data": ([)` as a row.
 func ReservedIPListArgs(auth CloudAuth, compartment string) []string {
 	args := []string{"network", "public-ip", "list", "-c", compartment,
-		"--scope", "REGION", "--lifetime", "RESERVED", "--all"}
+		"--scope", "REGION", "--lifetime", "RESERVED", "--all",
+		"--query", "data[0] | [\"id\", \"ip-address\", \"private-ip-id\" || `-`] | join(' ', @)",
+		"--raw-output"}
 	return withProfile(args, auth.Profile, auth.InstancePrincipal)
 }
 
