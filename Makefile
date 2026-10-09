@@ -7,7 +7,11 @@
 
 GO        ?= go
 VERSION   := $(shell node -p "require('./npm/package.json').version")
-PLATFORMS := darwin-arm64 darwin-x64 linux-amd64 linux-arm64
+# Prerelease versions (0.7.0-beta.N) must NOT take npm's `latest` tag — npm
+# itself refuses to publish them without an explicit tag. Derive it: any
+# prerelease suffix -> `beta`; clean releases -> `latest`.
+NPM_TAG   := $(if $(findstring -,$(VERSION)),beta,latest)
+PLATFORMS := darwin-arm64 darwin-x64 linux-x64 linux-arm64
 
 .PHONY: all test vet lint build cross-compile version-check npm-test publish clean
 
@@ -36,12 +40,18 @@ npm-test:
 # shipped binaries report the release, not the main.go fallback.
 cross-compile:
 	@mkdir -p dist
+	# Single source of truth for npm versions: every platform package.json
+	# and the root package's optionalDependencies pins are STAMPED from
+	# $(VERSION) at cross-compile time — static drift here once shipped a
+	# root release depending on platform packages that never existed.
+	node -e "const fs=require('fs');const f='npm/package.json';const p=JSON.parse(fs.readFileSync(f));for(const k of Object.keys(p.optionalDependencies||{}))p.optionalDependencies[k]='$(VERSION)';fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
 	set -e; for triple in $(PLATFORMS); do \
 		os=$${triple%%-*}; arch=$${triple##*-}; \
 		case $$arch in x64) arch=amd64 ;; esac; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o dist/kampodra-$$triple ./cmd/kampodra; \
 		mkdir -p npm/platforms/$$triple/bin; \
 		cp dist/kampodra-$$triple npm/platforms/$$triple/bin/kampodra; \
+		node -e "const fs=require('fs');const f='npm/platforms/$$triple/package.json';const p=JSON.parse(fs.readFileSync(f));p.version='$(VERSION)';fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"; \
 		echo "built $$os/$$arch -> dist/kampodra-$$triple"; \
 	done
 
@@ -77,10 +87,10 @@ publish:
 	$(MAKE) release-check
 	set -e; for triple in $(PLATFORMS); do \
 		echo "== npm publish @kampodra/$$triple@$(VERSION)"; \
-		npm publish --no-git-checks ./npm/platforms/$$triple; \
+		npm publish ./npm/platforms/$$triple --tag $(NPM_TAG); \
 	done
 	echo "== npm publish kampodra@$(VERSION)"
-	npm publish --no-git-checks ./npm
+	npm publish ./npm --tag $(NPM_TAG)
 
 clean:
 	rm -rf dist
