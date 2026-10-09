@@ -6,7 +6,7 @@ proof where noted). Last updated: 2026-10-09 (Ubuntu 24.04 guest support,
 
 ## Status snapshot
 
-- Version: `0.7.0-beta.2` · 14 packages green · CI matrix (4 platforms)
+- Version: `0.7.0-beta.3` · 14 packages green · CI matrix (4 platforms)
 - Deploy proven live end-to-end: two real deploys + a full fresh-VM
   wipe-and-rebuild (21.5 min, `d54c3e1` live-fire fixes) — Alpine path;
   the Ubuntu 24.04 provisioner is fixture-proven only (live drill open)
@@ -114,7 +114,7 @@ proof where noted). Last updated: 2026-10-09 (Ubuntu 24.04 guest support,
       version (`-X main.version=$(VERSION)` in cross-compile), plus a
       `make release-check` gate wired into `make publish` asserting the
       shipped host binary reports it. Evidence: `make cross-compile &&
-      make release-check` green (0.7.0-beta.2), npm version matches.
+      make release-check` green (0.7.0-beta.3), npm version matches.
 
 ## Done (for orientation — do not re-add)
 
