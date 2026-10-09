@@ -624,7 +624,7 @@ kampodra bluegreen rollback                # unassign to DORMANT + holder guest 
 | `--image-id` | string | `""` | `provision`: launch this exact image (skips route detection) |
 | `--os` | string | `alpine` | `provision`: guest OS of the golden image (`alpine`\|`ubuntu` — ubuntu = 24.04 LTS); sets the golden-image lookup prefix (`<container>-alpine` / `<container>-ubuntu-24.04`) |
 | `--qcow2` | string | `""` | `provision` inject route: golden qcow2 path (`ALPINE_QCOW2` env, else error) |
-| `--platform-key` | string | `""` | `provision` inject route: ssh public key FILE for the platform-image first boot (`OPS_SSH_PUBKEY` env, else error) |
+| `--platform-key` | string | `""` | `provision` inject route: ssh PUBLIC key FILE the platform image authorizes at first boot (`OPS_SSH_PUBKEY` env, else error). Authorization only — the platform ssh legs authenticate with the resolved `--ssh-key` identity. |
 | `--platform-user` | string | `""` | `provision` inject route: platform-image ssh user (`PLATFORM_SSH_USER` env, default `ubuntu`) |
 | `--to` | string | `""` | `flip`: target color (`blue`\|`green`) |
 | `--force` | bool | `false` | `flip`: cut over even when the target app is unhealthy |
