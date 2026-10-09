@@ -109,6 +109,14 @@ func (o *Overrides) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// SidecarImageRef is the VM-local image ref for a declared sidecar
+// (kampodra.json images.sidecars): the project ImagePrefix + "-" + name
+// (e.g. 127.0.0.1:5000/app-backup). Lives here so deploy's streaming and
+// any future consumer can never drift from the naming.
+func (c Config) SidecarImageRef(name string) string {
+	return c.ImagePrefix + "-" + name
+}
+
 // Resolve layers the config, lowest layer first: LoadDefault, then the
 // repo manifest (kampodra.json, nil = none), then KAMPODRA_* env, then the
 // profile's raw "project" block (the command layer passes

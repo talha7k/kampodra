@@ -13,6 +13,7 @@ import (
 	initadapter "github.com/talha7k/kampodra/internal/adapter/init"
 	"github.com/talha7k/kampodra/internal/adapter/osfacts"
 	"github.com/talha7k/kampodra/internal/adapter/probe"
+	"github.com/talha7k/kampodra/internal/adapter/project"
 	"github.com/talha7k/kampodra/internal/adapter/runtime"
 	"github.com/talha7k/kampodra/internal/adapter/state"
 )
@@ -49,6 +50,7 @@ type deployOpts struct {
 	skipSmoke     bool
 	rolling       bool
 	drainTimeout  int
+	sidecars      []project.ManifestSidecar
 }
 
 // deployRun carries one pipeline execution: the resolved target, the
@@ -242,6 +244,16 @@ func (r *deployRun) execute() error {
 		}
 	}
 
+	// --- sidecars (kampodra.json images.sidecars; deploy mode ONLY) ------
+	// Rollback and --sha never touch sidecars: rollback is instant BECAUSE
+	// it only re-points the primary; sidecars are :latest-rolling by
+	// contract (an old sidecar is never needed).
+	if r.mode == "deploy" {
+		if err := r.streamSidecars(); err != nil {
+			return err
+		}
+	}
+
 	// --- env file (the env family: 0600 temp + atomic mv, fingerprints
 	// only on stdout; the deploy stamps API_GIT_SHA into the payload) -----
 	if r.opts.envFile != "" {
@@ -304,7 +316,12 @@ func (r *deployRun) vmTolerantErr(remote string) error {
 // no registry, no tunnel; the image crosses on the ssh the deploy already
 // uses.
 func (r *deployRun) streamImage() error {
-	image := r.target.Project.ImagePrefix + ":" + r.ver
+	return r.streamImageRef(r.target.Project.ImagePrefix + ":" + r.ver)
+}
+
+// streamImageRef is streamImage for any local image ref (the primary's
+// sha tag, a sidecar's :latest) — one save|load pipe implementation.
+func (r *deployRun) streamImageRef(image string) error {
 	save := exec.CommandContext(r.ctx, "podman", "save", "--format", "docker-archive", image)
 	stdout, err := save.StdoutPipe()
 	if err != nil {
@@ -320,6 +337,34 @@ func (r *deployRun) streamImage() error {
 	}
 	if err := save.Wait(); err != nil {
 		return fmt.Errorf("podman save failed: %w", err)
+	}
+	return nil
+}
+
+// streamSidecars builds+streams+verifies every sidecar declared in the
+// repo manifest (kampodra.json images.sidecars): same platform and
+// GIT_SHA identity as the primary, tagged <ImagePrefix>-<name>:latest
+// (sidecars are not sha-versioned — rollback never needs an old sidecar),
+// streamed over the same ssh pipe, then fail-closed verified on the VM.
+func (r *deployRun) streamSidecars() error {
+	for _, sc := range r.opts.sidecars {
+		ref := r.target.Project.SidecarImageRef(sc.Name) + ":latest"
+		r.say("sidecar %s: building (%s, -f %s)…", sc.Name, ref, sc.Dockerfile)
+		buildArgs := []string{"build", "--platform", "linux/arm64",
+			"-f", sc.Dockerfile,
+			"--build-arg", "GIT_SHA=" + r.ver,
+			"-t", ref,
+			r.repoRoot}
+		if err := localPassthrough(r.ctx, "podman", buildArgs...); err != nil {
+			return fmt.Errorf("sidecar %s build failed: %w", sc.Name, err)
+		}
+		r.say("sidecar %s: streaming (podman save | ssh podman load)…", sc.Name)
+		if err := r.streamImageRef(ref); err != nil {
+			return fmt.Errorf("sidecar %s: %w", sc.Name, err)
+		}
+		if out, err := r.vm("podman image exists " + ref); err != nil {
+			return fmt.Errorf("sidecar %s missing on the VM after load (%s): %w", sc.Name, strings.TrimSpace(out), err)
+		}
 	}
 	return nil
 }

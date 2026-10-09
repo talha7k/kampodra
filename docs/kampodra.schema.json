@@ -14,6 +14,32 @@
       "type": "string",
       "description": "The app container/service name (deploy target, restart, logs, kamal-proxy target)."
     },
+    "images": {
+      "type": "object",
+      "description": "Secondary (sidecar) images deploy builds+streams+tags alongside the primary app image — no manual podman build/save/load.",
+      "properties": {
+        "sidecars": {
+          "type": "array",
+          "description": "Declared sidecar images. Each builds from its repo-relative dockerfile, streams over the deploy's ssh, and lands on the VM as <imagePrefix>-<name>:latest.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "dockerfile"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]*$",
+                "description": "Sidecar name — the image ref derives as <imagePrefix>-<name> (lowercase alnum, dash, underscore)."
+              },
+              "dockerfile": {
+                "type": "string",
+                "description": "Repo-relative Dockerfile/Containerfile to build the sidecar from."
+              }
+            }
+          }
+        }
+      }
+    },
     "shadowSuffix": {
       "type": "string",
       "description": "Suffix for the rolling deploy's shadow container."

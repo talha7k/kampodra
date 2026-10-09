@@ -44,6 +44,12 @@ kampodra deploy [--host root@<ip>] [--profile <name>] [--sha <sha7>] [--rollback
 | `--rolling` | bool | `false` | zero-downtime shadow-container double re-point |
 | `--drain-timeout` | int | `10` | seconds to wait for the proxy switch to confirm (`--rolling` only) |
 | `--disk-threshold` | string | `""` | fail closed BEFORE the build when VM disk usage ≥ pct (0–100) |
+
+Deploy also builds+streams every sidecar declared in the repo manifest's
+`images.sidecars` block (deploy mode only — `--rollback`/`--sha` never
+touch sidecars): same platform + `GIT_SHA` identity as the primary,
+landed on the VM as `<imagePrefix>-<name>:latest`, fail-closed verified
+after the load.
 | `--env-file` | string | `""` | push this env file (0600 + atomic mv, sha-stamped) before restart |
 | `--skip-smoke` | bool | `false` | skip the public smoke check |
 
@@ -554,6 +560,7 @@ key is accepted and ignored — point it at
 | `envClearKeys` | list | `NODE_ENV`, `PORT` | `KAMPODRA_ENV_CLEAR_KEYS` |
 | `dockerfile` | string | `Dockerfile` | `KAMPODRA_DOCKERFILE` |
 | `migrateScript` | string | `scripts/migrate-db.ts` | `KAMPODRA_MIGRATE_SCRIPT` |
+| `images.sidecars[]` | list | `[]` | manifest-only (repo property — no env/profile override): secondary images `deploy` builds+streams+tags as `<imagePrefix>-<name>:latest`; each entry needs `name` (`^[a-z0-9][a-z0-9_-]*$`) + `dockerfile` |
 
 ```json
 {
