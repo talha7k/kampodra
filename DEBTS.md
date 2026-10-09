@@ -32,13 +32,20 @@ proof where noted). Last updated: 2026-10-09 (Ubuntu 24.04 guest support,
       `internal/command/imageimport_test.go` (happy/BIOS-warn/terminal/
       validation paths); suite green. Live drill: run once against a
       real tenancy (staging object, then delete).
-- [ ] **Secondary-image streaming** — today only the primary app image      rides `deploy`. Sidecars (backup daemons, shippers) need a manual
-      `podman build + save | ssh load`. Done = a `--sidecar <name>` or
-      images block in `kampodra.json` that builds+streams+tags declared
-      secondary images as part of deploy/vm-prepare. Proven by a
-      fresh-VM rebuild that restores the backup daemon with zero manual
-      podman.
-
+- [x] **Secondary-image streaming** — the kampodra.json `images.sidecars`
+      block makes deploy build+stream+tag declared sidecars as
+      `<imagePrefix>-<name>:latest` (same platform + GIT_SHA identity,
+      strict-parse + fail-closed validation, deploy mode only —
+      rollback/`--sha` never touch sidecars). vm-prepare deliberately
+      does NOT build images: it bootstraps the host; deploy is the only
+      image-building path. Evidence:
+      TestParseManifestImagesSidecars + TestParseManifestSidecarFailsClosed
+      (strict block), TestSidecarImageRef (naming seam),
+      TestDeployPipelineSidecarsStreamed (sequence + ORDER pins),
+      TestDeployPipelineRollbackNeverTouchesSidecars (rollback purity);
+      suite green. Live-fire proof pending (same drill as bluegreen:
+      declare a backup sidecar, fresh-VM rebuild, confirm zero manual
+      podman).
 ### Medium
 
 - [ ] **Rolling deploy promotion** — `deploy --rolling` is opt-in and

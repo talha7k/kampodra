@@ -213,7 +213,7 @@ func TestManifestKeyHintMatchesStruct(t *testing.T) {
 	if manifestKeyHint != "container, shadowSuffix, envFile, dataDir, bucket, "+
 		"objectPrefix, healthPath, proxyHost, services, imagePrefix, port, "+
 		"network, shadowProbePort, deployedShaFile, envClearKeys, dockerfile, "+
-		"migrateScript" {
+		"migrateScript, images" {
 		t.Fatalf("manifestKeyHint const drifted from its own formatting")
 	}
 	if !strings.Contains(manifestKeyHint, want) || len(strings.Split(manifestKeyHint, ", ")) != len(keys) {
@@ -265,6 +265,10 @@ func TestManifestSchemaFileInLockstep(t *testing.T) {
 			if prop.Type != "array" || prop.Items == nil || prop.Items.Type != "string" {
 				t.Errorf("schema type of %q must be array of string", name)
 			}
+		case reflect.Pointer:
+			if prop.Type != "object" {
+				t.Errorf("schema type of %q = %q, want object", name, prop.Type)
+			}
 		default:
 			t.Errorf("unexpected field kind %s on %s", typ.Field(i).Type.Kind(), typ.Field(i).Name)
 		}
@@ -272,6 +276,62 @@ func TestManifestSchemaFileInLockstep(t *testing.T) {
 	for name := range schema.Properties {
 		if !seen[name] {
 			t.Errorf("schema has property %q with no ManifestFields counterpart", name)
+		}
+	}
+}
+
+func TestParseManifestImagesSidecars(t *testing.T) {
+	raw := `{
+	  "images": {
+	    "sidecars": [
+	      {"name": "backup", "dockerfile": "deploy/backup.Dockerfile"},
+	      {"name": "shipper", "dockerfile": "deploy/shipper.Containerfile"}
+	    ]
+	  }
+	}`
+	mf, err := ParseManifest(filepath.Join("/repo", ManifestFileName), []byte(raw))
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	if mf.Fields.Images == nil || len(mf.Fields.Images.Sidecars) != 2 {
+		t.Fatalf("images.sidecars = %+v, want 2 sidecars", mf.Fields.Images)
+	}
+	if mf.Fields.Images.Sidecars[0].Name != "backup" || mf.Fields.Images.Sidecars[0].Dockerfile != "deploy/backup.Dockerfile" {
+		t.Errorf("sidecar[0] = %+v", mf.Fields.Images.Sidecars[0])
+	}
+}
+
+func TestParseManifestImagesAbsentIsNil(t *testing.T) {
+	mf, err := ParseManifest("/repo/kampodra.json", []byte(`{}`))
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	if mf.Fields.Images != nil {
+		t.Errorf("Images = %+v, want nil (no images block)", mf.Fields.Images)
+	}
+}
+
+func TestParseManifestSidecarFailsClosed(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string // error must contain
+	}{
+		{"empty name", `{"images":{"sidecars":[{"name":"","dockerfile":"d.Dockerfile"}]}}`, "name"},
+		{"empty dockerfile", `{"images":{"sidecars":[{"name":"backup","dockerfile":""}]}}`, "dockerfile"},
+		{"missing dockerfile", `{"images":{"sidecars":[{"name":"backup"}]}}`, "dockerfile"},
+		{"bad name charset", `{"images":{"sidecars":[{"name":"Back Up!","dockerfile":"d.Dockerfile"}]}}`, "name"},
+		{"duplicate names", `{"images":{"sidecars":[{"name":"backup","dockerfile":"a.Dockerfile"},{"name":"backup","dockerfile":"b.Dockerfile"}]}}`, "duplicate"},
+		{"nested unknown key", `{"images":{"sidecars":[{"name":"backup","dockerfile":"d.Dockerfile","context":"."}]}}`, "context"},
+	}
+	for _, tc := range cases {
+		_, err := ParseManifest("/repo/kampodra.json", []byte(tc.raw))
+		if err == nil {
+			t.Errorf("%s: must fail closed", tc.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error = %v, want it to contain %q", tc.name, err, tc.want)
 		}
 	}
 }

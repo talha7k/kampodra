@@ -15,6 +15,7 @@ import (
 
 	initadapter "github.com/talha7k/kampodra/internal/adapter/init"
 	"github.com/talha7k/kampodra/internal/adapter/osfacts"
+	"github.com/talha7k/kampodra/internal/adapter/project"
 	"github.com/talha7k/kampodra/internal/adapter/runtime"
 	"github.com/talha7k/kampodra/internal/adapter/state"
 	"github.com/talha7k/kampodra/internal/adapter/transport"
@@ -403,6 +404,13 @@ func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
 	// already merged env > profile block > kampodra.json > "Dockerfile").
 	dockerfile = firstNonEmpty(dockerfile, target.Project.Dockerfile)
 
+	// Sidecars (kampodra.json images.sidecars): a repo property read
+	// straight off the manifest — no ladder (per-host profiles and env
+	// have nothing to say about which secondary images a REPO ships).
+	sidecars := []project.ManifestSidecar{}
+	if mf != nil && mf.Fields.Images != nil {
+		sidecars = mf.Fields.Images.Sidecars
+	}
 	opts := deployOpts{
 		dockerfile:    dockerfile,
 		envFile:       envFile,
@@ -410,6 +418,7 @@ func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
 		skipSmoke:     skipSmoke,
 		rolling:       rolling,
 		drainTimeout:  drain,
+		sidecars:      sidecars,
 	}
 	ctx := c.Context()
 

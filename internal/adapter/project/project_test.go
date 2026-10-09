@@ -188,3 +188,11 @@ func TestOverridesEnvFileKeyUnification(t *testing.T) {
 		t.Errorf("both keys: canonical envFile must win, got %q", o.EnvFile)
 	}
 }
+
+func TestSidecarImageRef(t *testing.T) {
+	c := LoadDefault()
+	c.ImagePrefix = "127.0.0.1:5000/my-api"
+	if got := c.SidecarImageRef("backup"); got != "127.0.0.1:5000/my-api-backup" {
+		t.Errorf("SidecarImageRef = %q", got)
+	}
+}

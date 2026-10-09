@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Sidecar images** — the repo manifest's `images.sidecars` block
+  (`[{"name", "dockerfile"}]`, strict-parse + fail-closed validation)
+  makes `deploy` build, stream (`podman save | ssh podman load`), and
+  verify declared secondary images (backup daemons, shippers) alongside
+  the primary: same platform + `GIT_SHA` identity, landed as
+  `<imagePrefix>-<name>:latest`, deploy mode only (rollback/`--sha`
+  never touch sidecars). A fresh-VM rebuild needs zero manual podman.
+
 - **Ubuntu 24.04 guest support** — a second guest OS arrives as the
   sibling provisioner the seams promised. `image-import --os` and
   `provision --os` (default `alpine`; `ubuntu` = 24.04 LTS) drive the
