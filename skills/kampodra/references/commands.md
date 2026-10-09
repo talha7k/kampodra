@@ -451,13 +451,17 @@ Auth: profile `cloud` block / env / native (no cloud flags).
   per-color app health. Read-only.
 - `init` — create the DORMANT reserved IP (`kampodra-active`); idempotent.
 - `provision <blue|green>` — launch the sibling from the other color's AD
-  + subnet (`VM.Standard.A1.Flex` 2/12). Native: newest `<container>-alpine*`
-  custom image with UEFI_64 firmware. Else inject: platform-image launch
+  + subnet (`VM.Standard.A1.Flex` 2/12). `--os` (`alpine`\|`ubuntu`,
+  default `alpine`; ubuntu = 24.04 LTS) picks the golden-image prefix.
+  Native: newest `<container>-alpine*` (default) or
+  `<container>-ubuntu-24.04*` (`--os ubuntu`) custom image with UEFI_64
+  firmware. Else inject: platform-image launch
   (`--platform-key` file / `OPS_SSH_PUBKEY`, `--platform-user` /
   `PLATFORM_SSH_USER` default `ubuntu`) + golden qcow2 streamed onto the
   boot disk (`--qcow2` / `ALPINE_QCOW2`; qemu-img required) + reboot +
-  `/etc/alpine-release` verify. `--image-id` forces one image. Ends with
-  `vm-prepare` next steps (does not run it).
+  per-OS boot verify (`/etc/alpine-release` 3.x for alpine, `ID=ubuntu`
+  in `/etc/os-release` for ubuntu). `--image-id` forces one image. Ends
+  with `vm-prepare` next steps (does not run it).
 - `flip --to <color> [--force]` — ACME-first: health gate on the target's
   own IP (unless `--force`) → anchor conf on the target guest (watcher
   configures it) → reserved IP assigned (waits ASSIGNED) → ACME on the
@@ -471,9 +475,12 @@ Auth: profile `cloud` block / env / native (no cloud flags).
 ## image-import
 
 Upload a packer-built qcow2 and import it as an OCI custom image (build
-machine; self-supported Alpine, PARAVIRTUALIZED). `--image` required;
+machine; PARAVIRTUALIZED — alpine imports self-supported, ubuntu as
+`Canonical Ubuntu` / `Ubuntu 24.04` via `--os alpine|ubuntu`, default
+`alpine`). `--image` required;
 `--bucket` (`KAMPODRA_IMPORT_BUCKET`, else `<container>-image-import`);
-`--name-prefix` (default `<container>-alpine` — provision looks this up);
+`--name-prefix` (default `<container>-alpine`, or
+`<container>-ubuntu-24.04` with `--os ubuntu` — provision looks this up);
 `--compartment`; `--keep-object`. Polls AVAILABLE (30m cap, terminal
 states fail); non-UEFI firmware warns loudly (A1 rejects, x86 launches);
 staged object deleted unless kept; prints the image OCID.

@@ -420,11 +420,34 @@ func OSObjectDeleteArgs(auth CloudAuth, bucket, object string) []string {
 	return withProfile(args, auth.Profile, auth.InstancePrincipal)
 }
 
-// ImageImportArgs imports the staged object as a custom image
-// (self-supported Alpine: generic OS metadata, PARAVIRTUALIZED — Ampere
-// shapes are UEFI-only; OCI pins imports to firmware=BIOS, so the result
-// warns when it is not UEFI_64).
-func ImageImportArgs(auth CloudAuth, compartment, bucket, namespace, object, displayName string) []string {
+// SupportedImportOSes lists the guest OSes the golden-image pipeline
+// (image-import + provision) accepts. One source of truth for the flag
+// validation, the import metadata, and the error messages.
+func SupportedImportOSes() []string {
+	return []string{"alpine", "ubuntu"}
+}
+
+// ImportOSMetadata maps a validated guest OS to the OCI import OS
+// metadata. Fail-closed like CheckProvider — an unknown OS name must
+// never reach the import call silently defaulted. Alpine is not in OCI's
+// supported import list (generic self-supported metadata); Ubuntu 24.04
+// LTS imports as Canonical Ubuntu.
+func ImportOSMetadata(os string) (osName, osVersion string, err error) {
+	switch os {
+	case "alpine":
+		return "Linux", "Alpine (self-supported)", nil
+	case "ubuntu":
+		return "Canonical Ubuntu", "Ubuntu 24.04", nil
+	}
+	return "", "", fmt.Errorf("unsupported import OS %q (supported: %s)", os, strings.Join(SupportedImportOSes(), ", "))
+}
+
+// ImageImportArgs imports the staged object as a custom image with the
+// caller-resolved OS metadata (ImportOSMetadata; validated upstream —
+// this stays a pure string-vector builder like every other Args builder).
+// PARAVIRTUALIZED — Ampere shapes are UEFI-only; OCI pins imports to
+// firmware=BIOS, so the result warns when it is not UEFI_64.
+func ImageImportArgs(auth CloudAuth, compartment, bucket, namespace, object, displayName, osName, osVersion string) []string {
 	args := []string{"compute", "image", "import", "from-object",
 		"-c", compartment,
 		"--bucket-name", bucket,
@@ -432,8 +455,8 @@ func ImageImportArgs(auth CloudAuth, compartment, bucket, namespace, object, dis
 		"--name", object,
 		"--display-name", displayName,
 		"--source-image-type", "QCOW2",
-		"--operating-system", "Linux",
-		"--operating-system-version", "Alpine (self-supported)",
+		"--operating-system", osName,
+		"--operating-system-version", osVersion,
 		"--launch-mode", "PARAVIRTUALIZED"}
 	return withProfile(args, auth.Profile, auth.InstancePrincipal)
 }

@@ -139,3 +139,61 @@ func TestImageImportRequiresCompartment(t *testing.T) {
 		t.Errorf("exit = %d, want 1", code)
 	}
 }
+
+// --os must fail closed BEFORE any network work: unknown values are
+// rejected naming the supported set, and the oci shim log stays empty.
+func TestImageImportUnknownOSFailsClosed(t *testing.T) {
+	h, qcow2 := setupImport(t, "AVAILABLE", "UEFI_64")
+	if code := h.run(t, "--image", qcow2, "--os", "debian"); code == 0 {
+		t.Error("unknown --os must fail")
+	}
+	errText := h.stderr.String()
+	if !strings.Contains(errText, "debian") ||
+		!strings.Contains(errText, "alpine") || !strings.Contains(errText, "ubuntu") {
+		t.Errorf("unknown --os must fail naming itself and the supported set: %q", errText)
+	}
+	if calls := h.ociCalls(t); len(calls) != 0 {
+		t.Errorf("unknown --os must fail before any oci call, got:\n%s", strings.Join(calls, "\n"))
+	}
+}
+
+// The --os value threads through to the import call's OS metadata:
+// ubuntu -> Canonical Ubuntu / Ubuntu 24.04; the default stays alpine.
+func TestImageImportThreadsOSMetadata(t *testing.T) {
+	h, qcow2 := setupImport(t, "AVAILABLE", "UEFI_64")
+	if code := h.run(t, "--image", qcow2, "--os", "ubuntu"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	joined := strings.Join(h.ociCalls(t), "\n")
+	for _, want := range []string{"--operating-system Canonical Ubuntu", "--operating-system-version Ubuntu 24.04"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("--os ubuntu import vector missing %q:\n%s", want, joined)
+		}
+	}
+
+	h, qcow2 = setupImport(t, "AVAILABLE", "UEFI_64")
+	if code := h.run(t, "--image", qcow2); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	joined = strings.Join(h.ociCalls(t), "\n")
+	for _, want := range []string{"--operating-system Linux", "--operating-system-version Alpine (self-supported)"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("default (alpine) import vector missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+// Explicit --name-prefix still wins over the per-OS derived prefix.
+func TestImageImportNamePrefixOverridesOSDefault(t *testing.T) {
+	h, qcow2 := setupImport(t, "AVAILABLE", "UEFI_64")
+	if code := h.run(t, "--image", qcow2, "--os", "ubuntu", "--name-prefix", "custom"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	joined := strings.Join(h.ociCalls(t), "\n")
+	if !strings.Contains(joined, "custom-") {
+		t.Errorf("explicit --name-prefix must win over the ubuntu default:\n%s", joined)
+	}
+	if strings.Contains(joined, "app-ubuntu-24.04") {
+		t.Errorf("derived ubuntu prefix must not appear when --name-prefix is explicit:\n%s", joined)
+	}
+}

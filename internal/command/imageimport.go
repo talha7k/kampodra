@@ -25,8 +25,8 @@ import (
 // configure the oci CLI (`oci setup config`) with keys sourced from your
 // own pass store.
 const imageImportHelp = `Usage:
-  kampodra image-import --image <qcow2> [--bucket <name>] [--name-prefix <p>]
-                        [--compartment <name>] [--keep-object]
+  kampodra image-import --image <qcow2> [--os alpine|ubuntu] [--bucket <name>]
+                        [--name-prefix <p>] [--compartment <name>] [--keep-object]
 
 Examples:
   kampodra image-import --image build/app-alpine-3.22.6-aarch64.qcow2
@@ -48,23 +48,29 @@ func newImageImportCommand(d Deps) *cobra.Command {
 	pf.String("profile", "", "kampodra instance profile (project naming + cloud block)")
 	pf.String("image", "", "qcow2 file to import (required)")
 	pf.String("bucket", "", "staging bucket (KAMPODRA_IMPORT_BUCKET env, else <container>-image-import)")
-	pf.String("name-prefix", "", "image display-name prefix (<container>-alpine)")
+	pf.String("name-prefix", "", "image display-name prefix (default <container>-alpine, or <container>-ubuntu-24.04 with --os ubuntu)")
+	pf.String("os", "alpine", "guest OS of the qcow2 (alpine|ubuntu)")
 	pf.String("compartment", "", "compartment name or ocid (cloud block or OCI_COMPARTMENT env)")
 	pf.Bool("keep-object", false, "keep the staged qcow2 object after a successful import")
 	return cmd
 }
 
 // importStage is the validated local input set: the qcow2 path, staging
-// bucket, display-name prefix, and the keep-object choice.
+// bucket, display-name prefix, the guest OS + its OCI import metadata,
+// and the keep-object choice.
 type importStage struct {
 	image      string
 	bucket     string
 	namePrefix string
+	osName     string
+	osVersion  string
 	keepObject bool
 }
 
 // bgImportStage validates the local inputs (flags over env over derived
-// defaults) before any OCI call happens.
+// defaults) before any OCI call happens. The guest OS resolves to its
+// import metadata here (fail-closed); the prefix falls back to the
+// per-OS golden-image default.
 func bgImportStage(d Deps, c *cobra.Command, pair bgPair) (importStage, error) {
 	var st importStage
 	st.image = flagString(c, "image")
@@ -74,6 +80,12 @@ func bgImportStage(d Deps, c *cobra.Command, pair bgPair) (importStage, error) {
 	if _, err := os.Stat(st.image); err != nil {
 		return st, fmt.Errorf("image not found: %s", st.image)
 	}
+	guestOS := flagString(c, "os")
+	osName, osVersion, err := cloud.ImportOSMetadata(guestOS)
+	if err != nil {
+		return st, err
+	}
+	st.osName, st.osVersion = osName, osVersion
 	st.bucket = flagString(c, "bucket")
 	if st.bucket == "" {
 		if v, ok := d.Env("KAMPODRA_IMPORT_BUCKET"); ok && v != "" {
@@ -84,7 +96,9 @@ func bgImportStage(d Deps, c *cobra.Command, pair bgPair) (importStage, error) {
 	}
 	st.namePrefix = flagString(c, "name-prefix")
 	if st.namePrefix == "" {
-		st.namePrefix = goldenImagePrefix(pair.container)
+		if st.namePrefix, err = goldenImagePrefix(pair.container, guestOS); err != nil {
+			return st, err
+		}
 	}
 	st.keepObject = flagBool(c, "keep-object")
 	return st, nil
@@ -97,6 +111,13 @@ const (
 
 func runImageImport(d Deps, c *cobra.Command) error {
 	ctx := c.Context()
+	// Fail closed on --os BEFORE any network/ssh work (the compartment
+	// resolve below is the first OCI call — it must not run for a usage
+	// error).
+	guestOS := flagString(c, "os")
+	if err := checkGuestOS(guestOS); err != nil {
+		return err
+	}
 	target, err := resolveAnyTarget(d, c)
 	if err != nil {
 		return err
@@ -133,7 +154,7 @@ func runImageImport(d Deps, c *cobra.Command) error {
 	}
 
 	fmt.Fprintf(d.Stdout, "[import] importing as custom image '%s' (self-supported: PARAVIRTUALIZED)…\n", imageName)
-	importOut, err := cloud.RunOCI(ctx, cloud.ImageImportArgs(auth, pair.compOCID, bucket, namespace, objectName, imageName))
+	importOut, err := cloud.RunOCI(ctx, cloud.ImageImportArgs(auth, pair.compOCID, bucket, namespace, objectName, imageName, stage.osName, stage.osVersion))
 	if err != nil {
 		return fmt.Errorf("import call failed: %w", err)
 	}

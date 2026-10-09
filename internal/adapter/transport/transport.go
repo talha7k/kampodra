@@ -36,8 +36,9 @@ type HostSpec struct {
 	// KnownHostsFile overrides the user known-hosts file for this call
 	// (-o UserKnownHostsFile=…). The provision-inject phase sets it to a
 	// throwaway file: one IP serves two boots with two different host
-	// keys (platform image, then injected Alpine), and the operator's
-	// known_hosts must never wedge on the changed key. Empty = default.
+	// keys (platform image, then the injected golden guest), and the
+	// operator's known_hosts must never wedge on the changed key.
+	// Empty = default.
 	KnownHostsFile string
 }
 

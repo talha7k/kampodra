@@ -114,12 +114,48 @@ func TestEmptyProfileOmitsAuthFlag(t *testing.T) {
 	vecs := [][]string{
 		ReservedIPListArgs(CloudAuth{}, "ocid1.compartment.x"),
 		InstanceListArgs(CloudAuth{}, "ocid1.compartment.x", "app-blue"),
-		ImageImportArgs(CloudAuth{}, "ocid1.compartment.x", "bkt", "ns", "obj", "disp"),
+		ImageImportArgs(CloudAuth{}, "ocid1.compartment.x", "bkt", "ns", "obj", "disp", "Linux", "Alpine (self-supported)"),
 	}
 	for i, v := range vecs {
 		if contains(v, "--profile") {
 			t.Errorf("vec %d must not pass --profile (native resolution): %v", i, v)
 		}
+	}
+}
+
+func TestImportOSMetadataKnownOSes(t *testing.T) {
+	want := map[string][2]string{
+		"alpine": {"Linux", "Alpine (self-supported)"},
+		"ubuntu": {"Canonical Ubuntu", "Ubuntu 24.04"},
+	}
+	for os, meta := range want {
+		osName, osVersion, err := ImportOSMetadata(os)
+		if err != nil || osName != meta[0] || osVersion != meta[1] {
+			t.Errorf("ImportOSMetadata(%q) = %q %q %v, want %q %q nil", os, osName, osVersion, err, meta[0], meta[1])
+		}
+	}
+	for _, os := range []string{"debian", "", "Ubuntu"} {
+		_, _, err := ImportOSMetadata(os)
+		if err == nil {
+			t.Errorf("ImportOSMetadata(%q) must fail closed", os)
+			continue
+		}
+		if !strings.Contains(err.Error(), "alpine") || !strings.Contains(err.Error(), "ubuntu") {
+			t.Errorf("ImportOSMetadata(%q) error must name the supported set: %v", os, err)
+		}
+	}
+}
+
+func TestImageImportArgsCarriesOSMetadata(t *testing.T) {
+	args := ImageImportArgs(CloudAuth{}, "ocid1.compartment.x", "bkt", "ns", "obj", "disp",
+		"Canonical Ubuntu", "Ubuntu 24.04")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--operating-system Canonical Ubuntu") ||
+		!strings.Contains(joined, "--operating-system-version Ubuntu 24.04") {
+		t.Errorf("import vector must carry the OS metadata verbatim: %v", args)
+	}
+	if !strings.Contains(joined, "--source-image-type QCOW2") || !strings.Contains(joined, "--launch-mode PARAVIRTUALIZED") {
+		t.Errorf("import vector must keep the QCOW2/PARAVIRTUALIZED shape: %v", args)
 	}
 }
 

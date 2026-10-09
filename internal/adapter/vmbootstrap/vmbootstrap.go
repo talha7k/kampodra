@@ -1,20 +1,26 @@
-// Package vmbootstrap renders the Alpine host bootstrap payloads
-// (vm-prepare.sh port): the managed config files, the OpenRC units, the
-// blue/green anchor watcher, and the busybox-safe remote snippets + gates.
+// Package vmbootstrap renders the guest host bootstrap payloads
+// (vm-prepare.sh port): the managed config files, the init units (OpenRC on
+// Alpine, systemd on Ubuntu), the blue/green anchor watcher, and the
+// POSIX-safe remote snippets + gates.
 //
-// This package is the ALPINE implementation of first-boot provisioning —
-// the OS contract is explicit and fail-fast (GateAlpineOS runs before
-// anything mutates): a second guest OS would arrive as a sibling
-// implementation behind the same Naming surface, never as branches in
-// here. The adapter owns host-OS specifics ONLY — all deployed-project
-// naming arrives through Naming (built by the command layer from
-// ProjectConfig; adapters never import siblings). kampodra branding
-// replaces the shell's tool-owned names (anchor unit, log paths, drop-in
-// file names); the app container naming rides Naming exactly as the
+// Each supported guest OS is a SIBLING implementation of first-boot
+// provisioning behind the same Naming surface — Alpine (OpenRC + apk) and
+// Ubuntu 24.04 (systemd + apt) today. The OS contract is explicit and
+// fail-fast: the command layer reads the guest's /etc/os-release and
+// dispatches to one sibling BEFORE anything mutates. A third guest OS
+// arrives the same way — its own sibling renderers/snippets/gates — never
+// as branches inside a sibling. The adapter owns host-OS specifics ONLY —
+// all deployed-project naming arrives through Naming (built by the command
+// layer from ProjectConfig; adapters never import siblings). kampodra
+// branding replaces the shell's tool-owned names (anchor unit, log paths,
+// drop-in file names); the app container naming rides Naming exactly as the
 // profile config says.
 //
 // Content parity with the retired shell heredocs is the contract: only the
-// parameterized names differ.
+// parameterized names differ. Sibling renderers mirror their Alpine
+// counterpart's semantics (the api unit runs the SAME podman run; the
+// anchor watcher tees to the SAME log file the gates grep) — they never
+// fork the Alpine renderers' content.
 package vmbootstrap
 
 import (
@@ -54,6 +60,41 @@ const (
 	AnchorLogPath       = "/var/log/kampodra-anchor.log"
 	KamalProxyLogMarker = "kamal-proxy"
 )
+
+// The Ubuntu sibling of the init.d destinations: systemd unit files under
+// /etc/systemd/system. The api unit's name IS the container name (same rule
+// as its init.d sibling), so its path/name derive from Naming.
+const (
+	ProxyUnitPath  = "/etc/systemd/system/kamal-proxy.service"
+	AnchorUnitPath = "/etc/systemd/system/kampodra-anchor.service"
+	ProxyUnitName  = ProxyContainer + ".service"
+	AnchorUnitName = "kampodra-anchor.service"
+)
+
+// APIUnitPath derives the api container's systemd unit destination from
+// Naming (the Ubuntu sibling of the command layer's "/etc/init.d/"+name).
+func APIUnitPath(n Naming) string { return "/etc/systemd/system/" + n.Container + ".service" }
+
+// APIUnitName derives the api container's systemd unit name from Naming.
+func APIUnitName(n Naming) string { return n.Container + ".service" }
+
+// OSReleaseRead is the remote probe whose output the command layer parses
+// with GuestOSID: the guest OS is auto-detected (no flag), and dispatch to
+// a provisioner happens BEFORE anything mutates.
+const OSReleaseRead = `cat /etc/os-release`
+
+// GuestOSID parses the ID= value out of an os-release body (os-release(5):
+// KEY=value lines, values may be double-quoted). Returns "" when absent —
+// callers fail closed on it. ID_LIKE is deliberately NOT consulted: the
+// provisioners implement the golden images, not their families.
+func GuestOSID(osRelease string) string {
+	for _, line := range strings.Split(osRelease, "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "ID="); ok {
+			return strings.Trim(strings.TrimSpace(rest), `"`)
+		}
+	}
+	return ""
+}
 
 // NamingFromValues derives Naming from the project config fields (lives in
 // the command layer's import reach, not here — see vm_prepare.go).
@@ -307,6 +348,131 @@ AllowTcpForwarding yes
 `
 }
 
+// --- Ubuntu 24.04 sibling renderers (systemd units; same Naming) -----------
+//
+// Siblings of the OpenRC renderers above, never forks: identical podman run
+// semantics, identical volumes/env/ports, identical log destinations the
+// gates grep — only the init system's wrapper differs.
+
+// RenderAPIUnit is the Ubuntu sibling of RenderInitDAPI: a systemd unit
+// around the SAME foreground `podman run` (same name/network/port publish,
+// data bind, generic CLEAR vars, --env-file, image ref). Restart=always
+// replaces supervise-daemon's respawn-forever; podman run's own stderr and
+// the container output land in the journal (journalctl -u <unit>) — the
+// systemd-native sibling of supervise-daemon's --stderr file.
+func RenderAPIUnit(n Naming) string {
+	return fmt.Sprintf(`# Managed by kampodra vm-prepare — do not hand-edit.
+#
+# THE app container: one image = web SPA + api, same-origin. systemd wraps
+# the FOREGROUND `+"`podman run`"+`: if the container (or the podman run itself)
+# dies, Restart=always reruns it against the local :latest (no pull inside the
+# run — restarts are offline-safe).
+#
+# Env: %[1]s (0600 root, written by kampodra env push per deploy) is
+# the single SECRETS source (podman --env-file reads KEY=VALUE lines directly).
+# The generic CLEAR vars (NODE_ENV, PORT — the profile's envClearKeys) are
+# owned HERE via -e — one source of truth per key; the app's own contract
+# vars ride the env file / its schema, never this unit.
+# %[2]s is the ONLY host data path (app data) — without the bind
+# mount, data would be container-ephemeral and lost on every restart.
+
+[Unit]
+Description=%[3]s container (%[4]s on %[5]s)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# SIGKILLed runs leave the container name holding the port (--rm only
+# cleans CLEAN exits) — sweep any leftover before the supervised run
+# (the "-" prefix tolerates "nothing to remove").
+ExecStartPre=-/usr/bin/podman rm -f %[3]s
+ExecStart=/usr/bin/podman run --rm --name %[3]s --network %[6]s -p %[5]s:%[5]s -v %[2]s:%[2]s -e NODE_ENV=production -e PORT=%[5]s --env-file %[1]s %[4]s
+
+# Respawn forever: a crash loop self-heals at the next deploy's restart; the
+# 10s delay bounds log noise.
+Restart=always
+RestartSec=10
+
+# systemd TERM -> graceful shutdown; then a tolerant sweep so the next start
+# never finds a half-dead container name holding the port.
+ExecStopPost=-/usr/bin/podman stop --time 10 %[3]s
+ExecStopPost=-/usr/bin/podman rm -f --time 0 %[3]s
+
+[Install]
+WantedBy=multi-user.target
+`, n.EnvFile, n.DataDir, n.Container, n.ImageRef, n.Port, n.Network)
+}
+
+// RenderProxyUnit is the Ubuntu sibling of RenderInitDProxy: the TLS edge
+// with a persistent cert/config volume; the first deploy execs into it to
+// issue the fresh ACME certificate.
+func RenderProxyUnit(n Naming) string {
+	return fmt.Sprintf(`# Managed by kampodra vm-prepare — do not hand-edit.
+#
+# TLS edge (kamal-proxy, Let's Encrypt HTTP-01 on :80). Publishes 80+443; the
+# LE certs + host->target registrations persist in the %[1]s named
+# volume — the fresh ACME cert issued on the first deploy survives container
+# recreation AND reboots. Start-fresh: nothing is carried from any retired
+# VM. Target registration happens at deploy time (kampodra deploy: podman
+# exec %[2]s kamal-proxy deploy <service> --host=<proxyHost> --target=<svc>:%[3]s --tls).
+
+[Unit]
+Description=%[2]s edge container (80/443, persistent cert/config volume)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStartPre=-/usr/bin/podman rm -f %[2]s
+ExecStart=/usr/bin/podman run --rm --name %[2]s --network %[4]s -p 80:80 -p 443:443 --cap-add NET_BIND_SERVICE -v %[1]s:/home/kamal-proxy/.config %[5]s
+
+Restart=always
+RestartSec=10
+
+ExecStopPost=-/usr/bin/podman stop --time 10 %[2]s
+ExecStopPost=-/usr/bin/podman rm -f --time 0 %[2]s
+
+[Install]
+WantedBy=multi-user.target
+`, ProxyConfigVolume, ProxyContainer, n.Port, n.Network, ProxyImageRef)
+}
+
+// RenderAnchorUnit is the Ubuntu sibling of RenderInitDAnchor: systemd runs
+// the kampodra-anchor.sh watcher; enabled+started on EVERY VM, inert without
+// the conf. The transitions tee to the SAME log file as on Alpine — the
+// idle-log gate greps that exact path on both guests.
+func RenderAnchorUnit(n Naming) string {
+	return fmt.Sprintf(`# Managed by kampodra vm-prepare — do not hand-edit.
+#
+# Guest half of the blue-green reserved-ip flip: systemd runs the
+# kampodra-anchor.sh watcher, which polls %[1]s (written by
+# `+"`kampodra bluegreen flip`"+` over ssh at flip time) and `+"`ip addr add`"+`s the
+# anchor address when it appears. Enabled+started on EVERY vm by default and
+# INERT without the conf: a VM that never flips never touches its addresses.
+# Transitions land in %[2]s.
+
+[Unit]
+Description=Blue-green reserved-ip anchor address watcher (guest half of the flip)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=%[3]s
+
+# Respawn forever: the watcher itself never exits (trap TERM/INT -> exit 0 on
+# stop), so a restart means the script died abnormally — retry gently.
+Restart=always
+RestartSec=5
+
+# The SAME transitions log the Alpine watcher tees to (the idle-log gate
+# greps it on both guests).
+StandardOutput=append:%[2]s
+StandardError=append:%[2]s
+
+[Install]
+WantedBy=multi-user.target
+`, n.AnchorConf, AnchorLogPath, AnchorScriptPath)
+}
+
 // --- remote snippets (busybox-safe; piped over `sh -s`) ---------------------
 
 // CommunityRepoSnippet ensures the Alpine community repo (podman lives
@@ -361,17 +527,69 @@ func UnitDriftSnippet() string {
 done`
 }
 
+// --- Ubuntu sibling snippets (apt; piped over `sh -s`) ----------------------
+
+// AptPodmanSnippet is the Ubuntu sibling of CommunityRepoSnippet +
+// PodmanStackSnippet in one fail-closed block: ensure the universe
+// component (podman lives there), refresh the apt index, install the
+// podman stack with the netavark backend. add-apt-repository only runs
+// when universe is missing from every apt source (idempotent no-op on the
+// golden image); DEBIAN_FRONTEND keeps the install non-interactive.
+func AptPodmanSnippet() string {
+	return `grep -qsE 'universe' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || add-apt-repository -y universe
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y podman netavark aardvark-dns crun`
+}
+
+// SysctlApplyUbuntuSnippet applies the sysctl drop-in live (systemd re-reads
+// /etc/sysctl.d on every boot via systemd-sysctl; --system re-applies now).
+func SysctlApplyUbuntuSnippet() string {
+	return `sysctl --system`
+}
+
+// APIConvergeUbuntuSnippet is the Ubuntu sibling of APIConvergeSnippet: it
+// starts the api unit ONLY when a previous deploy left both image + env (a
+// fresh VM defers to the first deploy — the unit is enabled but NOT
+// --now'd for exactly this reason).
+func APIConvergeUbuntuSnippet(n Naming) string {
+	return fmt.Sprintf(`if [ -f %[1]s ] && podman image exists %[2]s; then
+  systemctl start %[3]s
+  echo "%[3]s started (image + env present)"
+else
+  echo "%[3]s deferred: no image and/or %[1]s yet (normal on a fresh VM — first deploy handles it)"
+fi`, n.EnvFile, n.ImageRef, APIUnitName(n))
+}
+
+// UnitDriftUbuntuSnippet is the Ubuntu sibling of UnitDriftSnippet: warns
+// (never auto-restarts) when a rewrite changed the unit of a RUNNING
+// service — re-runs after a deploy must not bounce prod.
+func UnitDriftUbuntuSnippet() string {
+	return `for UNIT in ` + AnchorUnitName + `; do
+  if systemctl is-active --quiet "$UNIT"; then
+    echo "RUNNING: $UNIT (unit file was overwritten — systemctl restart $UNIT to apply, on your call)"
+  fi
+done`
+}
+
 // --- gates (fail-closed) -----------------------------------------------------
 
 const (
-	// GateUEFI — the golden image is UEFI-only.
+	// GateUEFI — the golden image is UEFI-only (both guest OSes).
 	GateUEFI = `test -d /sys/firmware/efi`
-	// GateAlpineOS — this provisioner implements Alpine ONLY. It runs
-	// first: a foreign guest must fail here with a clear message, never
-	// halfway through apk/OpenRC steps that assume Alpine layout.
-	GateAlpineOS = `grep -q '^ID=alpine' /etc/os-release`
+	// NOTE: the per-OS gate lives in the command layer's dispatch — it
+	// reads the guest's /etc/os-release (OSReleaseRead + GuestOSID) and
+	// routes to one provisioner BEFORE anything mutates. The gates below
+	// are the per-sibling init gates; each provisioner runs its own.
 	// GateNoSystemd — start-fresh has NO systemd anywhere.
 	GateNoSystemd = `! readlink /proc/1/exe 2>/dev/null | grep -q systemd`
+	// GateSystemdPID1 — the Ubuntu golden image's init IS systemd (the
+	// inverse of GateNoSystemd). Runs before anything mutates: a foreign
+	// guest must fail here, never halfway through apt/systemctl steps.
+	GateSystemdPID1 = `readlink /proc/1/exe 2>/dev/null | grep -q systemd`
+	// GateAptOperational — apt must be operational (mirror reachable, index
+	// refreshable) before the bootstrap mutates anything.
+	GateAptOperational = `apt-get update`
 	// GateOpenRCTooling — the init toolchain must be operational.
 	GateOpenRCTooling = `command -v openrc >/dev/null && command -v rc-service >/dev/null && command -v rc-update >/dev/null && command -v supervise-daemon >/dev/null && rc-status --servicelist >/dev/null`
 	// GateSSHDHardened — the hardening ensure must be effective.
@@ -394,6 +612,18 @@ func RegistriesGate(n Naming) string {
 // RunlevelGate verifies one service is enabled in the default runlevel.
 func RunlevelGate(service string) string {
 	return fmt.Sprintf(`rc-update show default | grep -qE "^[[:space:]]*%[1]s[[:space:]]*\|"`, service)
+}
+
+// SystemdEnabledGate is the Ubuntu sibling of RunlevelGate: the unit is
+// enabled (boot survival).
+func SystemdEnabledGate(unit string) string {
+	return fmt.Sprintf(`systemctl is-enabled --quiet %[1]s`, unit)
+}
+
+// SystemdActiveGate is the Ubuntu sibling of `rc-service X status`: the
+// unit is up RIGHT NOW.
+func SystemdActiveGate(unit string) string {
+	return fmt.Sprintf(`systemctl is-active --quiet %[1]s`, unit)
 }
 
 // SuggestedProxyHost renders the sslip.io suggestion for the summary: an IP
