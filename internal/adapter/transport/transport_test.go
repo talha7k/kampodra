@@ -19,7 +19,7 @@ func TestResolveHostLadder(t *testing.T) {
 		{
 			name:     "explicit flag beats every env",
 			flagHost: "root@203.0.113.9",
-			env:      map[string]string{"KAMPODRA_HOST": "root@from-env", "ESPELLAR_HOST": "root@legacy"},
+			env:      map[string]string{"KAMPODRA_HOST": "root@from-env"},
 			want:     "root@203.0.113.9",
 		},
 		{
@@ -104,6 +104,12 @@ func TestSSHArgs(t *testing.T) {
 			host: HostSpec{Host: "root@203.0.113.9", SSHKey: "/tmp/id_ed25519"},
 			cmd:  "podman ps",
 			want: []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-i", "/tmp/id_ed25519", "root@203.0.113.9", "podman ps"},
+		},
+		{
+			name: "throwaway known-hosts file for re-keyed hosts (provision inject)",
+			host: HostSpec{Host: "ubuntu@203.0.113.9", AcceptNewHostKey: true, KnownHostsFile: "/tmp/inject-kh.XXXXXX"},
+			cmd:  "true",
+			want: []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/tmp/inject-kh.XXXXXX", "ubuntu@203.0.113.9", "true"},
 		},
 	}
 	for _, tt := range tests {

@@ -66,6 +66,7 @@ func TestConfigPrintRendersEveryFieldWithProvenance(t *testing.T) {
 		"container", "shadowSuffix", "envFile", "dataDir", "bucket", "objectPrefix",
 		"healthPath", "proxyHost", "services", "imagePrefix", "port", "network",
 		"shadowProbePort", "deployedShaFile", "envClearKeys", "dockerfile",
+		"migrateScript",
 	} {
 		if !strings.Contains(out, field) {
 			t.Errorf("print is missing field %q:\n%s", field, out)
@@ -111,7 +112,7 @@ func TestConfigPrintNoManifestNoProfileStillRenders(t *testing.T) {
 		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
 	}
 	out := stdout.String()
-	if !strings.Contains(out, "kampodine-api") || !strings.Contains(out, "default") {
+	if !strings.Contains(out, "app") || !strings.Contains(out, "default") {
 		t.Errorf("print must render the full default config:\n%s", out)
 	}
 	if strings.Contains(out, "repo-file") {

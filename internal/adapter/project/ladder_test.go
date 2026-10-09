@@ -198,17 +198,15 @@ func TestResolveTracedNoLayersGivesAllDefaults(t *testing.T) {
 			t.Errorf("%s rendered empty — every default must render", v.Key)
 		}
 	}
-	if len(traces) != 16 {
-		t.Errorf("traces = %d rows, want 16 (every Config field)", len(traces))
+	if len(traces) != 17 {
+		t.Errorf("traces = %d rows, want 17 (every Config field)", len(traces))
 	}
 }
 
 func TestTracesCoverEveryConfigField(t *testing.T) {
 	// The catalog must stay complete: every Config field has a binding row,
 	// or config print silently drops fields when Config grows.
-	cfg := LoadDefault()
-	cfg, traces := ResolveTraced(nil, nil, nil, nil)
-	_ = cfg
+	_, traces := ResolveTraced(nil, nil, nil, nil)
 	seen := map[string]bool{}
 	for _, tr := range traces {
 		seen[tr.Field] = true
@@ -217,6 +215,7 @@ func TestTracesCoverEveryConfigField(t *testing.T) {
 		"container", "shadowSuffix", "envFile", "dataDir", "bucket", "objectPrefix",
 		"healthPath", "proxyHost", "services", "imagePrefix", "port", "network",
 		"shadowProbePort", "deployedShaFile", "envClearKeys", "dockerfile",
+		"migrateScript",
 	} {
 		if !seen[key] {
 			t.Errorf("field catalog is missing %q — config print would drop it", key)

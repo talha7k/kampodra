@@ -1,8 +1,10 @@
 package project
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -187,5 +189,89 @@ func TestParseManifestEmptyObjectIsValid(t *testing.T) {
 	}
 	if mf.Fields.Container != "" {
 		t.Errorf("container = %q, want empty (no overrides)", mf.Fields.Container)
+	}
+}
+
+// TestManifestKeyHintMatchesStruct keeps the unknown-key error hint in
+// lockstep with the ManifestFields schema (a new field without a hint
+// update would tell users the wrong key list).
+func TestManifestKeyHintMatchesStruct(t *testing.T) {
+	typ := reflect.TypeOf(ManifestFields{})
+	var keys []string
+	for i := 0; i < typ.NumField(); i++ {
+		tag := typ.Field(i).Tag.Get("json")
+		name := strings.Split(tag, ",")[0]
+		if name == "" || name == "-" {
+			t.Fatalf("field %s has no json tag", typ.Field(i).Name)
+		}
+		if strings.HasPrefix(name, "$") {
+			continue // metadata keys ($schema) are not project keys
+		}
+		keys = append(keys, name)
+	}
+	want := strings.Join(keys, ", ")
+	if manifestKeyHint != "container, shadowSuffix, envFile, dataDir, bucket, "+
+		"objectPrefix, healthPath, proxyHost, services, imagePrefix, port, "+
+		"network, shadowProbePort, deployedShaFile, envClearKeys, dockerfile, "+
+		"migrateScript" {
+		t.Fatalf("manifestKeyHint const drifted from its own formatting")
+	}
+	if !strings.Contains(manifestKeyHint, want) || len(strings.Split(manifestKeyHint, ", ")) != len(keys) {
+		t.Errorf("manifestKeyHint out of sync with ManifestFields:\n hint: %s\n want: %s", manifestKeyHint, want)
+	}
+}
+
+// TestManifestSchemaFileInLockstep keeps docs/kampodra.schema.json in sync
+// with the ManifestFields struct: every struct field must appear in the
+// schema with the right JSON type, and the schema may not carry properties
+// the struct does not know (besides the $schema metadata key).
+func TestManifestSchemaFileInLockstep(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "kampodra.schema.json"))
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	var schema struct {
+		Properties map[string]struct {
+			Type  string `json:"type"`
+			Items *struct {
+				Type string `json:"type"`
+			} `json:"items"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+
+	typ := reflect.TypeOf(ManifestFields{})
+	seen := map[string]bool{"$schema": true}
+	for i := 0; i < typ.NumField(); i++ {
+		tag := typ.Field(i).Tag.Get("json")
+		name := strings.Split(tag, ",")[0]
+		if name == "" || name == "-" {
+			t.Fatalf("field %s has no json tag", typ.Field(i).Name)
+		}
+		prop, ok := schema.Properties[name]
+		if !ok {
+			t.Errorf("schema missing property %q (add it to docs/kampodra.schema.json)", name)
+			continue
+		}
+		seen[name] = true
+		switch typ.Field(i).Type.Kind() {
+		case reflect.String:
+			if prop.Type != "string" {
+				t.Errorf("schema type of %q = %q, want string", name, prop.Type)
+			}
+		case reflect.Slice:
+			if prop.Type != "array" || prop.Items == nil || prop.Items.Type != "string" {
+				t.Errorf("schema type of %q must be array of string", name)
+			}
+		default:
+			t.Errorf("unexpected field kind %s on %s", typ.Field(i).Type.Kind(), typ.Field(i).Name)
+		}
+	}
+	for name := range schema.Properties {
+		if !seen[name] {
+			t.Errorf("schema has property %q with no ManifestFields counterpart", name)
+		}
 	}
 }

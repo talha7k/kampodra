@@ -1,130 +1,86 @@
 # kampodra
 
-A registry-free deployment CLI for single-VM container stacks — built with
-**kamal-proxy**, **Podman**, and **Cobra**.
-
-kampodra deploys container images to any Linux host over plain SSH (no
-registry, no daemon-side agents): it builds locally, streams the image with
-`podman save | ssh podman load`, tags every release with its git sha,
-health-gates it, and re-points the kamal-proxy TLS edge. Rollback is an
-instant image-tag flip. On top of deploys it manages the whole instance
-lifecycle: env files, metrics, backups, DNS, and deployment history.
+kampodra is a registry-free deployment CLI for single-VM container stacks.
+It builds your container image locally, streams it to any Linux host over
+plain SSH (`podman save | ssh podman load`), health-gates it by its git sha,
+and re-points the kamal-proxy TLS edge — no registry, no daemon-side agent.
+Around deploys it covers the instance lifecycle: env files, metrics,
+backups, DNS, tenant migrations, and deployment history.
 
 ## Highlights
 
-- **Registry-free streaming deploys** — `podman save | ssh podman load`, sha-tagged images, served-sha health verification
-- **Zero-downtime rolling deploys** (roadmap: opt-in shadow-container swap through kamal-proxy's health-gated re-point)
-- **Instant rollback** — `deploy rollback [<sha>]` flips the running tag
-- **Tenant migrations** — `migrate` runs the app's own drizzle applier over every db file on the VM over SSH: root.db first, tenants bounded-parallel, stop-first guard
-- **Deployment ledger** — every deploy recorded locally + derived from the host's image tags (`deploy list`, total count)
-- **Disk guard + prune** — warns/fails over threshold; reclaims old images while protecting running/rollback tags
-- **Env management** — push/pull the remote env file; values are never printed (fingerprints only)
+- **Registry-free streaming deploys** — sha-tagged images, served-sha health verification, kamal-proxy re-point
+- **Zero-downtime rolling deploys** — opt-in shadow-container double re-point (`deploy --rolling`)
+- **Instant rollback** — `deploy --rollback [<sha7>]` flips the running tag (explicit sha, else the VM's deployed-sha stamp — never git HEAD)
+- **Disk guard + prune** — deploy fails closed past a configurable disk threshold; `deploy prune` reclaims old images while protecting running and rollback tags
+- **Env management** — push/pull/diff the remote env file; values are never printed (fingerprints only)
+- **Tenant migrations** — `migrate` runs the app's own migration script over every db file on the VM: root first, tenants bounded-parallel, stop-first guard
 - **Metrics** — one-shot CPU/memory/disk/container snapshot over SSH
-- **Backups** — list/download/verify object-storage backups; `restore-plan` prints (never executes) the recovery sequence
-- **Profiles** — per-instance config (`~/.kampodra/config.json`), flat and multi-host ready; auto-detects OpenRC vs systemd
-- **Repo manifest** — `kampodra.json`, committed per-project (the vercel.json pattern): project naming discovered upward from the working directory; `config print` renders the fully resolved effective config with per-field provenance
-- **Command-parity guard** — the shell-era CLI surface is a machine-checked ratchet (see `internal/command/parity_guard_test.go`)
+- **Backups** — list/download/verify object-storage backups; `restore-plan` prints the recovery sequence and never executes it
+- **DNS** — OCI DNS record management through the `oci` CLI's own auth
+- **Profiles** — per-instance config in `~/.kampodra/config.json` (0700/0600), multi-host ready; auto-detects OpenRC vs systemd
+- **Repo manifest** — a committed `kampodra.json` per project; `config print` renders the fully resolved effective config with per-field provenance
+- **Machine-checked command surface** — a surface smoke test guards the command set
 
 ## Requirements
 
-- **Go 1.24+** (build from source) or **Node 18+** (npm distribution)
+- **Go 1.27+** to build from source (the only install path today — the npm distribution is planned but not yet published)
 - A **Linux host** with:
   - **Podman** (rootful or rootless) — no Docker daemon needed
   - **OpenSSH** access (key-based) from your machine
-  - **kamal-proxy** container as the TLS edge (optional but recommended)
-- Local: `ssh`, `podman`, `git`
+  - **kamal-proxy** as the TLS edge (optional but recommended)
+- Local tools: `git`, `ssh`, `podman`
 
-## Getting started
+## Quick start
+
+Build from source:
 
 ```bash
-# From source
 git clone https://github.com/talha7k/kampodra && cd kampodra
 go build -o kampodra ./cmd/kampodra
-./kampodra --help
-
-# Via npm (when published)
-npm install -g kampodra
-kampodra --help
 ```
 
-### 1. Point it at a host
+Point it at a host, deploy an app from its git repo, check it:
 
 ```bash
 kampodra config init --name prod --host root@203.0.113.10 \
   --ssh-key ~/.ssh/id_ed25519 --proxy-host app.example.com
+kampodra deploy --dockerfile Dockerfile
+kampodra status
 ```
 
-### 2. Deploy
+The full zero-to-first-deploy walkthrough — including a fresh-VM bootstrap,
+verification, and rollback — is in [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md).
 
-```bash
-cd your-app && kampodra deploy --dockerfile Dockerfile
-# → build, stream, health-gate, re-point the proxy, smoke, ledger entry
-```
+## The resolution ladder
 
-### 3. Operate
-
-```bash
-kampodra deploy list          # history + total deployments
-kampodra deploy logs --lines 100
-kampodra metrics              # CPU/mem/disk/containers snapshot
-kampodra backup list          # object-storage backups
-kampodra deploy rollback      # flip to the previous sha
-kampodra migrate --repo-root /srv/app   # tenant db migrations over SSH
-```
-
-## Project shape: the resolution ladder
-
-Every command resolves the deployed project's naming (container, env-file
-path, data dir, bucket, health endpoint, …) through ONE ladder:
+Every command resolves the deployed project's naming (container name,
+env-file path, health endpoint, backup bucket, …) through one ladder:
 
 ```
 flags > KAMPODRA_* env > profile "project" block > kampodra.json > built-in defaults
 ```
 
-`kampodra.json` is the repo-level project manifest — committed per-project,
-discovered upward from the working directory like `package.json` (nearest
-file wins). It carries **project naming only**: hosts, ssh keys, and any
-secret material NEVER belong there (those stay in `~/.kampodra` profiles,
-0600). A malformed manifest fails closed. `kampodra config print` renders
-the fully resolved effective config with each field's provenance
-(flag/env/profile/repo-file/default) — the debugging tool for the ladder.
+`kampodra.json` is a committed repo manifest, discovered upward from your
+working directory (nearest file wins). It carries project naming only —
+hosts, ssh keys, and secret material never belong there (those stay in
+`~/.kampodra` profiles, 0600). A malformed manifest fails closed. The
+built-in defaults are sample values of one app shape, not conventions —
+override them for your project. `kampodra config print` shows the resolved
+value and the winning source of every field.
 
-## Architecture
+## Documentation
 
-Ports-and-adapters, strictly layered (enforced by a static test):
-
-```
-cmd/kampodra        thin CLI (Cobra)
-internal/command    orchestration — no OS knowledge
-internal/adapter    transport (ssh) · runtime (podman) · init (openrc/systemd)
-                    probe · osfacts · cloud (OCI) · migrate · project · state
-tools/paritygen     HISTORICAL: derived the frozen command-spec golden from
-                    the shell predecessor (not a live step; kept auditable)
-npm/                per-platform packages + JS bin shim (esbuild pattern)
-```
-
-Remote shell snippets live only inside adapters as fixture-tested templates —
-the single place host-OS specifics (busybox vs GNU, OpenRC vs systemd) may
-exist. The deployed project's naming (container name, env-file path, bucket,
-health endpoint, …) lives in `internal/adapter/project` exactly once, with
-the repo manifest (`kampodra.json`), profile (`config.json` `"project"`
-block), and `KAMPODRA_*` env overrides layered above it.
-
-## History
-
-kampodra is the Go successor of the shell-era **kampodine** CLI; the shell
-line is retired (last release 0.6.0) and its command surface lives on as the
-frozen spec in `internal/parity/golden.json` — the parity guard tracks that
-spec, and kampodra-native additions beyond it are review-flagged, never
-silent.
+- [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) — prerequisites, build, first deploy, rollback, troubleshooting
+- [docs/cli.md](docs/cli.md) — full command reference
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — internal layout and design
 
 ## Status
 
-**0.7.0-beta.2** — the INFRA surface (config, backup, metrics, dns,
-vm-prepare, vm-wipe) and **migrate** are ported and machine-checked against
-the frozen shell spec; bluegreen / image-import remain consciously
-NOT_YET_PORTED (`internal/parity/baseline.json`). See `CHANGELOG.md`.
+Run `kampodra --version` for the installed version. Includes the OCI
+reserved-IP blue/green pair (`bluegreen status | init | provision | flip
+| rollback`) and golden-image import (`image-import`).
 
 ## License
 
-MIT
+[AGPL-3.0](LICENSE)

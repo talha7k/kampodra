@@ -24,13 +24,14 @@ const pruneKeepN = 2
 // statusHelp is the shell usage() heredoc, extended with the
 // kampodra-native --all-profiles and kampodra naming.
 const statusHelp = `Usage:
-  kampodra status [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--verbose] [--all-profiles]
+  kampodra status [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--verbose] [--all-profiles] [--group <g>]
 
 Examples:
-  kampodra status                          # deployments (ledger) + live health + blue/green pair
+  kampodra status                          # deployments (ledger) + live health
   kampodra status --host root@203.0.113.10 # + VM disk usage, image/prune estimate, service states
   kampodra status --profile prod           # resolve host/key from a config profile
   kampodra status --all-profiles           # one full section per configured profile
+  kampodra status --group web              # one section per profile in the group
   kampodra status --host root@203.0.113.10 --verbose  # + the full metrics snapshot
                                             #   (load, memory, disk breakdown, containers, top procs)
 
@@ -41,7 +42,7 @@ KAMPODRA_SERVICES, KAMPODRA_IMAGE_PREFIX, KAMPODRA_HEALTH_PATH.
 func newStatusCommand(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--verbose] [--all-profiles]",
-		Short: "live health + deployment count + VM disk/image/service state + metrics (--verbose) + the blue/green pair view",
+		Short: "live health + deployment count + VM disk/image/service state + metrics (--verbose)",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			return runStatus(d, c)
@@ -52,6 +53,7 @@ func newStatusCommand(d Deps) *cobra.Command {
 	cmd.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
 	cmd.Flags().Bool("verbose", false, "add the full metrics snapshot (needs a target)")
 	cmd.Flags().Bool("all-profiles", false, "render one full status section per configured profile")
+	cmd.Flags().String("group", "", "render status for every profile in this group (exclusive with --all-profiles/--host/--profile)")
 	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
 		fmt.Fprint(c.OutOrStdout(), statusHelp)
 	})
@@ -64,12 +66,13 @@ func runStatus(d Deps, cmd *cobra.Command) error {
 	flagProfile, _ := cmd.Flags().GetString("profile")
 	verbose, _ := cmd.Flags().GetBool("verbose")
 	allProfiles, _ := cmd.Flags().GetBool("all-profiles")
+	flagGroup, _ := cmd.Flags().GetString("group")
 
 	cfg, err := state.LoadConfig(d.Home)
 	if err != nil {
 		return err
 	}
-	names, err := fanOutProfileNames(cfg, allProfiles, state.ConfigPath(d.Home))
+	names, err := fanOutProfileNames(cfg, allProfiles, flagGroup, state.ConfigPath(d.Home))
 	if err != nil {
 		return err
 	}
@@ -97,7 +100,7 @@ func runStatus(d Deps, cmd *cobra.Command) error {
 }
 
 // statusBody renders one target's full status view (deployments header,
-// live edge, VM state, blue/green pair).
+// live edge, VM state).
 func statusBody(d Deps, ctx context.Context, target Target, verbose bool) error {
 	out := d.Stdout
 	ledgerPath := state.LedgerPath(d.Home)
@@ -202,9 +205,6 @@ func statusBody(d Deps, ctx context.Context, target Target, verbose bool) error 
 		}
 	}
 
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "== blue/green pair ==")
-	fmt.Fprintln(out, "bluegreen is NOT_YET_PORTED in kampodra — tracked by internal/parity/baseline.json; pair view skipped")
 	return nil
 }
 

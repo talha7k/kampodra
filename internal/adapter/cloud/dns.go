@@ -14,9 +14,9 @@ import (
 )
 
 // DNS arg vectors — every one carries --profile (the auth-rule contract).
-func DNSCompartmentListArgs(profile string, instancePrincipal bool) []string {
+func DNSCompartmentListArgs(auth CloudAuth) []string {
 	args := []string{"iam", "compartment", "list", "--all"}
-	return withProfile(args, profile, instancePrincipal)
+	return withProfile(args, auth.Profile, auth.InstancePrincipal)
 }
 
 func DNSZoneGetArgs(zone, compartment, profile string, instancePrincipal bool) []string {
@@ -77,7 +77,7 @@ func IsIPv4(ip string) bool {
 // no triple colons, at most 8 groups (≤7 colons), at most one "::".
 func IsIPv6(ip string) bool {
 	for _, r := range ip {
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F' || r == ':') {
+		if r != ':' && (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
 			return false
 		}
 	}
@@ -92,10 +92,7 @@ func IsIPv6(ip string) bool {
 		return false
 	}
 	withoutFirst := strings.Replace(ip, "::", "", 1)
-	if strings.Contains(withoutFirst, "::") {
-		return false
-	}
-	return true
+	return !strings.Contains(withoutFirst, "::")
 }
 
 // hostnameRe ports is_hostname.
@@ -223,9 +220,7 @@ func CompartmentOCID(listJSON, name string) (string, error) {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal([]byte(listJSON), &wrapped); err == nil && wrapped.Data != nil {
-		for _, r := range wrapped.Data {
-			rows = append(rows, r)
-		}
+		rows = append(rows, wrapped.Data...)
 	} else if err := json.Unmarshal([]byte(listJSON), &rows); err != nil {
 		return "", fmt.Errorf("compartment list: %w", err)
 	}

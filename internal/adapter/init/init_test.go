@@ -75,18 +75,17 @@ func TestDetectPrefersProfileCache(t *testing.T) {
 }
 
 func TestServiceStatesRemoteCommand(t *testing.T) {
-	rollCall := []string{"kampodine-api", "kamal-proxy", "walshipper"} // the project default roll call
-	run := &recordingRun{output: "kampodine-api: running\nkamal-proxy: not-running\nwalshipper: not-running\n"}
+	rollCall := []string{"app", "kamal-proxy"} // the project default roll call
+	run := &recordingRun{output: "app: running\nkamal-proxy: not-running\n"}
 	states, err := ServiceStates(context.Background(), run.run, SystemOpenRC, rollCall)
 	if err != nil {
 		t.Fatalf("ServiceStates() error = %v", err)
 	}
 	want := []ServiceState{
-		{Name: "kampodine-api", Running: true},
+		{Name: "app", Running: true},
 		{Name: "kamal-proxy", Running: false},
-		{Name: "walshipper", Running: false},
 	}
-	if states[0] != want[0] || states[1] != want[1] || states[2] != want[2] {
+	if states[0] != want[0] || states[1] != want[1] {
 		t.Errorf("ServiceStates() = %+v, want %+v", states, want)
 	}
 	if len(run.commands) != 1 {
@@ -94,15 +93,15 @@ func TestServiceStatesRemoteCommand(t *testing.T) {
 	}
 	// The historical openrc shape is a pinned contract (byte-identical
 	// "for s in … rc-service …" — the shell comment promises it).
-	wantCmd := `for s in kampodine-api kamal-proxy walshipper; do if rc-service "$s" status >/dev/null 2>&1; then echo "$s: running"; else echo "$s: not-running"; fi; done`
+	wantCmd := `for s in app kamal-proxy; do if rc-service "$s" status >/dev/null 2>&1; then echo "$s: running"; else echo "$s: not-running"; fi; done`
 	if run.commands[0] != wantCmd {
 		t.Errorf("openrc roll call drifted:\n got %s\nwant %s", run.commands[0], wantCmd)
 	}
 }
 
 func TestServiceStatesSystemdProbe(t *testing.T) {
-	rollCall := []string{"kampodine-api", "kamal-proxy", "walshipper"}
-	run := &recordingRun{output: "kampodine-api: running\nkamal-proxy: not-running\nwalshipper: not-running\n"}
+	rollCall := []string{"app", "kamal-proxy"}
+	run := &recordingRun{output: "app: running\nkamal-proxy: not-running\n"}
 	states, err := ServiceStates(context.Background(), run.run, SystemSystemd, rollCall)
 	if err != nil {
 		t.Fatalf("ServiceStates() error = %v", err)
@@ -116,7 +115,7 @@ func TestServiceStatesSystemdProbe(t *testing.T) {
 }
 
 func TestServiceStatesFailsClosedOnSSHFailure(t *testing.T) {
-	rollCall := []string{"kampodine-api", "kamal-proxy", "walshipper"}
+	rollCall := []string{"app", "kamal-proxy"}
 	run := &recordingRun{err: errors.New("ssh down")}
 	if _, err := ServiceStates(context.Background(), run.run, SystemOpenRC, rollCall); err == nil {
 		t.Fatal("ServiceStates() must fail closed when the VM is unreachable (caller prints '(service roll call failed)')")
@@ -124,7 +123,7 @@ func TestServiceStatesFailsClosedOnSSHFailure(t *testing.T) {
 }
 
 func TestServiceStatesUnknownInitFailsClosed(t *testing.T) {
-	rollCall := []string{"kampodine-api", "kamal-proxy", "walshipper"}
+	rollCall := []string{"app", "kamal-proxy"}
 	run := &recordingRun{}
 	if _, err := ServiceStates(context.Background(), run.run, System(""), rollCall); err == nil {
 		t.Fatal("no detected init must fail (svc_action parity) — callers degrade")
@@ -155,8 +154,8 @@ func TestActionCommand(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{name: "openrc keeps the historical byte shape", sys: SystemOpenRC, service: "kampodine-api", action: "restart", want: "rc-service kampodine-api restart"},
-		{name: "systemd uses the verb-first order", sys: SystemSystemd, service: "kampodine-api", action: "restart", want: "systemctl restart kampodine-api"},
+		{name: "openrc keeps the historical byte shape", sys: SystemOpenRC, service: "app", action: "restart", want: "rc-service app restart"},
+		{name: "systemd uses the verb-first order", sys: SystemSystemd, service: "app", action: "restart", want: "systemctl restart app"},
 		{name: "openrc status probe", sys: SystemOpenRC, service: "kamal-proxy", action: "status", want: "rc-service kamal-proxy status"},
 		{name: "no init detected fails (restart is fatal)", sys: System(""), service: "x", action: "restart", wantErr: true},
 	}

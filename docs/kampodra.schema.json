@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/talha7k/kampodra/main/docs/kampodra.schema.json",
+  "title": "kampodra.json",
+  "description": "kampodra repo manifest: project naming only. Committed per-project, discovered upward (nearest file wins), parsed strictly — unknown keys fail closed. Hosts, ssh keys, and secret material never belong here (those live in ~/.kampodra profiles, 0600).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Point at this schema file for editor autocomplete/validation. Accepted and ignored by kampodra itself."
+    },
+    "container": {
+      "type": "string",
+      "description": "The app container/service name (deploy target, restart, logs, kamal-proxy target)."
+    },
+    "shadowSuffix": {
+      "type": "string",
+      "description": "Suffix for the rolling deploy's shadow container."
+    },
+    "envFile": {
+      "type": "string",
+      "description": "Remote env file path on the VM (0600)."
+    },
+    "dataDir": {
+      "type": "string",
+      "description": "Tenant/app data dir on the VM."
+    },
+    "bucket": {
+      "type": "string",
+      "description": "Object-storage backup bucket."
+    },
+    "objectPrefix": {
+      "type": "string",
+      "description": "Backup object name prefix."
+    },
+    "healthPath": {
+      "type": "string",
+      "description": "App health endpoint behind the proxy (health gate)."
+    },
+    "proxyHost": {
+      "type": "string",
+      "description": "Public TLS edge hostname (kamal-proxy)."
+    },
+    "services": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Service roll call for init-aware stop/start/status."
+    },
+    "imagePrefix": {
+      "type": "string",
+      "description": "VM-local image ref the deploy pipeline tags (sha/latest)."
+    },
+    "port": {
+      "type": "string",
+      "description": "The container's published/listening port (health gate + proxy target)."
+    },
+    "network": {
+      "type": "string",
+      "description": "Podman network shared with kamal-proxy."
+    },
+    "shadowProbePort": {
+      "type": "string",
+      "description": "Rolling deploy's shadow container probe port."
+    },
+    "deployedShaFile": {
+      "type": "string",
+      "description": "Deployed-sha stamp file on the VM (rollback resolution + status)."
+    },
+    "envClearKeys": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Env keys cleared from the service unit env."
+    },
+    "dockerfile": {
+      "type": "string",
+      "description": "Build file path (default for deploy --dockerfile)."
+    },
+    "migrateScript": {
+      "type": "string",
+      "description": "Repo-relative path of the app's db migrate script (migrate runs it on the VM)."
+    }
+  }
+}

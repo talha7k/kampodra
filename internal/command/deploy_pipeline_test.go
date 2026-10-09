@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/talha7k/kampodra/internal/adapter/probe"
+	"github.com/talha7k/kampodra/internal/adapter/project"
 	"github.com/talha7k/kampodra/internal/command"
 )
 
@@ -24,10 +25,16 @@ import (
 const (
 	pipelineVer      = "abc1234"
 	pipelineSubject  = "feat: deploy pipeline"
-	pipelineEnvFile  = "/etc/kampodine/env"
-	pipelineStamp    = "/etc/kampodine/deployed-sha"
 	pipelineImageTag = deployImageRepo + ":" + pipelineVer
 	pipelineProxyCmd = "podman exec kamal-proxy kamal-proxy deploy " + deployContainer
+)
+
+// The remote env/stamp/health paths render from the project defaults —
+// never hardcoded here (project.go is the ONE source of the naming).
+var (
+	pipelineEnvFile    = project.LoadDefault().EnvFile
+	pipelineStamp      = project.LoadDefault().DeployedShaFile
+	pipelineHealthPath = project.LoadDefault().HealthPath
 )
 
 // setupDeployPipeline builds the full shim harness: PATH-shimmed ssh, git,
@@ -92,10 +99,14 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 		}
 		return strings.TrimSpace(string(data))
 	}
-	smokeMux.HandleFunc("/api/auth/ok", func(w http.ResponseWriter, _ *http.Request) {
+	smokeMux.HandleFunc(pipelineHealthPath, func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, `{"ok":true,"git":"%s"}`, readStub("served-sha"))
 	})
-	smokeMux.HandleFunc("/up", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok\n")) })
+	// The plain /up liveness probe is a separate route — unless the health
+	// path IS /up, in which case the health payload doubles as liveness.
+	if pipelineHealthPath != "/up" {
+		smokeMux.HandleFunc("/up", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok\n")) })
+	}
 	smokeMux.HandleFunc("/build-id.txt", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "%s\n", readStub("served-sha"))
 	})
@@ -246,8 +257,8 @@ func TestDeployPipelineHappyPathSequencePinned(t *testing.T) {
 	mustContain(t, inv, "podman load")
 	mustContain(t, inv, "podman tag "+pipelineImageTag+" "+deployImageRepo+":latest")
 	mustContain(t, inv, "rc-service "+deployContainer+" restart")
-	mustContain(t, inv, "http://127.0.0.1:8080/api/auth/ok")
-	mustContain(t, inv, pipelineProxyCmd+" --host app.example.com --target "+deployContainer+":8080 --tls --health-check-path /api/auth/ok")
+	mustContain(t, inv, "http://127.0.0.1:8080"+pipelineHealthPath)
+	mustContain(t, inv, pipelineProxyCmd+" --host app.example.com --target "+deployContainer+":8080 --tls --health-check-path "+pipelineHealthPath)
 
 	// ORDER pins: gate before build; both stream legs after the build (save
 	// and load are CONCURRENT — a pipe — so their log lines race and may
@@ -295,7 +306,7 @@ func TestDeployPipelineVersionModeVMHasTagSkipsStream(t *testing.T) {
 	writeFixture(t, stubDir, "gitsha", "def9999\n")
 	writeFixture(t, stubDir, "health", `{"ok":true,"git":"def9999"}`)
 	writeFixture(t, stubDir, "served-sha", "def9999")
-	if code := runDeploy(t, deps, "--host", statusHost, "--version", "def9999"); code != 0 {
+	if code := runDeploy(t, deps, "--host", statusHost, "--sha", "def9999"); code != 0 {
 		t.Fatalf("exit = %d\nstderr: %s", code, stderrString(t, deps))
 	}
 	inv := invocations(t, stubDir)
@@ -318,7 +329,7 @@ func TestDeployPipelineVersionModeStreamsWhenVMLacksTag(t *testing.T) {
 	writeFixture(t, stubDir, "health", `{"ok":true,"git":"def9999"}`)
 	writeFixture(t, stubDir, "served-sha", "def9999")
 	writeFixture(t, stubDir, "vmimageexists", "1") // VM does NOT have it
-	if code := runDeploy(t, deps, "--host", statusHost, "--version", "def9999"); code != 0 {
+	if code := runDeploy(t, deps, "--host", statusHost, "--sha", "def9999"); code != 0 {
 		t.Fatalf("exit = %d\nstderr: %s", code, stderrString(t, deps))
 	}
 	inv := invocations(t, stubDir)
@@ -347,29 +358,29 @@ func TestDeployPipelineNonRepoWithoutVersionDies(t *testing.T) {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	mustContain(t, stderr.String(), "not a git repository")
-	mustContain(t, stderr.String(), "--version")
+	mustContain(t, stderr.String(), "--sha")
 }
 
-func TestDeployPipelineRequireDiskGateFailsClosed(t *testing.T) {
+func TestDeployPipelineDiskThresholdGateFailsClosed(t *testing.T) {
 	deps, stubDir, _, stderr, _ := setupDeployPipeline(t)
 	writeFixture(t, stubDir, "df", strings.Replace(statusDF, "62%", "95%", 1))
-	if code := runDeploy(t, deps, "--host", statusHost, "--require-disk", "90"); code != 1 {
+	if code := runDeploy(t, deps, "--host", statusHost, "--disk-threshold", "90"); code != 1 {
 		t.Fatalf("exit = %d, want 1 (fail closed BEFORE the build)", code)
 	}
 	if inv := invocations(t, stubDir); strings.Contains(inv, "podman build") {
 		t.Errorf("disk gate must fire before the build:\n%s", inv)
 	}
 	mustContain(t, stderr.String(), "VM disk at 95%")
-	mustContain(t, stderr.String(), "--require-disk 90")
+	mustContain(t, stderr.String(), "--disk-threshold 90")
 	mustContain(t, stderr.String(), "prune --dry-run")
 }
 
-func TestDeployPipelineRequireDiskValidation(t *testing.T) {
+func TestDeployPipelineDiskThresholdValidation(t *testing.T) {
 	deps, _, _, stderr, _ := setupDeployPipeline(t)
-	if code := runDeploy(t, deps, "--host", statusHost, "--require-disk", "101"); code != 1 {
+	if code := runDeploy(t, deps, "--host", statusHost, "--disk-threshold", "101"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	mustContain(t, stderr.String(), "--require-disk must be a percentage 0-100")
+	mustContain(t, stderr.String(), "--disk-threshold must be a percentage 0-100")
 }
 
 func TestDeployPipelineEnvPushSequence(t *testing.T) {
@@ -382,12 +393,6 @@ func TestDeployPipelineEnvPushSequence(t *testing.T) {
 		t.Fatalf("exit = %d", code)
 	}
 	inv := invocations(t, stubDir)
-	if !strings.Contains(inv, "umask 077; cat > /etc/kampodine/env.tmp.") {
-		t.Errorf("env push must upload through the 0600-from-creation temp:\n%s", inv)
-	}
-	if !strings.Contains(inv, "chmod 600 /etc/kampodine/env.tmp.") || !strings.Contains(inv, "mv -f /etc/kampodine/env.tmp.") {
-		t.Errorf("env push must atomically install (chmod 600 + mv -f):\n%s", inv)
-	}
 	// Reuse of the env family: fingerprint summary, NEVER values.
 	out := stdout.String()
 	mustContain(t, out, "FIELD_ONE")
@@ -402,6 +407,12 @@ func TestDeployPipelineEnvPushSequence(t *testing.T) {
 	}
 	if !strings.Contains(string(stdin), "FIELD_ONE=alpha") || !strings.Contains(string(stdin), "API_GIT_SHA="+pipelineVer) {
 		t.Errorf("uploaded env = %q, want the file contents + API_GIT_SHA=%s", string(stdin), pipelineVer)
+	}
+	if !strings.Contains(inv, "umask 077; cat > "+pipelineEnvFile+".tmp.") {
+		t.Errorf("env push must upload through the 0600-from-creation temp:\n%s", inv)
+	}
+	if !strings.Contains(inv, "chmod 600 "+pipelineEnvFile+".tmp.") || !strings.Contains(inv, "mv -f "+pipelineEnvFile+".tmp.") {
+		t.Errorf("env push must atomically install (chmod 600 + mv -f):\n%s", inv)
 	}
 }
 
@@ -455,16 +466,16 @@ func TestDeployPipelineSkipSmoke(t *testing.T) {
 }
 
 func TestDeployPipelineFlagValidation(t *testing.T) {
-	t.Run("--rollback and --version are exclusive", func(t *testing.T) {
+	t.Run("--rollback and --sha are exclusive", func(t *testing.T) {
 		deps, _, _, stderr, _ := setupDeployPipeline(t)
-		if code := runDeploy(t, deps, "--host", statusHost, "--rollback", "--version", "abc1234"); code != 1 {
+		if code := runDeploy(t, deps, "--host", statusHost, "--rollback", "--sha", "abc1234"); code != 1 {
 			t.Fatalf("exit = %d, want 1", code)
 		}
 		mustContain(t, stderr.String(), "exclusive")
 	})
-	t.Run("--version requires a sha fragment", func(t *testing.T) {
+	t.Run("--sha requires a sha fragment", func(t *testing.T) {
 		deps, _, _, stderr, _ := setupDeployPipeline(t)
-		if code := runDeploy(t, deps, "--host", statusHost, "--version", "release-42"); code != 1 {
+		if code := runDeploy(t, deps, "--host", statusHost, "--sha", "release-42"); code != 1 {
 			t.Fatalf("exit = %d, want 1", code)
 		}
 		mustContain(t, stderr.String(), "git sha fragment")
@@ -490,6 +501,13 @@ func TestDeployPipelineFlagValidation(t *testing.T) {
 		}
 		mustContain(t, stderr.String(), "unknown argument")
 	})
+	t.Run("retired --refresh-config is gone", func(t *testing.T) {
+		deps, _, _, stderr, _ := setupDeployPipeline(t)
+		if code := runDeploy(t, deps, "--host", statusHost, "--refresh-config"); code != 1 {
+			t.Fatalf("exit = %d, want 1 (unknown flag — no legacy aliases)", code)
+		}
+		mustContain(t, stderr.String(), "unknown flag")
+	})
 }
 
 func TestDeployHelpDocumentsPipelineRollingAndConverge(t *testing.T) {
@@ -501,11 +519,18 @@ func TestDeployHelpDocumentsPipelineRollingAndConverge(t *testing.T) {
 	for _, want := range []string{
 		"--rolling", "--drain-timeout", "--env-file", "converge",
 		"deployed-sha stamp", "NEVER", "two-writer", "shadow",
-		"podman save | ssh podman load", "--require-disk", "--skip-smoke", "--refresh-config",
+		"podman save | ssh podman load", "--disk-threshold", "--skip-smoke",
+		"keep-set image cleanup",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("deploy --help missing %q", want)
 		}
+	}
+	if strings.Contains(out, "--refresh-config") {
+		t.Error("deploy --help still documents the retired --refresh-config no-op")
+	}
+	if strings.Contains(out, "newest 3") {
+		t.Error("deploy --help hardcodes the pipeline keep count — reference the keep-set, not a number that contradicts prune's --keep")
 	}
 }
 

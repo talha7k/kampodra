@@ -10,11 +10,11 @@ import (
 // survives: a bad shadow never took traffic (rm + die), a switch already
 // made keeps the shadow serving (LOUD exit + converge).
 
-const (
+var (
 	rollingShadow     = deployContainer + "-shadow"
 	rollingShadowRun  = "podman run -d --name " + rollingShadow + " --network kamal --env-file " + pipelineEnvFile + " -p 127.0.0.1:18080:8080 " + pipelineImageTag
-	rollingSwitchFwd  = pipelineProxyCmd + " --host app.example.com --target " + rollingShadow + ":8080 --tls --health-check-path /api/auth/ok"
-	rollingSwitchBack = pipelineProxyCmd + " --host app.example.com --target " + deployContainer + ":8080 --tls --health-check-path /api/auth/ok"
+	rollingSwitchFwd  = pipelineProxyCmd + " --host app.example.com --target " + rollingShadow + ":8080 --tls --health-check-path /up"
+	rollingSwitchBack = pipelineProxyCmd + " --host app.example.com --target " + deployContainer + ":8080 --tls --health-check-path /up"
 	rollingRmShadow   = "podman rm -f " + rollingShadow
 )
 

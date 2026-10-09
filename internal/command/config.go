@@ -67,14 +67,14 @@ func newConfigCommand(d Deps) *cobra.Command {
 	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
 		fmt.Fprint(c.OutOrStdout(), configHelp)
 	})
-	// Shared surface, declared once (the frozen spec parses flags flat per
-	// script; the parity snapshot takes the union either way).
+	// Shared surface, declared once: persistent flags are inherited by
+	// every config subcommand.
 	pf := cmd.PersistentFlags()
 	pf.String("name", "", "profile name to create ([A-Za-z0-9][A-Za-z0-9_-]*, max 64)")
 	pf.String("host", "", "target VM (user@ip or ssh-config alias) for init")
 	pf.String("ssh-key", "", "identity file PATH for init (tilde expanded; secrets never live in the config)")
 	pf.String("proxy-host", "", "public TLS edge hostname for init")
-	pf.String("group", "", "cosmetic group (list --group filter)")
+	pf.String("group", "", "group label — filters config list / status / deploy list --group")
 	pf.String("profile", "", "profile to show")
 	pf.Bool("set-default", false, "make this profile the default at init")
 	pf.Bool("force", false, "overwrite an existing profile (init) / remove the last profile (remove)")
@@ -117,7 +117,7 @@ func newConfigCommand(d Deps) *cobra.Command {
 			Short: "point defaultProfile at an existing profile",
 			Args:  cobra.MaximumNArgs(1),
 			RunE: func(c *cobra.Command, args []string) error {
-				return runConfigSetDefault(d, c, args)
+				return runConfigSetDefault(d, args)
 			},
 		},
 		&cobra.Command{
@@ -126,6 +126,14 @@ func newConfigCommand(d Deps) *cobra.Command {
 			Args:  cobra.MaximumNArgs(1),
 			RunE: func(c *cobra.Command, args []string) error {
 				return runConfigRemove(d, c, args)
+			},
+		},
+		&cobra.Command{
+			Use:   "clone <src> <new>",
+			Short: "copy a profile to a new name; --host REQUIRED (a clone targets a different instance) — --ssh-key/--proxy-host/--group override, the rest copies",
+			Args:  cobra.ExactArgs(2),
+			RunE: func(c *cobra.Command, args []string) error {
+				return runConfigClone(d, c, args)
 			},
 		},
 	)
@@ -213,6 +221,7 @@ func runConfigInit(d Deps, c *cobra.Command) error {
 		Group:     group,
 		Init:      initCached,
 		Project:   prev.Project,
+		Cloud:     prev.Cloud,
 	}
 	if setDefault || cfg.DefaultProfile == "" {
 		cfg.DefaultProfile = name
@@ -279,9 +288,11 @@ func runConfigShow(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	name := flagString(c, "profile")
-	if name == "" {
-		name = cfg.DefaultProfile
+	// The SAME profile ladder as print/deploy: explicit --profile >
+	// KAMPODRA_PROFILE env > config defaultProfile.
+	name, err := state.SelectProfileName(cfg, flagString(c, "profile"), d.Env)
+	if err != nil {
+		return err
 	}
 	if name == "" {
 		return fmt.Errorf("no default profile — pass --profile <name> (known: %s)", strings.Join(sortedProfileNames(cfg), " "))
@@ -299,6 +310,9 @@ func runConfigShow(d Deps, c *cobra.Command) error {
 	fmt.Fprintf(d.Stdout, "sshKey    : %s   # path only — secrets never live in the config\n", p.SSHKey)
 	fmt.Fprintf(d.Stdout, "proxyHost : %s\n", p.ProxyHost)
 	fmt.Fprintf(d.Stdout, "group     : %s\n", p.Group)
+	if len(p.Cloud) > 0 {
+		fmt.Fprintf(d.Stdout, "cloud     : configured (provider-CLI auth overrides)\n")
+	}
 	if p.Init != "" {
 		fmt.Fprintf(d.Stdout, "init      : %s   # cached by host auto-detection\n", p.Init)
 	}
@@ -314,7 +328,7 @@ func sortedProfileNames(cfg *state.Config) []string {
 	return names
 }
 
-func runConfigSetDefault(d Deps, c *cobra.Command, args []string) error {
+func runConfigSetDefault(d Deps, args []string) error {
 	target := ""
 	if len(args) > 0 {
 		target = args[0]
@@ -374,6 +388,86 @@ func runConfigRemove(d Deps, c *cobra.Command, args []string) error {
 	fmt.Fprintf(d.Stdout, "[config] removed profile '%s' (%d remaining)\n", target, len(cfg.Profiles))
 	if cfg.DefaultProfile != "" && cfg.DefaultProfile != target {
 		fmt.Fprintf(d.Stdout, "[config] default profile is now: %s\n", cfg.DefaultProfile)
+	}
+	return nil
+}
+
+// runConfigClone copies an existing profile to a new name with explicit
+// values — the convenience of inheritance with none of its opacity: the
+// new profile OWNS its fields from here on (no live link to src). --host
+// is required (a clone targets a DIFFERENT instance); --ssh-key,
+// --proxy-host, and --group override, everything else (including the
+// project block) copies. The cached init verdict never copies — it names
+// the host it was detected on.
+func runConfigClone(d Deps, c *cobra.Command, args []string) error {
+	if len(args) != 2 {
+		return fmt.Errorf("usage: kampodra config clone <src> <new> --host root@<ip> (--help)")
+	}
+	src, name := args[0], args[1]
+	host := flagString(c, "host")
+	key := flagString(c, "ssh-key")
+	proxy := flagString(c, "proxy-host")
+	group := flagString(c, "group")
+	setDefault := flagBool(c, "set-default")
+	force := flagBool(c, "force")
+
+	if host == "" {
+		return fmt.Errorf("--host is required — a clone targets a DIFFERENT instance (to re-point an existing name: config init <name> --force)")
+	}
+	if !state.ValidProfileName(name) {
+		return fmt.Errorf("invalid profile name '%s' — use [A-Za-z0-9][A-Za-z0-9_-]* (max 64)", name)
+	}
+	cfg, err := state.LoadConfig(d.Home)
+	if err != nil {
+		return err
+	}
+	prevSrc, ok := cfg.Profiles[src]
+	if !ok {
+		return fmt.Errorf("unknown profile '%s' — known: %s", src, strings.Join(sortedProfileNames(cfg), " "))
+	}
+	if _, exists := cfg.Profiles[name]; exists && !force {
+		return fmt.Errorf("profile '%s' already exists — pass --force to overwrite", name)
+	}
+	for flag, val := range map[string]string{"--host": host, "--ssh-key": key, "--proxy-host": proxy, "--group": group} {
+		if val == "" {
+			continue // not provided — the src value (if any) was already validated at its own init/clone time
+		}
+		if err := state.RejectConfigValue(val, flag); err != nil {
+			return err
+		}
+	}
+	keyAbs := prevSrc.SSHKey
+	if key != "" {
+		keyAbs = state.ExpandTilde(key, d.Home)
+		if _, err := os.Stat(keyAbs); err != nil {
+			fmt.Fprintf(d.Stdout, "[config] note: ssh key file does not exist (yet): %s — stored as a path, deploy will fail until it does\n", keyAbs)
+		}
+	}
+	if proxy == "" {
+		proxy = prevSrc.ProxyHost
+	}
+	if group == "" {
+		group = prevSrc.Group
+	}
+	cfg.Profiles[name] = state.Profile{
+		Host:      host,
+		SSHKey:    keyAbs,
+		ProxyHost: proxy,
+		Group:     group,
+		Project:   prevSrc.Project,
+		Cloud:     prevSrc.Cloud,
+	}
+	if setDefault || cfg.DefaultProfile == "" {
+		cfg.DefaultProfile = name
+	}
+	if err := state.SaveConfig(d.Home, cfg); err != nil {
+		return err
+	}
+	fmt.Fprintf(d.Stdout, "[config] cloned '%s' -> '%s' (host %s) -> %s (0600)\n", src, name, host, state.ConfigPath(d.Home))
+	if cfg.DefaultProfile == name {
+		fmt.Fprintf(d.Stdout, "[config] '%s' is now the default\n", name)
+	} else {
+		fmt.Fprintf(d.Stdout, "[config] make default later: kampodra config set-default %s\n", name)
 	}
 	return nil
 }

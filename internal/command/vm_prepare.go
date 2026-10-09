@@ -21,7 +21,7 @@ import (
 // goes to production from its first boot: no blue->green flip, no cert
 // carry; the first TLS certificate issues during the first deploy.
 const vmPrepareHelp = `Usage:
-  kampodra vm-prepare --host root@<new-ip> [--pull-images] [--ssh-key <path>] [--profile <name>] [--ansible <playbook>]
+  kampodra vm-prepare --host root@<new-ip> [--ssh-key <path>] [--profile <name>] [--ansible <playbook>]
 
 First-run bootstrap of a bare Alpine VM (idempotent — safe to re-run):
   1. sanity gates (UEFI boot, no systemd anywhere, OpenRC tooling)
@@ -37,9 +37,6 @@ First-run bootstrap of a bare Alpine VM (idempotent — safe to re-run):
 The api container is NOT started on a fresh VM: neither its image nor the
 env file exists yet — the FIRST DEPLOY provides both.
 
---pull-images pre-pulls the app image directly from the ImagePrefix registry
-(kampodra itself streams images on deploy, so this only matters when a
-registry actually serves that prefix — kampodine's Mac-local tunnel is gone).
 --ansible <playbook> runs ansible-playbook against the host AFTER bootstrap
 (inventory derived from --host, --private-key from the resolved ssh key).
 
@@ -61,7 +58,7 @@ var (
 
 func newVMPrepareCommand(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "vm-prepare --host root@<new-ip> [--pull-images] [--ansible <playbook>]",
+		Use:   "vm-prepare --host root@<new-ip> [--ansible <playbook>]",
 		Short: "first-run bootstrap of a bare Alpine host: gates, sshd hardening, podman stack, OpenRC services, kamal-proxy edge, anchor watcher",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
@@ -74,7 +71,6 @@ func newVMPrepareCommand(d Deps) *cobra.Command {
 	cmd.Flags().String("host", "", "target VM (user@ip or ssh-config alias)")
 	cmd.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json)")
 	cmd.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY")
-	cmd.Flags().Bool("pull-images", false, "pre-pull the app image from the ImagePrefix registry after bootstrap")
 	cmd.Flags().String("ansible", "", "run this ansible-playbook file against the host after bootstrap")
 	return cmd
 }
@@ -82,13 +78,13 @@ func newVMPrepareCommand(d Deps) *cobra.Command {
 // namingFromProject derives the bootstrap naming from the resolved project
 // config (the adapter never imports the project adapter sideways).
 func namingFromProject(pj project.Config) vmbootstrap.Naming {
-	envDir := pj.EnvFilePath
-	if i := strings.LastIndex(pj.EnvFilePath, "/"); i > 0 {
-		envDir = pj.EnvFilePath[:i]
+	envDir := pj.EnvFile
+	if i := strings.LastIndex(pj.EnvFile, "/"); i > 0 {
+		envDir = pj.EnvFile[:i]
 	}
 	return vmbootstrap.Naming{
 		Container:       pj.Container,
-		EnvFilePath:     pj.EnvFilePath,
+		EnvFile:         pj.EnvFile,
 		EnvDir:          envDir,
 		AnchorConf:      envDir + "/anchor.conf",
 		DataDir:         pj.DataDir,
@@ -114,7 +110,6 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 	host, _ := c.Flags().GetString("host")
 	key, _ := c.Flags().GetString("ssh-key")
 	profile, _ := c.Flags().GetString("profile")
-	doPull, _ := c.Flags().GetBool("pull-images")
 	ansiblePath, _ := c.Flags().GetString("ansible")
 
 	cfg, err := state.LoadConfig(d.Home)
@@ -148,12 +143,9 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 		_, err := d.Runner.RunWithStdin(ctx, target.HostSpec, "sh -s", strings.NewReader(snippet))
 		return err
 	}
-	upload := func(path, content string, mode string) error {
+	upload := func(path, content string) error {
 		if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, "umask 077; cat > "+path, strings.NewReader(content)); err != nil {
 			return fmt.Errorf("upload %s: %w", path, err)
-		}
-		if mode != "" {
-			return run("chmod " + mode + " " + path)
 		}
 		return nil
 	}
@@ -168,6 +160,10 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 	}
 
 	// --- 1. pre gates (fail BEFORE mutating anything) -------------------------
+	say("gate: Alpine guest OS")
+	if err := run(vmbootstrap.GateAlpineOS); err != nil {
+		return die("unsupported guest OS — vm-prepare provisions Alpine only (a second guest OS arrives as its own provisioner, not as branches here)", err)
+	}
 	say("gate: UEFI boot")
 	if err := run(vmbootstrap.GateUEFI); err != nil {
 		return die("not booted via UEFI (golden image is UEFI-only — wrong machine/image?)", err)
@@ -187,7 +183,7 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 	if err := run("mkdir -p /etc/ssh/sshd_config.d && chmod 700 /etc/ssh/sshd_config.d"); err != nil {
 		return die("could not create /etc/ssh/sshd_config.d", err)
 	}
-	if err := upload(vmbootstrap.SSHDHardeningPath, vmbootstrap.RenderSSHDHardening(), ""); err != nil {
+	if err := upload(vmbootstrap.SSHDHardeningPath, vmbootstrap.RenderSSHDHardening()); err != nil {
 		return err
 	}
 	if err := run("rc-service sshd restart"); err != nil {
@@ -229,11 +225,11 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 	if err := run("mkdir -p /etc/containers"); err != nil {
 		return die("mkdir /etc/containers failed", err)
 	}
-	if err := upload(vmbootstrap.RegistriesConfPath, vmbootstrap.RenderRegistriesConf(n), ""); err != nil {
+	if err := upload(vmbootstrap.RegistriesConfPath, vmbootstrap.RenderRegistriesConf(n)); err != nil {
 		return err
 	}
 	say("writing %s + applying live…", vmbootstrap.SysctlConfPath)
-	if err := upload(vmbootstrap.SysctlConfPath, vmbootstrap.RenderSysctlConf(), ""); err != nil {
+	if err := upload(vmbootstrap.SysctlConfPath, vmbootstrap.RenderSysctlConf()); err != nil {
 		return err
 	}
 	if err := runSh(vmbootstrap.SysctlApplySnippet()); err != nil {
@@ -247,10 +243,10 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 	}
 	say("installing OpenRC services %s + %s (supervise-daemon around podman run)…", n.Container, vmbootstrap.ProxyContainer)
 	apiInitD := "/etc/init.d/" + n.Container
-	if err := upload(apiInitD, vmbootstrap.RenderInitDAPI(n), ""); err != nil {
+	if err := upload(apiInitD, vmbootstrap.RenderInitDAPI(n)); err != nil {
 		return err
 	}
-	if err := upload(vmbootstrap.ProxyInitDPath, vmbootstrap.RenderInitDProxy(n), ""); err != nil {
+	if err := upload(vmbootstrap.ProxyInitDPath, vmbootstrap.RenderInitDProxy(n)); err != nil {
 		return err
 	}
 	if err := run("chmod 755 " + apiInitD + " " + vmbootstrap.ProxyInitDPath); err != nil {
@@ -262,11 +258,11 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 	if err := run("mkdir -p /usr/local/sbin"); err != nil {
 		return die("mkdir /usr/local/sbin failed", err)
 	}
-	if err := upload(vmbootstrap.AnchorScriptPath, vmbootstrap.RenderAnchorScript(n), ""); err != nil {
+	if err := upload(vmbootstrap.AnchorScriptPath, vmbootstrap.RenderAnchorScript(n)); err != nil {
 		return err
 	}
 	anchorInitD := "/etc/init.d/kampodra-anchor"
-	if err := upload(anchorInitD, vmbootstrap.RenderInitDAnchor(n), ""); err != nil {
+	if err := upload(anchorInitD, vmbootstrap.RenderInitDAnchor(n)); err != nil {
 		return err
 	}
 	if err := run("chmod 755 " + vmbootstrap.AnchorScriptPath + " " + anchorInitD); err != nil {
@@ -310,18 +306,10 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 		return err
 	}
 
-	// --- 6. optional: pre-pull the app image ------------------------------------
-	if doPull {
-		say("pre-pulling the app image (%s) — needs a registry actually serving that prefix…", n.ImageRef)
-		if err := run(fmt.Sprintf("podman pull --tls-verify=false %s", n.ImageRef)); err != nil {
-			return die("app image pull failed", err)
-		}
-	} else {
-		say("skipping app-image pre-pull (pass --pull-images, or let the first deploy pull)")
-	}
+	// --- 6. the first deploy streams the image; nothing to pre-pull ---------
 
 	// --- 7. converge the api ONLY if a previous deploy left image + env ---------
-	say("%s start check (needs image + %s — first deploy provides both)…", n.Container, n.EnvFilePath)
+	say("%s start check (needs image + %s — first deploy provides both)…", n.Container, n.EnvFile)
 	if err := runSh(vmbootstrap.APIConvergeSnippet(n)); err != nil {
 		return die(fmt.Sprintf("%s start failed (image + env present — investigate: podman logs %s)", n.Container, n.Container), err)
 	}
@@ -377,7 +365,7 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 
 	// --- 9. optional ansible converge ---------------------------------------------
 	if ansiblePath != "" {
-		return runAnsiblePlaybook(d, target, ansiblePath)
+		return runAnsiblePlaybook(d, c.Context(), target, ansiblePath)
 	}
 	return nil
 }
@@ -405,9 +393,11 @@ func waitUntil(ctx context.Context, runner transport.Runner, spec transport.Host
 }
 
 // runAnsiblePlaybook runs the operator's playbook against the freshly
-// bootstrapped host (the shell's --refresh-config shape: inline inventory
-// + --private-key). Output streams; failure is fatal (explicit flag = intent).
-func runAnsiblePlaybook(d Deps, target Target, playbookPath string) error {
+// bootstrapped host (inline inventory derived from --host + --private-key
+// from the resolved ssh key). Output streams; failure is fatal (explicit
+// flag = intent). ctx is the command's context: ctrl-C kills ansible
+// (it used to run on a background context and outlive the interrupt).
+func runAnsiblePlaybook(d Deps, ctx context.Context, target Target, playbookPath string) error {
 	// Absolutize BEFORE the chdir: the exec below runs ansible from the
 	// playbook's directory, so a relative arg would re-resolve against it
 	// and die with "the playbook … could not be found" (2026-10-09 live fire).
@@ -450,7 +440,7 @@ func runAnsiblePlaybook(d Deps, target Target, playbookPath string) error {
 		args = append(args, "--private-key", target.HostSpec.SSHKey)
 	}
 	fmt.Fprintf(d.Stdout, "[vm-prepare] ansible-playbook (bootstrap converge)…\n")
-	cmd := exec.CommandContext(context.Background(), bin, args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = filepath.Dir(absPath)
 	cmd.Stdout = d.Stdout
 	cmd.Stderr = d.Stderr

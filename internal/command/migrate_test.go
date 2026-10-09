@@ -32,7 +32,7 @@ func setupMigrate(t *testing.T, probeFixture string) (command.Deps, *bytes.Buffe
 	inv := filepath.Join(stub, "invocations")
 	for name, content := range map[string]string{
 		"probe":  probeFixture,
-		"svcs":   "kampodine-api: not-running\nkamal-proxy: not-running\nwalshipper: not-running\n",
+		"svcs":   "app: not-running\nkamal-proxy: not-running\n",
 		"failon": "",
 		"detect": "openrc\nhttpc=wget\n",
 	} {
@@ -88,9 +88,9 @@ func runMigrate(t *testing.T, deps command.Deps, args ...string) int {
 	return command.Execute("test", deps, append([]string{"migrate"}, args...))
 }
 
-const migrateProbeFull = "db=/data/tenants/root/root.db\n" +
-	"db=/data/tenants/tenant_b.db\n" +
-	"db=/data/tenants/tenant_a.db\n"
+const migrateProbeFull = "db=/data/root/root.db\n" +
+	"db=/data/tenant_b.db\n" +
+	"db=/data/tenant_a.db\n"
 
 func TestMigrateHappyPathRootFirstThenTenants(t *testing.T) {
 	deps, stdout, stderr, _, lines := setupMigrate(t, migrateProbeFull)
@@ -119,11 +119,12 @@ func TestMigrateHappyPathRootFirstThenTenants(t *testing.T) {
 		t.Errorf("root.db must migrate before the tenants (root=%d a=%d b=%d)", rootIdx, tenantAIdx, tenantBIdx)
 	}
 
-	// The per-file command reuses the app's own applier from the repo on
-	// the VM — no parallel implementation.
+	// The per-file command reuses the app's own configured migrate script
+	// (project migrateScript default) from the repo on the VM — no parallel
+	// implementation, no hardcoded path.
 	for _, want := range []string{
-		"cd '/srv/app' && pnpm --filter api exec tsx scripts/libsql-migrate/migrate-db.ts --db 'file:/data/tenants/root/root.db' --ns 'root'",
-		"--db 'file:/data/tenants/tenant_a.db'",
+		"cd '/srv/app' && pnpm exec tsx 'scripts/migrate-db.ts' --db 'file:/data/root/root.db' --ns 'root'",
+		"--db 'file:/data/tenant_a.db'",
 	} {
 		found := false
 		for _, l := range lines() {
@@ -142,20 +143,44 @@ func TestMigrateHappyPathRootFirstThenTenants(t *testing.T) {
 	}
 }
 
+// The migrate script is CONFIG, not code: the profile's project block wins
+// over the default, and the probe + per-file commands consume it verbatim.
+func TestMigrateScriptResolvesFromProfileProjectBlock(t *testing.T) {
+	deps, _, stderr, _, lines := setupMigrate(t, migrateProbeFull)
+	cfgDir := filepath.Join(deps.Home, ".kampodra")
+	cfg := `{"defaultProfile": "prod", "profiles": {"prod": {"host": "root@203.0.113.9", "sshKey": "/ops/id", "project": {"migrateScript": "ops/migrate.ts"}}}}`
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := runMigrate(t, deps, "--repo-root", "/srv/app"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+	}
+	joined := strings.Join(lines(), "\n")
+	if !strings.Contains(joined, "/srv/app/ops/migrate.ts") {
+		t.Errorf("probe must check the configured script:\n%s", joined)
+	}
+	if !strings.Contains(joined, "pnpm exec tsx 'ops/migrate.ts'") {
+		t.Errorf("per-file command must run the configured script:\n%s", joined)
+	}
+	if strings.Contains(joined, "migrate-db.ts") {
+		t.Errorf("the hardcoded default leaked into the run:\n%s", joined)
+	}
+}
+
 func TestMigrateGuardRefusesRunningService(t *testing.T) {
 	deps, _, stderr, stub, lines := setupMigrate(t, migrateProbeFull)
 	if err := os.WriteFile(filepath.Join(stub, "svcs"),
-		[]byte("kampodine-api: running\nkamal-proxy: not-running\nwalshipper: not-running\n"), 0o644); err != nil {
+		[]byte("app: running\nkamal-proxy: not-running\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if code := runMigrate(t, deps, "--repo-root", "/srv/app"); code != 1 {
 		t.Fatalf("exit = %d, want 1 (the stop-first guard)", code)
 	}
-	if !strings.Contains(stderr.String(), "kampodine-api is running — stop it first (rc-service kampodine-api stop) or pass --allow-running") {
+	if !strings.Contains(stderr.String(), "app is running — stop it first (rc-service app stop) or pass --allow-running") {
 		t.Errorf("stderr = %q, want the shell's guard message", stderr.String())
 	}
 	for _, l := range lines() {
-		if strings.Contains(l, "pnpm --filter api exec tsx") {
+		if strings.Contains(l, "pnpm exec tsx") {
 			t.Fatalf("the guard must refuse BEFORE any migration:\n%s", l)
 		}
 	}
@@ -164,13 +189,13 @@ func TestMigrateGuardRefusesRunningService(t *testing.T) {
 func TestMigrateAllowRunningWarnsAndProceeds(t *testing.T) {
 	deps, stdout, stderr, stub, _ := setupMigrate(t, migrateProbeFull)
 	if err := os.WriteFile(filepath.Join(stub, "svcs"),
-		[]byte("kampodine-api: running\nkamal-proxy: not-running\nwalshipper: not-running\n"), 0o644); err != nil {
+		[]byte("app: running\nkamal-proxy: not-running\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if code := runMigrate(t, deps, "--repo-root", "/srv/app", "--allow-running"); code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "WARNING: migrating while kampodine-api is running (--allow-running)") {
+	if !strings.Contains(stdout.String(), "WARNING: migrating while app is running (--allow-running)") {
 		t.Errorf("stdout = %q, want the --allow-running warning", stdout.String())
 	}
 }
@@ -185,7 +210,7 @@ func TestMigrateInitUnknownWarnsAndProceeds(t *testing.T) {
 	if code := runMigrate(t, deps, "--repo-root", "/srv/app"); code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "[migrate] service state unknown (neither rc-service nor systemctl found) — assuming kampodine-api is not running") {
+	if !strings.Contains(stdout.String(), "[migrate] service state unknown (neither rc-service nor systemctl found) — assuming app is not running") {
 		t.Errorf("stdout = %q, want the unknowable-state warning", stdout.String())
 	}
 }
@@ -210,11 +235,27 @@ func TestMigratePreconditionFailures(t *testing.T) {
 				t.Errorf("stderr = %q, want %q", stderr.String(), tc.action)
 			}
 			for _, l := range lines() {
-				if strings.Contains(l, "pnpm --filter api exec tsx") {
+				if strings.Contains(l, "pnpm exec tsx") {
 					t.Fatalf("failed preconditions must abort BEFORE any migration:\n%s", l)
 				}
 			}
 		})
+	}
+}
+
+// The missing-repo error names the CONFIG (field + resolved value), not a
+// hardcoded path — the script location is the operator's migrateScript.
+func TestMigrateRepoRootErrorNamesTheMigrateScriptConfig(t *testing.T) {
+	deps, _, stderr, _, _ := setupMigrate(t, "ERR repo-root\n")
+	if code := runMigrate(t, deps, "--repo-root", "/srv/app"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	msg := stderr.String()
+	if !strings.Contains(msg, "migrateScript") || !strings.Contains(msg, "scripts/migrate-db.ts") {
+		t.Errorf("stderr = %q, want it to name the migrateScript field and its resolved value", msg)
+	}
+	if strings.Contains(msg, "apps/api/scripts/libsql-migrate") {
+		t.Errorf("stderr still names the retired hardcoded path:\n%s", msg)
 	}
 }
 
@@ -234,7 +275,7 @@ func TestMigratePerFileFailureCollectedExitOne(t *testing.T) {
 	if !strings.Contains(joined, "--ns 'root'") {
 		t.Error("root.db must still migrate")
 	}
-	if !strings.Contains(stderr.String(), "[migrate][FAIL] migration failed for /data/tenants/tenant_b.db") {
+	if !strings.Contains(stderr.String(), "[migrate][FAIL] migration failed for /data/tenant_b.db") {
 		t.Errorf("stderr = %q, want the per-file failure line", stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "1 db file(s) failed to migrate (migrated: 2) — do NOT start the API on a half-migrated estate; fix and re-run") {
@@ -247,7 +288,7 @@ func TestMigrateNoDbFilesIsQuietSuccess(t *testing.T) {
 	if code := runMigrate(t, deps, "--repo-root", "/srv/app"); code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "[migrate] no .db files under /data/tenants; nothing to migrate") {
+	if !strings.Contains(stdout.String(), "[migrate] no .db files under /data; nothing to migrate") {
 		t.Errorf("stdout = %q, want the nothing-to-migrate line", stdout.String())
 	}
 }
@@ -270,7 +311,7 @@ func TestMigrateRepoRootFromEnv(t *testing.T) {
 	}
 	found := false
 	for _, l := range lines() {
-		if strings.Contains(l, "cd '/env/app' && pnpm --filter api exec tsx") {
+		if strings.Contains(l, "cd '/env/app' && pnpm exec tsx") {
 			found = true
 		}
 	}

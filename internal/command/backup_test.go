@@ -4,15 +4,19 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/talha7k/kampodra/internal/adapter/project"
+	"github.com/talha7k/kampodra/internal/adapter/transport"
 	"github.com/talha7k/kampodra/internal/command"
 )
 
@@ -68,7 +72,7 @@ func setupBackup(t *testing.T) *backupHarness {
 	os.WriteFile(filepath.Join(stubDir, "ssh"), []byte(sshShim), 0o755)
 
 	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
-	for _, k := range []string{"KAMPODRA_HOST", "KAMPODRA_SSH_KEY", "KAMPODRA_PROFILE", "KAMPODRA_BACKUP_BUCKET", "OCI_PROFILE"} {
+	for _, k := range []string{"KAMPODRA_HOST", "KAMPODRA_SSH_KEY", "KAMPODRA_PROFILE", "KAMPODRA_BUCKET", "OCI_PROFILE"} {
 		t.Setenv(k, "")
 	}
 
@@ -127,12 +131,12 @@ func TestBackupListRendersTable(t *testing.T) {
 	h := setupBackup(t)
 	os.WriteFile(filepath.Join(h.fixtures, "list.json"), []byte(backupListFixture), 0o600)
 
-	if code := h.run(t, "list", "--bucket", "my-bkt", "--prefix", "db/tenants/", "--profile", "oci-prof"); code != 0 {
+	if code := h.run(t, "list", "--bucket", "my-bkt", "--prefix", "db/tenants/"); code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
 	}
 	out := h.stdout.String()
 	for _, want := range []string{
-		"[backup] objects in bucket my-bkt (prefix: db/tenants/) (profile: oci-prof):",
+		"[backup] objects in bucket my-bkt (prefix: db/tenants/) (profile: oci-cli default):",
 		"NAME", "SIZE", "UPDATED",
 		"db/tenants/acme/20261008T050000Z.db", "1048576", "2026-10-08T05:00:05.000Z",
 		"db/tenants/beta/latest.db", "42", "-",
@@ -142,8 +146,8 @@ func TestBackupListRendersTable(t *testing.T) {
 		}
 	}
 	logged := h.ociInvocations(t)
-	if !strings.Contains(logged, "--profile oci-prof") || !strings.Contains(logged, "--bucket-name my-bkt") {
-		t.Errorf("oci invocation missing auth/bucket: %s", logged)
+	if strings.Contains(logged, "--profile") || !strings.Contains(logged, "--bucket-name my-bkt") {
+		t.Errorf("native resolution must pass no auth flags (bucket must reach): %s", logged)
 	}
 }
 
@@ -242,14 +246,17 @@ func TestBackupRestorePlanPrintsOnly(t *testing.T) {
 	if logged := h.ociInvocations(t); strings.TrimSpace(logged) != "" {
 		t.Errorf("restore-plan invoked oci: %s", logged)
 	}
+	// The plan renders the project config's own naming — derived from the
+	// project defaults, never hardcoded here (project.go is the ONE source).
+	def := project.LoadDefault()
 	out := h.stdout.String()
 	for _, want := range []string{
 		"== restore plan (print-only — kampodra NEVER executes these steps) ==",
 		"object : db/tenants/acme/x.db",
-		"bucket : esellar-libsql-backups",
+		"bucket : " + def.Bucket,
 		"kampodra backup download 'db/tenants/acme/x.db' --out /tmp/restore.db",
-		"rc-service kampodine-api stop",
-		"/data/tenants/<tenant-dir>",
+		"rc-service " + def.Container + " stop",
+		def.DataDir + "/<tenant-dir>",
 		"kampodra status",
 	} {
 		if !strings.Contains(out, want) {
@@ -363,6 +370,32 @@ func TestBackupVerifyTgzSkipsRootDb(t *testing.T) {
 	}
 }
 
+// A bundle whose ONLY .db member is the schema-only root db verifies ZERO
+// databases — the loop must fail closed instead of printing the
+// all-members-passed OK line after zero restore-verify calls.
+func TestBackupVerifyTgzRootOnlyBundleFailsClosed(t *testing.T) {
+	h := setupBackup(t)
+	tgz := filepath.Join(t.TempDir(), "bundle.tgz")
+	buildFixtureTgz(t, tgz, map[string]string{
+		"root/root.db": "root-schema-bytes",
+	})
+	if code := h.run(t, "verify", tgz, "--host", "root@203.0.113.9"); code != 1 {
+		t.Fatalf("exit = %d, want 1 (nothing verified must fail closed)", code)
+	}
+	if !strings.Contains(h.stderr.String(), "nothing verified — bundle contains only the schema-only root db") {
+		t.Errorf("nothing-verified error missing:\n%s", h.stderr.String())
+	}
+	if out := h.stdout.String(); strings.Contains(out, "OK —") {
+		t.Errorf("OK line printed after zero verifications:\n%s", out)
+	}
+	if !strings.Contains(h.stdout.String(), "skipping root/root.db (root db is schema-only — not in restore-verify scope)") {
+		t.Errorf("per-member skip messaging changed:\n%s", h.stdout.String())
+	}
+	if calls := h.sshInvocations(t); strings.Contains(calls, "restore-verify") {
+		t.Errorf("restore-verify must not run for a root-only bundle:\n%s", calls)
+	}
+}
+
 func TestBackupVerifyRequiresHost(t *testing.T) {
 	h := setupBackup(t)
 	dbFile := filepath.Join(t.TempDir(), "dump.db")
@@ -381,7 +414,11 @@ func TestBackupVerifyRejectsUnknownExtension(t *testing.T) {
 	}
 }
 
-func TestBackupVerifyResolvesKampodineProfile(t *testing.T) {
+// verify's ssh leg resolves the INSTANCE profile through the standard
+// ladder (--profile > KAMPODRA_PROFILE > config defaultProfile). The
+// retired legacy alias flag is REMOVED — passing it is an unknown-flag
+// error, never a silent accept.
+func TestBackupVerifyResolvesInstanceProfileFromEnv(t *testing.T) {
 	h := setupBackup(t)
 	os.MkdirAll(filepath.Join(h.deps.Home, ".kampodra"), 0o700)
 	cfg := `{"defaultProfile":"","profiles":{"prod":{"host":"root@203.0.113.9","sshKey":"/keys/p"}}}`
@@ -389,11 +426,72 @@ func TestBackupVerifyResolvesKampodineProfile(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "dump.db")
 	os.WriteFile(dbFile, []byte("db"), 0o600)
 
-	if code := h.run(t, "verify", dbFile, "--kampodine-profile", "prod"); code != 0 {
+	t.Setenv("KAMPODRA_PROFILE", "prod")
+	if code := h.run(t, "verify", dbFile); code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
 	}
 	if !strings.Contains(h.stdout.String(), "on root@203.0.113.9") {
-		t.Errorf("--kampodine-profile did not resolve the VM target:\n%s", h.stdout.String())
+		t.Errorf("KAMPODRA_PROFILE did not resolve the VM target:\n%s", h.stdout.String())
+	}
+
+	if code := h.run(t, "verify", dbFile, "--kampodine-profile", "prod"); code != 1 ||
+		!strings.Contains(h.stderr.String(), "unknown flag") {
+		t.Errorf("--kampodine-profile must be an unknown flag (exit 1): exit=%d stderr=%q", code, h.stderr.String())
+	}
+}
+
+// The bucket ladder: --bucket > KAMPODRA_BUCKET (via the project ladder) >
+// the project config's bucket. The retired backup-specific env name is gone:
+// setting it selects nothing.
+func TestBackupListBucketFromProjectLadderEnv(t *testing.T) {
+	h := setupBackup(t)
+	t.Setenv("KAMPODRA_BUCKET", "env-bkt")
+	if code := h.run(t, "list"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), "[backup] objects in bucket env-bkt") {
+		t.Errorf("KAMPODRA_BUCKET did not reach the bucket resolution:\n%s", h.stdout.String())
+	}
+
+	// The duplicate env name is DEAD — it must not select the bucket anymore.
+	h = setupBackup(t)
+	t.Setenv("KAMPODRA_BACKUP_BUCKET", "legacy-bkt")
+	if code := h.run(t, "list"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	def := project.LoadDefault()
+	if !strings.Contains(h.stdout.String(), "[backup] objects in bucket "+def.Bucket) {
+		t.Errorf("KAMPODRA_BACKUP_BUCKET removal changed the default resolution:\n%s", h.stdout.String())
+	}
+	if strings.Contains(h.stdout.String(), "legacy-bkt") {
+		t.Errorf("the retired KAMPODRA_BACKUP_BUCKET env name still selects the bucket:\n%s", h.stdout.String())
+	}
+}
+
+// The instance profile's `cloud` block selects the OCI CONFIG profile and
+// drives instance-principal auth; the instance `--profile` itself never
+// reaches the oci CLI; without any of it, resolution is native.
+func TestBackupCloudBlockSelectsConfigProfile(t *testing.T) {
+	h := setupBackup(t)
+	os.MkdirAll(filepath.Join(h.deps.Home, ".kampodra"), 0o700)
+	cfg := `{"defaultProfile":"","profiles":{"inst-prof":{"host":"root@203.0.113.9","sshKey":"/keys/p"}}}`
+	os.WriteFile(filepath.Join(h.deps.Home, ".kampodra", "config.json"), []byte(cfg), 0o600)
+	if code := h.run(t, "list", "--bucket", "b", "--profile", "inst-prof"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	if strings.Contains(h.ociInvocations(t), "--profile inst-prof") {
+		t.Errorf("--profile (instance profile) leaked into the oci CLI call:\n%s", h.ociInvocations(t))
+	}
+
+	h = setupBackup(t)
+	os.MkdirAll(filepath.Join(h.deps.Home, ".kampodra"), 0o700)
+	cfg = `{"defaultProfile":"","profiles":{"inst-prof":{"host":"root@203.0.113.9","sshKey":"/keys/p","cloud":{"profile":"myprof"}}}}`
+	os.WriteFile(filepath.Join(h.deps.Home, ".kampodra", "config.json"), []byte(cfg), 0o600)
+	if code := h.run(t, "list", "--bucket", "b", "--profile", "inst-prof"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.ociInvocations(t), "--profile myprof") {
+		t.Errorf("cloud-block profile did not select the OCI config profile:\n%s", h.ociInvocations(t))
 	}
 }
 
@@ -401,6 +499,54 @@ func TestBackupDownloadRequiresObject(t *testing.T) {
 	h := setupBackup(t)
 	if code := h.run(t, "download"); code != 1 || !strings.Contains(h.stderr.String(), "usage: kampodra backup download <object>") {
 		t.Errorf("exit=%d stderr=%q", code, h.stderr.String())
+	}
+}
+
+// cancelMidVerifyRunner simulates ctrl-C arriving mid-verify: it cancels
+// the command context as the restore-verify leg starts, then delegates to
+// the real SSHRunner (the PATH ssh shim stays the command log).
+type cancelMidVerifyRunner struct {
+	inner  transport.Runner
+	cancel context.CancelFunc
+}
+
+func (r *cancelMidVerifyRunner) Run(ctx context.Context, host transport.HostSpec, remoteCmd string) (string, error) {
+	if strings.Contains(remoteCmd, "restore-verify") {
+		r.cancel()
+	}
+	return r.inner.Run(ctx, host, remoteCmd)
+}
+
+func (r *cancelMidVerifyRunner) RunWithStdin(ctx context.Context, host transport.HostSpec, remoteCmd string, stdin io.Reader) (string, error) {
+	return r.inner.RunWithStdin(ctx, host, remoteCmd, stdin)
+}
+
+func (r *cancelMidVerifyRunner) Stream(ctx context.Context, sshArgs []string) (int, error) {
+	return r.inner.Stream(ctx, sshArgs)
+}
+
+// The scratch rm must survive cancellation: it runs against
+// context.Background(), so ctrl-C mid-verify still removes the tenant db
+// bytes from the VM — and a cleanup failure must never mask the verdict.
+func TestBackupVerifyScratchCleanupSurvivesCancellation(t *testing.T) {
+	h := setupBackup(t)
+	dbFile := filepath.Join(t.TempDir(), "dump.db")
+	os.WriteFile(dbFile, []byte("db-bytes"), 0o600)
+	ctx, cancel := context.WithCancel(context.Background())
+	h.deps.Runner = &cancelMidVerifyRunner{inner: &transport.SSHRunner{}, cancel: cancel}
+
+	root := command.NewRoot("test", h.deps)
+	root.SetArgs([]string{"backup", "verify", dbFile, "--host", "root@203.0.113.9"})
+	err := root.ExecuteContext(ctx)
+	if err == nil || !strings.Contains(err.Error(), "restore-verify FAILED for dump.db") {
+		t.Fatalf("err = %v, want the restore-verify verdict (cleanup must not mask it)", err)
+	}
+	calls := h.sshInvocations(t)
+	if !strings.Contains(calls, "rm -f /tmp/kampodra-verify-") {
+		t.Errorf("scratch cleanup not attempted after cancellation:\n%s", calls)
+	}
+	if stderr := h.stderr.String(); strings.Contains(stderr, "WARNING: scratch cleanup failed") {
+		t.Errorf("cleanup succeeded — no WARNING expected:\n%s", stderr)
 	}
 }
 

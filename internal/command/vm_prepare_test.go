@@ -128,6 +128,9 @@ func TestVMPrepareHappyPathSequence(t *testing.T) {
 	if idx("test -d /sys/firmware/efi") > idx("apk add") && idx("apk add") >= 0 {
 		t.Error("UEFI gate must precede the apk install")
 	}
+	if idx("ID=alpine") > idx("test -d /sys/firmware/efi") && idx("test -d /sys/firmware/efi") >= 0 {
+		t.Error("Alpine OS gate must precede every other gate (foreign guests fail first, never mid-bootstrap)")
+	}
 	if idx("rc-service sshd restart") > idx("apk add") && idx("apk add") >= 0 {
 		t.Error("sshd hardening must precede the apk install")
 	}
@@ -145,14 +148,14 @@ func TestVMPrepareHappyPathSequence(t *testing.T) {
 		"grep -Eq \"^[^#].*/community\" /etc/apk/repositories",
 		"rc-update show boot | grep -q cgroups",
 		// state dir + managed files
-		"mkdir -p /etc/kampodine && chmod 700 /etc/kampodine",
-		"chmod 755 /etc/init.d/kampodine-api /etc/init.d/kamal-proxy",
+		"mkdir -p /etc/kampodra && chmod 700 /etc/kampodra",
+		"chmod 755 /etc/init.d/app /etc/init.d/kamal-proxy",
 		"mkdir -p /usr/local/sbin",
 		"sh -n /usr/local/sbin/kampodra-anchor.sh",
 		"sh -n /etc/init.d/kampodra-anchor",
 		"rc-update add kampodra-anchor default",
 		"rc-service kampodra-anchor start",
-		"rc-update add kampodine-api default",
+		"rc-update add app default",
 		"rc-update add kamal-proxy default",
 		// network + proxy
 		"podman network exists kamal 2>/dev/null || podman network create kamal",
@@ -165,7 +168,7 @@ func TestVMPrepareHappyPathSequence(t *testing.T) {
 		// post gates
 		"podman info --format \"{{.Host.NetworkBackend}}\" | grep -qx netavark",
 		"sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null | grep -qx 80",
-		"! test -e /etc/kampodine/anchor.conf",
+		"! test -e /etc/kampodra/anchor.conf",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("vm-prepare sequence missing %q", want)
@@ -174,7 +177,7 @@ func TestVMPrepareHappyPathSequence(t *testing.T) {
 
 	// uploads landed (basenames of the managed files)
 	for _, name := range []string{
-		"registries.conf", "60-kampodra.conf", "kampodine-api", "kamal-proxy",
+		"registries.conf", "60-kampodra.conf", "app", "kamal-proxy",
 		"kampodra-anchor.sh", "kampodra-anchor", "99-kampodra-hardening.conf",
 	} {
 		if _, err := os.Stat(filepath.Join(h.uploads, "upload-"+name)); err != nil {
@@ -214,16 +217,6 @@ func TestVMPrepareNoUploadsBeforeSshdHardening(t *testing.T) {
 		if strings.Contains(c, "cat >") && strings.Contains(c, "init.d") {
 			t.Errorf("init.d upload before sshd hardening completed: %s", c)
 		}
-	}
-}
-
-func TestVMPreparePullImagesFlag(t *testing.T) {
-	h := setupPrepare(t)
-	if code := h.run(t, "--host", "root@203.0.113.9", "--pull-images"); code != 0 {
-		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
-	}
-	if !strings.Contains(h.calls(t), "podman pull --tls-verify=false 127.0.0.1:5000/kampodine-api:latest") {
-		t.Errorf("--pull-images pull command missing")
 	}
 }
 
@@ -295,5 +288,21 @@ func TestVMPrepareRequiresHost(t *testing.T) {
 	h := setupPrepare(t)
 	if code := h.run(t); code != 1 || !strings.Contains(h.stderr.String(), "--host") {
 		t.Errorf("exit=%d stderr=%q", code, h.stderr.String())
+	}
+}
+
+func TestVMPrepareAlpineGateFailsClosed(t *testing.T) {
+	h := setupPrepare(t)
+	os.WriteFile(filepath.Join(h.stub, "failon"), []byte("ID=alpine"), 0o600)
+	if code := h.run(t, "--host", "root@203.0.113.9"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(h.stderr.String(), "unsupported guest OS") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+	for _, c := range h.callList(t) {
+		if strings.Contains(c, "apk add") || strings.Contains(c, "rc-update add") {
+			t.Errorf("gate failure must not mutate the host: %s", c)
+		}
 	}
 }

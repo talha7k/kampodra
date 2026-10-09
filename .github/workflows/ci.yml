@@ -23,12 +23,14 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
       - name: go test ./...
         run: go test ./...
-      - name: command-parity guard (frozen-spec coverage)
-        run: go test ./internal/command/ -run TestCommandParityGuard -count=1 -v
       - name: project magic-string guard
         run: go test ./internal/adapter/project/ -run TestNoProjectMagicStringsOutsideProjectDotGo -count=1
       - name: go vet
         run: go vet ./...
+      - name: lint gate (golangci-lint — duplication + complexity are blocking)
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+          $(go env GOPATH)/bin/golangci-lint run ./...
       - name: go build
         run: go build ./...
       - name: npm shim tests

@@ -18,7 +18,7 @@ import (
 type Config struct {
 	Container       string   `json:"container"`       // the api container / service name
 	ShadowSuffix    string   `json:"shadowSuffix"`    // blue/green shadow container suffix
-	EnvFilePath     string   `json:"envFilePath"`     // remote env file (0600)
+	EnvFile         string   `json:"envFile"`         // remote env file (0600)
 	DataDir         string   `json:"dataDir"`         // tenant/app data dir on the VM
 	Bucket          string   `json:"bucket"`          // object-storage backup bucket
 	ObjectPrefix    string   `json:"objectPrefix"`    // backup object prefix
@@ -32,6 +32,7 @@ type Config struct {
 	DeployedShaFile string   `json:"deployedShaFile"` // the VM's deployed-sha stamp (rollback's fallback resolution)
 	EnvClearKeys    []string `json:"envClearKeys"`    // env keys OWNED by the init script — env from-schema drops them from varlock output
 	Dockerfile      string   `json:"dockerfile"`      // the Containerfile/Dockerfile deploy builds (context = the repo root)
+	MigrateScript   string   `json:"migrateScript"`   // the repo-relative db migrate script migrate runs on the VM
 }
 
 // LoadDefault returns today's values as NAMED DEFAULTS — the single file
@@ -40,22 +41,23 @@ type Config struct {
 // KAMPODRA_* env stays available without code changes.
 func LoadDefault() Config {
 	return Config{
-		Container:       "kampodine-api",
+		Container:       "app",
 		ShadowSuffix:    "-shadow",
-		EnvFilePath:     "/etc/kampodine/env",
-		DataDir:         "/data/tenants",
-		Bucket:          "esellar-libsql-backups",
+		EnvFile:         "/etc/kampodra/env",
+		DataDir:         "/data",
+		Bucket:          "app-backups",
 		ObjectPrefix:    "db",
-		HealthPath:      "/api/auth/ok",
+		HealthPath:      "/up",
 		ProxyHost:       "app.example.com",
-		Services:        []string{"kampodine-api", "kamal-proxy", "walshipper"},
-		ImagePrefix:     "127.0.0.1:5000/kampodine-api",
+		Services:        []string{"app", "kamal-proxy"},
+		ImagePrefix:     "127.0.0.1:5000/app",
 		Port:            "8080",
 		Network:         "kamal",
 		ShadowProbePort: "18080",
-		DeployedShaFile: "/etc/kampodine/deployed-sha",
-		EnvClearKeys:    []string{"NODE_ENV", "PORT", "LIBSQL_TENANT_DIR", "LIBSQL_API_MOUNT", "STATIC_SPA_MOUNT"},
+		DeployedShaFile: "/etc/kampodra/deployed-sha",
+		EnvClearKeys:    []string{"NODE_ENV", "PORT"},
 		Dockerfile:      "Dockerfile",
+		MigrateScript:   "scripts/migrate-db.ts",
 	}
 }
 
@@ -64,7 +66,7 @@ func LoadDefault() Config {
 type Overrides struct {
 	Container       string   `json:"container,omitempty"`
 	ShadowSuffix    string   `json:"shadowSuffix,omitempty"`
-	EnvFilePath     string   `json:"envFilePath,omitempty"`
+	EnvFile         string   `json:"envFile,omitempty"` // remote env file (0600); legacy key "envFilePath" still accepted (UnmarshalJSON)
 	DataDir         string   `json:"dataDir,omitempty"`
 	Bucket          string   `json:"bucket,omitempty"`
 	ObjectPrefix    string   `json:"objectPrefix,omitempty"`
@@ -78,6 +80,33 @@ type Overrides struct {
 	DeployedShaFile string   `json:"deployedShaFile,omitempty"`
 	EnvClearKeys    []string `json:"envClearKeys,omitempty"`
 	Dockerfile      string   `json:"dockerfile,omitempty"`
+	MigrateScript   string   `json:"migrateScript,omitempty"`
+}
+
+// UnmarshalJSON accepts both env-file key spellings: `envFile` (canonical —
+// the same key kampodra.json uses) and the profile block's legacy
+// `envFilePath`, so existing config.json files keep working. When both are
+// present the canonical `envFile` wins. Unknown keys stay ignored (the
+// block fails open).
+func (o *Overrides) UnmarshalJSON(data []byte) error {
+	type plain Overrides
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		if _, canonical := raw["envFile"]; !canonical {
+			if legacy, ok := raw["envFilePath"]; ok {
+				var s string
+				if json.Unmarshal(legacy, &s) == nil {
+					p.EnvFile = s
+				}
+			}
+		}
+	}
+	*o = Overrides(p)
+	return nil
 }
 
 // Resolve layers the config, lowest layer first: LoadDefault, then the
@@ -125,7 +154,7 @@ type fieldBinding struct {
 var fieldBindings = []fieldBinding{
 	{"container", func(c Config) string { return c.Container }, func(c *Config, v string) { c.Container = v }, nil},
 	{"shadowSuffix", func(c Config) string { return c.ShadowSuffix }, func(c *Config, v string) { c.ShadowSuffix = v }, nil},
-	{"envFile", func(c Config) string { return c.EnvFilePath }, func(c *Config, v string) { c.EnvFilePath = v }, nil},
+	{"envFile", func(c Config) string { return c.EnvFile }, func(c *Config, v string) { c.EnvFile = v }, nil},
 	{"dataDir", func(c Config) string { return c.DataDir }, func(c *Config, v string) { c.DataDir = v }, nil},
 	{"bucket", func(c Config) string { return c.Bucket }, func(c *Config, v string) { c.Bucket = v }, nil},
 	{"objectPrefix", func(c Config) string { return c.ObjectPrefix }, func(c *Config, v string) { c.ObjectPrefix = v }, nil},
@@ -139,6 +168,7 @@ var fieldBindings = []fieldBinding{
 	{"deployedShaFile", func(c Config) string { return c.DeployedShaFile }, func(c *Config, v string) { c.DeployedShaFile = v }, nil},
 	{"envClearKeys", func(c Config) string { return strings.Join(c.EnvClearKeys, " ") }, func(c *Config, v string) { c.EnvClearKeys = strings.Fields(v) }, func(c Config) []string { return c.EnvClearKeys }},
 	{"dockerfile", func(c Config) string { return c.Dockerfile }, func(c *Config, v string) { c.Dockerfile = v }, nil},
+	{"migrateScript", func(c Config) string { return c.MigrateScript }, func(c *Config, v string) { c.MigrateScript = v }, nil},
 }
 
 func bindingIndex(key string) int {
@@ -169,6 +199,7 @@ var envBindingKeys = map[string]string{
 	"deployedShaFile": "KAMPODRA_DEPLOYED_SHA_FILE",
 	"envClearKeys":    "KAMPODRA_ENV_CLEAR_KEYS",
 	"dockerfile":      "KAMPODRA_DOCKERFILE",
+	"migrateScript":   "KAMPODRA_MIGRATE_SCRIPT",
 }
 
 // ResolveTraced applies the FULL ladder with per-field provenance:
@@ -261,8 +292,7 @@ func ResolveTraced(flags map[string]string, lookup func(string) (string, bool), 
 
 // manifestStringField reads one scalar field off a parsed manifest without
 // reflection: the switch IS the manifest schema (a new ManifestFields field
-// extends it). Note envFile — the manifest's clean key for the profile
-// block's legacy envFilePath.
+// extends it).
 func manifestStringField(o ManifestFields, key string) string {
 	switch key {
 	case "container":
@@ -293,6 +323,8 @@ func manifestStringField(o ManifestFields, key string) string {
 		return o.DeployedShaFile
 	case "dockerfile":
 		return o.Dockerfile
+	case "migrateScript":
+		return o.MigrateScript
 	}
 	return ""
 }
@@ -309,8 +341,9 @@ func manifestListField(o ManifestFields, key string) []string {
 }
 
 // overridesStringField/overridesListField read the same field keys off the
-// profile's "project" block (its own legacy JSON schema — envFilePath, not
-// envFile).
+// profile's "project" block — same camelCase keys as the manifest/env
+// ladder (envFile included; the legacy envFilePath spelling is accepted at
+// unmarshal time only).
 func overridesStringField(o Overrides, key string) string {
 	switch key {
 	case "container":
@@ -318,7 +351,7 @@ func overridesStringField(o Overrides, key string) string {
 	case "shadowSuffix":
 		return o.ShadowSuffix
 	case "envFile":
-		return o.EnvFilePath
+		return o.EnvFile
 	case "dataDir":
 		return o.DataDir
 	case "bucket":
@@ -341,6 +374,8 @@ func overridesStringField(o Overrides, key string) string {
 		return o.DeployedShaFile
 	case "dockerfile":
 		return o.Dockerfile
+	case "migrateScript":
+		return o.MigrateScript
 	}
 	return ""
 }

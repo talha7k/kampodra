@@ -5,7 +5,7 @@
 //
 //	ProbeCommand    — preconditions + the db-file listing in ONE round-trip
 //	Plan            — the pure ordering decision (root first, tenants sorted)
-//	MigrateCommand  — the per-file drizzle apply via the repo on the VM
+//	MigrateCommand  — the per-file apply via the repo's configured migrate script
 //
 // Every snippet is busybox-safe (Alpine ships no bash): POSIX sh, no
 // function export tricks, no GNU-only flags. Bounded parallelism lives in
@@ -21,29 +21,20 @@ import (
 	"strings"
 )
 
-// migrateScriptRepoRel / migrateScriptPkgRel: the app's one-shot migration
-// applier, from the two bases it is referenced by — the repo root (probe)
-// and the api package dir (the pnpm --filter api exec invocation). migrate
-// reuses the SAME code path as local seeding, never a parallel
-// implementation.
-const (
-	migrateScriptRepoRel = "apps/api/scripts/libsql-migrate/migrate-db.ts"
-	migrateScriptPkgRel  = "scripts/libsql-migrate/migrate-db.ts"
-)
-
 // shellQuote single-quotes one path for POSIX sh (the '\” dance).
 func shellQuote(p string) string {
 	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
 }
 
 // ProbeCommand composes the one-round-trip probe: the three preconditions
-// (repo checkout with the migration script, pnpm, tenant dir) as ERR lines,
-// then every .db file under the data dir as db= lines. All checks run even
-// when earlier ones fail, so one ssh hop reports the full picture; the
+// (repo checkout with the CONFIGURED migrate script, pnpm, data dir) as ERR
+// lines, then every .db file under the data dir as db= lines. All checks run
+// even when earlier ones fail, so one ssh hop reports the full picture; the
 // command layer turns the ERR lines into the shell's fail messages in the
-// shell's check order.
-func ProbeCommand(repoRoot, dataDir string) string {
-	script := shellQuote(repoRoot + "/" + migrateScriptRepoRel)
+// shell's check order. migrateScript is the project config's repo-relative
+// script path — config, never code.
+func ProbeCommand(repoRoot, migrateScript, dataDir string) string {
+	script := shellQuote(repoRoot + "/" + migrateScript)
 	data := shellQuote(dataDir)
 	return `if [ ! -f ` + script + ` ]; then echo "ERR repo-root"; fi; ` +
 		`command -v pnpm >/dev/null 2>&1 || echo "ERR pnpm"; ` +
@@ -114,12 +105,14 @@ func Plan(dbFiles []string) (root *Job, tenants []Job) {
 	return root, tenants
 }
 
-// MigrateCommand composes one file's drizzle apply, run from the repo
-// checkout on the VM (the shell's `(cd "$REPO_ROOT" && pnpm --filter api
-// exec tsx scripts/libsql-migrate/migrate-db.ts --db "file:…" --ns …)`).
-func MigrateCommand(repoRoot string, j Job) string {
+// MigrateCommand composes one file's migrate apply, run from the repo
+// checkout on the VM (the shell's `(cd "$REPO_ROOT" && pnpm exec tsx
+// <migrateScript> --db "file:…" --ns …)`). migrateScript is the project
+// config's repo-relative script path — the app's own applier, never a
+// parallel implementation, never a hardcoded path.
+func MigrateCommand(repoRoot, migrateScript string, j Job) string {
 	return "cd " + shellQuote(repoRoot) +
-		" && pnpm --filter api exec tsx " + migrateScriptPkgRel +
+		" && pnpm exec tsx " + shellQuote(migrateScript) +
 		" --db 'file:" + j.Path + "'" +
 		" --ns " + shellQuote(j.NS)
 }

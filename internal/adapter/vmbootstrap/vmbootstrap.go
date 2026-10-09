@@ -2,11 +2,16 @@
 // (vm-prepare.sh port): the managed config files, the OpenRC units, the
 // blue/green anchor watcher, and the busybox-safe remote snippets + gates.
 //
-// The adapter owns host-OS specifics ONLY — all deployed-project naming
-// arrives through Naming (built by the command layer from ProjectConfig;
-// adapters never import siblings). kampodra branding replaces the shell's
-// tool-owned names (anchor unit, log paths, drop-in file names); the app
-// container naming rides Naming exactly as the profile config says.
+// This package is the ALPINE implementation of first-boot provisioning —
+// the OS contract is explicit and fail-fast (GateAlpineOS runs before
+// anything mutates): a second guest OS would arrive as a sibling
+// implementation behind the same Naming surface, never as branches in
+// here. The adapter owns host-OS specifics ONLY — all deployed-project
+// naming arrives through Naming (built by the command layer from
+// ProjectConfig; adapters never import siblings). kampodra branding
+// replaces the shell's tool-owned names (anchor unit, log paths, drop-in
+// file names); the app container naming rides Naming exactly as the
+// profile config says.
 //
 // Content parity with the retired shell heredocs is the contract: only the
 // parameterized names differ.
@@ -21,8 +26,8 @@ import (
 // the command layer fills it from project.Config + derived paths).
 type Naming struct {
 	Container       string // the api container / service name
-	EnvFilePath     string // remote env file (0600)
-	EnvDir          string // dir(EnvFilePath) — the VM's kampodra state dir
+	EnvFile         string // remote env file (0600)
+	EnvDir          string // dir(EnvFile) — the VM's kampodra state dir
 	AnchorConf      string // the blue/green anchor conf (in EnvDir)
 	DataDir         string // tenant data dir
 	ImagePrefix     string // VM-local image repository path
@@ -93,10 +98,11 @@ func RenderInitDAPI(n Naming) string {
 #
 # Env: %[2]s (0600 root, written by kampodra env push per deploy) is
 # the single SECRETS source (podman --env-file reads KEY=VALUE lines directly).
-# The five CLEAR vars (NODE_ENV, PORT, LIBSQL_TENANT_DIR, LIBSQL_API_MOUNT,
-# STATIC_SPA_MOUNT) are owned HERE via -e — one source of truth per key.
-# %[3]s is the ONLY host data path (tenant sqlite files) — without the bind
-# mount, tenant data would be container-ephemeral and lost on every restart.
+# The generic CLEAR vars (NODE_ENV, PORT — the profile's envClearKeys) are
+# owned HERE via -e — one source of truth per key; the app's own contract
+# vars ride the env file / its schema, never this unit.
+# %[3]s is the ONLY host data path (app data) — without the bind
+# mount, data would be container-ephemeral and lost on every restart.
 
 name="%[4]s"
 description="%[4]s container (%[5]s on %[6]s)"
@@ -106,7 +112,6 @@ command="/usr/bin/podman"
 command_args="run --rm --name %[4]s --network %[7]s -p %[6]s:%[6]s"
 command_args="$command_args -v %[3]s:%[3]s"
 command_args="$command_args -e NODE_ENV=production -e PORT=%[6]s"
-command_args="$command_args -e LIBSQL_TENANT_DIR=%[3]s -e LIBSQL_API_MOUNT=1 -e STATIC_SPA_MOUNT=1"
 command_args="$command_args --env-file %[2]s %[5]s"
 
 # Respawn forever: a crash loop self-heals at the next deploy's restart;
@@ -136,7 +141,7 @@ stop_post() {
 	podman stop --time 10 %[4]s >/dev/null 2>&1 || true
 	podman rm -f --time 0 %[4]s >/dev/null 2>&1 || true
 }
-`, n.Registry, n.EnvFilePath, n.DataDir, n.Container, n.ImageRef, n.Port, n.Network, APIStderrLogPath)
+`, n.Registry, n.EnvFile, n.DataDir, n.Container, n.ImageRef, n.Port, n.Network, APIStderrLogPath)
 }
 
 // RenderInitDProxy ports the kamal-proxy OpenRC unit: the TLS edge with a
@@ -343,7 +348,7 @@ func APIConvergeSnippet(n Naming) string {
   echo "%[3]s started (image + env present)"
 else
   echo "%[3]s deferred: no image and/or %[1]s yet (normal on a fresh VM — first deploy handles it)"
-fi`, n.EnvFilePath, n.ImageRef, n.Container)
+fi`, n.EnvFile, n.ImageRef, n.Container)
 }
 
 // UnitDriftSnippet warns (never auto-restarts) when a rewrite changed a
@@ -361,6 +366,10 @@ done`
 const (
 	// GateUEFI — the golden image is UEFI-only.
 	GateUEFI = `test -d /sys/firmware/efi`
+	// GateAlpineOS — this provisioner implements Alpine ONLY. It runs
+	// first: a foreign guest must fail here with a clear message, never
+	// halfway through apk/OpenRC steps that assume Alpine layout.
+	GateAlpineOS = `grep -q '^ID=alpine' /etc/os-release`
 	// GateNoSystemd — start-fresh has NO systemd anywhere.
 	GateNoSystemd = `! readlink /proc/1/exe 2>/dev/null | grep -q systemd`
 	// GateOpenRCTooling — the init toolchain must be operational.

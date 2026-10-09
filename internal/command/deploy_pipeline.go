@@ -43,13 +43,12 @@ var shaFragmentRe = regexp.MustCompile(`^[0-9a-f]{4,40}$`)
 
 // deployOpts is the parsed pipeline invocation.
 type deployOpts struct {
-	dockerfile   string
-	envFile      string
-	requireDisk  string
-	skipSmoke    bool
-	refreshCfg   bool
-	rolling      bool
-	drainTimeout int
+	dockerfile    string
+	envFile       string
+	diskThreshold string
+	skipSmoke     bool
+	rolling       bool
+	drainTimeout  int
 }
 
 // deployRun carries one pipeline execution: the resolved target, the
@@ -164,7 +163,7 @@ func (r *deployRun) execute() error {
 	if r.mode == "deploy" {
 		root, err := localOutput(r.ctx, "", "git", "rev-parse", "--show-toplevel")
 		if err != nil {
-			return fmt.Errorf("not a git repository — deploy stamps the git sha of HEAD; from a non-repo directory use --version <sha7> to stream an existing build")
+			return fmt.Errorf("not a git repository — deploy stamps the git sha of HEAD; from a non-repo directory use --sha <sha7> to stream an existing build")
 		}
 		r.repoRoot = strings.TrimSpace(root)
 		dirty, err := localOutput(r.ctx, r.repoRoot, "git", "status", "--porcelain")
@@ -172,7 +171,7 @@ func (r *deployRun) execute() error {
 			return fmt.Errorf("git status failed — cannot verify the tree is clean: %w", err)
 		}
 		if strings.TrimSpace(dirty) != "" {
-			return fmt.Errorf("dirty tree — deploys must ship COMMITTED files (build identity stamps the git sha); commit first, or stream an existing build with --version <sha7>")
+			return fmt.Errorf("dirty tree — deploys must ship COMMITTED files (build identity stamps the git sha); commit first, or stream an existing build with --sha <sha7>")
 		}
 	}
 
@@ -206,11 +205,11 @@ func (r *deployRun) execute() error {
 
 	// --- stream (skipped when the VM already has the tag: rollback to an
 	// image that never left the host is instant and works even when the
-	// local build is long gone; an explicit --version deploy of a sha that
+	// local build is long gone; an explicit --sha deploy of a sha that
 	// already lives on the VM is the same case — verified live 2026-10-08
 	// when re-deploying an existing sha tried to stream from a machine
 	// that never had it) ------------------------------------------
-	if (r.mode == "rollback" || r.mode == "version") && !r.skipStream {
+	if (r.mode == "rollback" || r.mode == "sha") && !r.skipStream {
 		if err := r.vmTolerantErr(fmt.Sprintf("podman image exists %s:%s", pj.ImagePrefix, r.ver)); err == nil {
 			r.say("%s:%s already on the VM — skipping build/stream", pj.ImagePrefix, r.ver)
 			r.skipStream = true
@@ -250,10 +249,7 @@ func (r *deployRun) execute() error {
 			return err
 		}
 	} else {
-		r.say("no --env-file — leaving %s unchanged", pj.EnvFilePath)
-	}
-	if r.opts.refreshCfg {
-		r.say("WARNING: --refresh-config was the retired shell's repo-local ansible hook — kampodra keeps the flag for script compatibility; rc-script drift repair is manual (kampodra deploy shell exec -- <cmd>)")
+		r.say("no --env-file — leaving %s unchanged", pj.EnvFile)
 	}
 
 	// --- init detection (one round-trip; cached in the profile) ----------
@@ -338,7 +334,7 @@ func (r *deployRun) pushEnvFile() error {
 		return fmt.Errorf("no such env file: %s", r.opts.envFile)
 	}
 	content := strings.TrimRight(string(data), "\n") + fmt.Sprintf("\nAPI_GIT_SHA=%s\n", r.ver)
-	remote := r.target.Project.EnvFilePath
+	remote := r.target.Project.EnvFile
 	r.say("pushing env file -> %s:%s (fingerprint summary below; values are NEVER printed)", r.target.HostSpec.Host, remote)
 	fmt.Fprint(r.d.Stdout, envfile.Table(content))
 
@@ -488,22 +484,22 @@ func (r *deployRun) epilogue() error {
 	return nil
 }
 
-// vmDiskCheck ports vm_disk_check: read-only VM df; the --require-disk
+// vmDiskCheck ports vm_disk_check: read-only VM df; the --disk-threshold
 // fail-closed gate (phase=gate); the always-on loud warning above 90%
 // (report phase is warn-only by definition).
 func (r *deployRun) vmDiskCheck(phase string) error {
 	out := r.vmTolerant(fmt.Sprintf("df -P %s 2>/dev/null", deployDiskPath))
 	pct, ok := osfacts.DiskUsedPct(out)
-	verdict := osfacts.DiskVerdict(pctString(pct, ok), r.opts.requireDisk)
+	verdict := osfacts.DiskVerdict(pctString(pct, ok), r.opts.diskThreshold)
 	switch verdict {
 	case osfacts.VerdictFail:
-		return fmt.Errorf("VM disk at %d%% (>= --require-disk %s%%) — free space first: kampodra deploy prune --dry-run", pct, r.opts.requireDisk)
+		return fmt.Errorf("VM disk at %d%% (>= --disk-threshold %s%%) — free space first: kampodra deploy prune --dry-run", pct, r.opts.diskThreshold)
 	case osfacts.VerdictWarn:
 		r.say("WARNING: VM disk %s at %d%% — old sha-tagged deploy images pile up (~1GB each)", deployDiskPath, pct)
 		r.say("WARNING: reclaim space: kampodra deploy prune --dry-run (this deploy continues)")
 	case osfacts.VerdictUnknown:
-		if phase == "gate" && r.opts.requireDisk != "" {
-			return fmt.Errorf("cannot read VM disk usage (df %s) — --require-disk is fail-closed", deployDiskPath)
+		if phase == "gate" && r.opts.diskThreshold != "" {
+			return fmt.Errorf("cannot read VM disk usage (df %s) — --disk-threshold is fail-closed", deployDiskPath)
 		}
 		if phase == "gate" {
 			r.say("disk usage unknown (df unreadable) — continuing")

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,5 +194,37 @@ func TestRunOCIUsesLookPathAndCapturesStderr(t *testing.T) {
 	}
 	if _, err := RunOCI(context.Background(), []string{"fail"}); err == nil || !strings.Contains(err.Error(), "NotAuthorized") {
 		t.Errorf("RunOCI error = %v, want stderr attached", err)
+	}
+}
+
+func TestParseCloudAuthLenient(t *testing.T) {
+	if got := ParseCloudAuth(nil); got != (CloudAuth{}) {
+		t.Errorf("nil = %+v, want zero", got)
+	}
+	if got := ParseCloudAuth(json.RawMessage(`{broken`)); got != (CloudAuth{}) {
+		t.Errorf("corrupt = %+v, want zero (fail-open to native auth)", got)
+	}
+	got := ParseCloudAuth(json.RawMessage(`{"profile":"ten","compartment":"ocid1.x","instancePrincipal":true}`))
+	if got.Profile != "ten" || got.Compartment != "ocid1.x" || !got.InstancePrincipal {
+		t.Errorf("parsed = %+v", got)
+	}
+}
+
+func TestWithProfileOmitsUnset(t *testing.T) {
+	got := ObjectListArgs("bkt", "", "", false)
+	for _, a := range got {
+		if a == "--profile" {
+			t.Errorf("empty profile must not reach the oci CLI: %v", got)
+		}
+	}
+	got = ObjectListArgs("bkt", "", "myprof", false)
+	found := false
+	for i, a := range got {
+		if a == "--profile" && i+1 < len(got) && got[i+1] == "myprof" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("explicit profile missing: %v", got)
 	}
 }
