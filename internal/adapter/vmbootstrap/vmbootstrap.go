@@ -124,6 +124,15 @@ net.ipv4.ip_unprivileged_port_start=80
 `
 }
 
+// ClearEnvArgs is the CLEAR env every app container gets ON TOP of the env
+// file (envClearKeys: NODE_ENV, PORT — the env file deliberately omits
+// them). ONE source for BOTH the init units and the rolling shadow run:
+// a shadow without these probes the app's compiled default port, not the
+// published one (2026-10-09 live fire).
+func ClearEnvArgs(port string) string {
+	return "-e NODE_ENV=production -e PORT=" + port
+}
+
 // RenderInitDAPI ports the api OpenRC unit: supervise-daemon
 // around a FOREGROUND `podman run` (Alpine has no systemd; respawns are
 // offline-safe against the local :latest).
@@ -152,7 +161,7 @@ supervisor=supervise-daemon
 command="/usr/bin/podman"
 command_args="run --rm --name %[4]s --network %[7]s -p %[6]s:%[6]s"
 command_args="$command_args -v %[3]s:%[3]s"
-command_args="$command_args -e NODE_ENV=production -e PORT=%[6]s"
+command_args=" %[8]s"
 command_args="$command_args --env-file %[2]s %[5]s"
 
 # Respawn forever: a crash loop self-heals at the next deploy's restart;
@@ -162,7 +171,7 @@ respawn_max=0
 
 # podman run's OWN stderr (missing image, name conflicts, netavark failures);
 # container stdout/stderr go to `+"`podman logs %[4]s`"+`.
-supervise_daemon_args="--stderr %[8]s"
+supervise_daemon_args="--stderr %[9]s"
 
 depend() {
 	need net
@@ -182,7 +191,7 @@ stop_post() {
 	podman stop --time 10 %[4]s >/dev/null 2>&1 || true
 	podman rm -f --time 0 %[4]s >/dev/null 2>&1 || true
 }
-`, n.Registry, n.EnvFile, n.DataDir, n.Container, n.ImageRef, n.Port, n.Network, APIStderrLogPath)
+`, n.Registry, n.EnvFile, n.DataDir, n.Container, n.ImageRef, n.Port, n.Network, ClearEnvArgs(n.Port), APIStderrLogPath)
 }
 
 // RenderInitDProxy ports the kamal-proxy OpenRC unit: the TLS edge with a
@@ -386,7 +395,7 @@ After=network-online.target
 # cleans CLEAN exits) — sweep any leftover before the supervised run
 # (the "-" prefix tolerates "nothing to remove").
 ExecStartPre=-/usr/bin/podman rm -f %[3]s
-ExecStart=/usr/bin/podman run --rm --name %[3]s --network %[6]s -p %[5]s:%[5]s -v %[2]s:%[2]s -e NODE_ENV=production -e PORT=%[5]s --env-file %[1]s %[4]s
+ExecStart=/usr/bin/podman run --rm --name %[3]s --network %[6]s -p %[5]s:%[5]s -v %[2]s:%[2]s %[7]s --env-file %[1]s %[4]s
 
 # Respawn forever: a crash loop self-heals at the next deploy's restart; the
 # 10s delay bounds log noise.
@@ -400,7 +409,7 @@ ExecStopPost=-/usr/bin/podman rm -f --time 0 %[3]s
 
 [Install]
 WantedBy=multi-user.target
-`, n.EnvFile, n.DataDir, n.Container, n.ImageRef, n.Port, n.Network)
+`, n.EnvFile, n.DataDir, n.Container, n.ImageRef, n.Port, n.Network, ClearEnvArgs(n.Port))
 }
 
 // RenderProxyUnit is the Ubuntu sibling of RenderInitDProxy: the TLS edge
