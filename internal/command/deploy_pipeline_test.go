@@ -578,8 +578,12 @@ func TestDeployPipelineSidecarsStreamed(t *testing.T) {
 
 	// build: same platform + identity stamp as the primary, own dockerfile,
 	// :latest tag (sidecars are not sha-versioned — rollback never needs
-	// an old sidecar).
-	mustContain(t, inv, "podman build --platform linux/arm64 -f deploy/backup.Dockerfile --build-arg GIT_SHA="+pipelineVer+" -t "+sidecarTag+" "+reporoot)
+	// an old sidecar). CONTEXT = the sidecar dockerfile's own directory —
+	// the RUNBOOK contract (`podman build -f apps/api-go/Dockerfile.backup
+	// apps/api-go`); the 2026-10-09 live fire caught repo-root context
+	// failing on the first real sidecar Dockerfile (COPY go.mod go.sum).
+	sidecarCtx := filepath.Dir(filepath.Join(reporoot, "deploy/backup.Dockerfile"))
+	mustContain(t, inv, "podman build --platform linux/arm64 -f deploy/backup.Dockerfile --build-arg GIT_SHA="+pipelineVer+" -t "+sidecarTag+" "+sidecarCtx)
 	// stream: the same save|load pipe as the primary…
 	mustContain(t, inv, "podman save --format docker-archive "+sidecarTag)
 	// …and a fail-closed existence check on the VM after the load.
