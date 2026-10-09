@@ -1,22 +1,15 @@
 # kampodra — Debts & Backlog
 
 Living ledger. Check items off only with evidence (tests green, live-fire
-proof where noted). Last updated: 2026-10-09 (cloud-auth redesign + small
-batch done; see cd61fcf → wave-3 commit).
+proof where noted). Last updated: 2026-10-09 (Ubuntu 24.04 guest support,
+7fc307e; repo pushed to GitHub).
 
 ## Status snapshot
 
 - Version: `0.7.0-beta.2` · 14 packages green · CI matrix (4 platforms)
 - Deploy proven live end-to-end: two real deploys + a full fresh-VM
-  wipe-and-rebuild (21.5 min, `d54c3e1` live-fire fixes)
-- Neutral defaults; project config via repo `kampodra.json` + profiles +
-  `KAMPODRA_*` env (see `config print` for provenance)
-
-## Status snapshot
-
-- Version: `0.7.0-beta.2` · 14 packages green · CI matrix (4 platforms)
-- Deploy proven live end-to-end: two real deploys + a full fresh-VM
-  wipe-and-rebuild (21.5 min, `d54c3e1` live-fire fixes)
+  wipe-and-rebuild (21.5 min, `d54c3e1` live-fire fixes) — Alpine path;
+  the Ubuntu 24.04 provisioner is fixture-proven only (live drill open)
 - Neutral defaults; project config via repo `kampodra.json` + profiles +
   `KAMPODRA_*` env (see `config print` for provenance)
 
@@ -97,10 +90,11 @@ batch done; see cd61fcf → wave-3 commit).
 
 ### Release hygiene
 
-- [ ] **Push to GitHub + publish to npm** — `make cross-compile && git tag
-      v<version> && make publish` (publishes platform packages first, then
-      root; needs npm auth/OTP). First publish claims the `@kampodra`
-      scope — verify it's free.
+- [ ] **Publish to npm** — `make cross-compile && git tag v<version> &&
+      make publish` (publishes platform packages first, then root; needs
+      npm auth/OTP). First publish claims the `@kampodra` scope — verify
+      it's free. (Repo is on GitHub since 2026-10-09:
+      github.com/talha7k/kampodra, main pushed.)
 - [x] **Version stamping** — main.version stamped from the npm package
       version (`-X main.version=$(VERSION)` in cross-compile), plus a
       `make release-check` gate wired into `make publish` asserting the
