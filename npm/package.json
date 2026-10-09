@@ -1,6 +1,6 @@
 {
   "name": "kampodra",
-  "version": "0.7.0-beta.2",
+  "version": "0.7.0-beta.3",
   "description": "Registry-free deployment CLI for single-VM container stacks over SSH (Podman + kamal-proxy)",
   "license": "AGPL-3.0",
   "type": "module",
