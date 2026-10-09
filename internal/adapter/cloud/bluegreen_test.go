@@ -189,3 +189,21 @@ func TestCheckProviderDefaultsAndRejects(t *testing.T) {
 		t.Errorf("unknown provider must fail naming itself and the supported set: %v", err)
 	}
 }
+
+// TestReservedIPListArgsPinsQueryTriple pins the args↔parser contract:
+// ParseReservedIPRow consumes the raw TSV triple
+// (id, ip-address, private-ip-id with a `-` null default), so the args
+// builder MUST pass the --query that produces it + --raw-output. The
+// 2026-10-09 live fire caught the drift — no query meant full JSON, and
+// the parser ate `("data": ([)` as the "row".
+func TestReservedIPListArgsPinsQueryTriple(t *testing.T) {
+	args := ReservedIPListArgs(CloudAuth{}, "ocid1.compartment.x")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--query") || !strings.Contains(joined, "--raw-output") {
+		t.Fatalf("ReservedIPListArgs must pin --query + --raw-output (ParseReservedIPRow consumes the TSV triple): %v", args)
+	}
+	wantQuery := "data[0] | [\"id\", \"ip-address\", \"private-ip-id\" || `-`] | join(' ', @)"
+	if !contains(args, wantQuery) {
+		t.Errorf("the query must be the exact proven triple (null private-ip-id defaults to '-'): got %v", args)
+	}
+}

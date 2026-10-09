@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/talha7k/kampodra/main/docs/kampodra.schema.json",
   "title": "kampodra.json",
-  "description": "kampodra repo manifest: project naming only. Committed per-project, discovered upward (nearest file wins), parsed strictly — unknown keys fail closed. Hosts, ssh keys, and secret material never belong here (those live in ~/.kampodra profiles, 0600).",
+  "description": "kampodra repo manifest: project naming only. Committed per-project, discovered upward (nearest file wins), parsed strictly \u2014 unknown keys fail closed. Hosts, ssh keys, and secret material never belong here (those live in ~/.kampodra profiles, 0600).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -14,9 +14,14 @@
       "type": "string",
       "description": "The app container/service name (deploy target, restart, logs, kamal-proxy target)."
     },
+    "pairInstancePrefix": {
+      "type": "string",
+      "default": "",
+      "description": "Blue/green pair instance display-name prefix. Empty = derive from container (<container>-blue/<container>-green). Set it when the estate's existing instances predate container-derived naming (e.g. esellar-green while container is esellar-api) so status/provision/flip/rollback resolve the running sibling instead of seeing the pair as not-provisioned."
+    },
     "images": {
       "type": "object",
-      "description": "Secondary (sidecar) images deploy builds+streams+tags alongside the primary app image — no manual podman build/save/load.",
+      "description": "Secondary (sidecar) images deploy builds+streams+tags alongside the primary app image \u2014 no manual podman build/save/load.",
       "properties": {
         "sidecars": {
           "type": "array",
@@ -24,12 +29,15 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["name", "dockerfile"],
+            "required": [
+              "name",
+              "dockerfile"
+            ],
             "properties": {
               "name": {
                 "type": "string",
                 "pattern": "^[a-z0-9][a-z0-9_-]*$",
-                "description": "Sidecar name — the image ref derives as <imagePrefix>-<name> (lowercase alnum, dash, underscore)."
+                "description": "Sidecar name \u2014 the image ref derives as <imagePrefix>-<name> (lowercase alnum, dash, underscore)."
               },
               "dockerfile": {
                 "type": "string",
@@ -70,7 +78,9 @@
     },
     "services": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Service roll call for init-aware stop/start/status."
     },
     "imagePrefix": {
@@ -95,7 +105,9 @@
     },
     "envClearKeys": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Env keys cleared from the service unit env."
     },
     "dockerfile": {

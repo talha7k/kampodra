@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **bluegreen live-fire fixes (2026-10-09 session)** — two real-drill
+  findings: (1) `ReservedIPListArgs` never passed the `--query` its
+  parser documents, so `bluegreen status/init/flip/rollback` ate full
+  JSON as a TSV row (`reserved IP : "data": ({)`) and saw NO reserved
+  IP — the args now pin the proven JMESPath triple
+  (`data[0] | ["id","ip-address","private-ip-id" || `-`] | join(' ', @)`
+  + `--raw-output`), test-pinned. (2) Legacy estates: pair instance
+  display names are now `<pairInstancePrefix>-<color>` via a new
+  manifest/profile/env field `pairInstancePrefix` (default: fall back
+  to `container`) — a running sibling named `esellar-green` (predating
+  container-derived naming) resolves as the provision template /
+  rollback holder instead of "not provisioned".
 - **Lint-debt burn-down complete** — every function is now under the
   gocognit 25 / gocyclo 20 bar; the grandfather allowlist is DELETED
   from `.golangci.yml` (the gate fails on anything above the bar, new

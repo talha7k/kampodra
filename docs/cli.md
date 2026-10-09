@@ -516,6 +516,7 @@ built-in defaults. Each layer wins only where it provides a value.
 | variable | used by | meaning |
 |---|---|---|
 | `KAMPODRA_HOST` | all host-aware commands | target VM when no `--host`/profile host |
+| `KAMPODRA_PAIR_INSTANCE_PREFIX` | `bluegreen` | pair instance display-name prefix (empty = container-derived) |
 | `KAMPODRA_SSH_KEY` | all host-aware commands | identity file when no `--ssh-key`/profile key |
 | `KAMPODRA_PROFILE` | all host-aware commands | profile when no `--profile` (beats `defaultProfile`) |
 | `KAMPODRA_BUCKET` | `backup` (all subcommands) | the project ladder's canonical bucket override — beats the project config's `bucket` |
@@ -544,6 +545,7 @@ key is accepted and ignored — point it at
 | field | type | built-in default | `KAMPODRA_*` env override |
 |---|---|---|---|
 | `container` | string | `app` | `KAMPODRA_CONTAINER` |
+| `pairInstancePrefix` | string | `""` (falls back to `container`) | `KAMPODRA_PAIR_INSTANCE_PREFIX` |
 | `shadowSuffix` | string | `-shadow` | `KAMPODRA_SHADOW_SUFFIX` |
 | `envFile` | string | `/etc/kampodra/env` | `KAMPODRA_ENV_FILE` |
 | `dataDir` | string | `/data` | `KAMPODRA_DATA_DIR` |
@@ -629,6 +631,11 @@ kampodra bluegreen rollback                # unassign to DORMANT + holder guest 
 
 - `status` prints the pair view (reserved IP + holder, both instances with
   AD and per-color health); read-only.
+- Pair instance display names are `<pairInstancePrefix>-blue|green` — the
+  prefix falls back to `container`. Estates whose running instance predates
+  container-derived naming (e.g. `esellar-green` with `container:
+  esellar-api`) set `pairInstancePrefix` so the machinery resolves the
+  RUNNING sibling as the provision template / rollback holder.
 - `init` creates the DORMANT reserved IP (idempotent — exits 0 when it
   exists).
 - `provision <color>` launches the sibling from the other color's AD +
