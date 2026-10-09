@@ -20,7 +20,7 @@ import (
 
 // rootIndex is the vercel-style bare-invocation index: one screen listing
 // every implemented command, grouped by job.
-const rootIndex = `kampodra — kamal-alternative CLI for Alpine + Podman deploys, built on kamal-proxy
+const rootIndex = `kampodra — kamal-alternative CLI for Alpine/Ubuntu + Podman deploys, built on kamal-proxy
 
 Usage: kampodra <command> [args...]
 
@@ -41,7 +41,7 @@ DEPLOY LIFECYCLE
 
 INFRA
   vm-wipe        kampodra-native teardown: stop+disable services, remove project containers, prune images, delete env/stamps/state (--yes gated; --keep-data)
-  vm-prepare     first-run bootstrap of a bare Alpine host: gates, sshd hardening, podman stack, OpenRC services, kamal-proxy edge, anchor watcher; --pull-images; --ansible <playbook>
+  vm-prepare     first-run bootstrap of a bare VM host (guest OS auto-detected: Alpine or Ubuntu 24.04): gates, sshd hardening, podman stack, init services (OpenRC or systemd), kamal-proxy edge, anchor watcher; --ansible <playbook>
   status         live health + deployment count + VM disk/image/service state + metrics (--verbose); --all-profiles renders every profile
 
 DNS
@@ -135,7 +135,7 @@ func NewRoot(version string, deps Deps) *cobra.Command {
 	d := deps.withDefaults()
 	root := &cobra.Command{
 		Use:           "kampodra",
-		Short:         "kamal-alternative CLI for Alpine + Podman deploys, built on kamal-proxy",
+		Short:         "kamal-alternative CLI for Alpine/Ubuntu + Podman deploys, built on kamal-proxy",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		Version:       version,

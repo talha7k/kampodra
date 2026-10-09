@@ -39,7 +39,7 @@ func TestRootHelpFlagPrintsIndex(t *testing.T) {
 
 func assertIndexShape(t *testing.T, out string) {
 	t.Helper()
-	if !strings.Contains(out, "kampodra — kamal-alternative CLI for Alpine + Podman deploys, built on kamal-proxy") {
+	if !strings.Contains(out, "kampodra — kamal-alternative CLI for Alpine/Ubuntu + Podman deploys, built on kamal-proxy") {
 		t.Errorf("index lost the mission line:\n%s", out)
 	}
 	// Groups in index order.

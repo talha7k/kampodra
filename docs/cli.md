@@ -613,6 +613,7 @@ kampodra bluegreen rollback                # unassign to DORMANT + holder guest 
 |---|---|---|---|
 | `--host` / `--profile` / `--ssh-key` | string | `""` | target flags (ssh legs + project naming) |
 | `--image-id` | string | `""` | `provision`: launch this exact image (skips route detection) |
+| `--os` | string | `alpine` | `provision`: guest OS of the golden image (`alpine`\|`ubuntu` — ubuntu = 24.04 LTS); sets the golden-image lookup prefix (`<container>-alpine` / `<container>-ubuntu-24.04`) |
 | `--qcow2` | string | `""` | `provision` inject route: golden qcow2 path (`ALPINE_QCOW2` env, else error) |
 | `--platform-key` | string | `""` | `provision` inject route: ssh public key FILE for the platform-image first boot (`OPS_SSH_PUBKEY` env, else error) |
 | `--platform-user` | string | `""` | `provision` inject route: platform-image ssh user (`PLATFORM_SSH_USER` env, default `ubuntu`) |
@@ -624,11 +625,13 @@ kampodra bluegreen rollback                # unassign to DORMANT + holder guest 
 - `init` creates the DORMANT reserved IP (idempotent — exits 0 when it
   exists).
 - `provision <color>` launches the sibling from the other color's AD +
-  subnet: the newest `<container>-alpine*` custom image with UEFI_64
+  subnet: the newest `<container>-alpine*` (default `--os alpine`) or
+  `<container>-ubuntu-24.04*` (`--os ubuntu`) custom image with UEFI_64
   firmware goes the native route; otherwise the template's LIVE image-id
   launches a platform instance and the golden qcow2 is injected onto its
   boot disk (qemu-img convert → gzip → ssh `gunzip | sudo dd`, reboot,
-  `/etc/alpine-release` verify). Ends with `vm-prepare` next steps.
+  per-OS boot verify: `/etc/alpine-release` 3.x for alpine, `ID=ubuntu`
+  in `/etc/os-release` for ubuntu). Ends with `vm-prepare` next steps.
 - `flip --to <color>` is ACME-first and health-gated: health check on the
   target's own IP → anchor conf on the target guest (the
   `kampodra-anchor` watcher configures the address) → OCI assigns the
@@ -659,8 +662,9 @@ kampodra image-import --image <qcow2> [--bucket <name>] [--name-prefix <p>] [--c
 | flag | type | default | description |
 |---|---|---|---|
 | `--image` | string | `""` | **required**; qcow2 file to import |
+| `--os` | string | `alpine` | guest OS of the qcow2 (`alpine`\|`ubuntu` — ubuntu = 24.04 LTS); drives the import OS metadata (`Linux` / `Alpine (self-supported)` vs `Canonical Ubuntu` / `Ubuntu 24.04`) |
 | `--bucket` | string | `""` | staging bucket (`KAMPODRA_IMPORT_BUCKET` env, else `<container>-image-import`) |
-| `--name-prefix` | string | `""` | image display-name prefix (default `<container>-alpine` — provision looks up this prefix) |
+| `--name-prefix` | string | `""` | image display-name prefix (default `<container>-alpine`, or `<container>-ubuntu-24.04` with `--os ubuntu` — provision looks up this prefix) |
 | `--compartment` | string | `""` | compartment name or ocid (cloud block or `OCI_COMPARTMENT` env) |
 | `--keep-object` | bool | `false` | keep the staged qcow2 object after a successful import |
 

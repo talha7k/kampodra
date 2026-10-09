@@ -2,15 +2,31 @@
 
 ## Unreleased
 
+- **Ubuntu 24.04 guest support** — a second guest OS arrives as the
+  sibling provisioner the seams promised. `image-import --os` and
+  `provision --os` (default `alpine`; `ubuntu` = 24.04 LTS) drive the
+  OCI import metadata (`Canonical Ubuntu` / `Ubuntu 24.04`), the
+  golden-image lookup prefix (`<container>-ubuntu-24.04`; explicit
+  `--name-prefix`/`--image-id` still win), and the injected-boot verify
+  (`osReleaseCheck`: alpine-release vs `/etc/os-release` ID — one
+  verify path, only cmd+pattern vary). `vm-prepare` auto-detects the
+  guest from `/etc/os-release` and routes: the Alpine sequence is
+  byte-identical (differential-proven); Ubuntu 24.04 gets the sibling
+  flow (systemd-pid1 gate, apt podman stack, same managed-file paths,
+  systemd units behind the same Naming surface, api deferred to first
+  deploy exactly like Alpine); unknown guests fail naming the detected
+  ID. Deploy-side init-awareness (rc-service vs systemctl) already
+  existed — an Ubuntu guest works end-to-end.
 - **Cloud `provider` field**: the profile `cloud` block takes
   `"provider"` (default `"oci"`; unknown values fail naming the
   supported set) — the extension point a second cloud slots into
   without renaming anything. Shared `cloud.ResolveCompartment` seam
   (dns/bluegreen/image-import resolve through it); all `ocid1.*` shape
   knowledge centralized behind `cloud.IsOCID`.
-- **Declared OS contract**: `vm-prepare` fails fast on non-Alpine
-  guests (`GateAlpineOS` runs before every other gate) — a second guest
-  OS arrives as a sibling provisioner, documented in the package doc.
+- **Declared OS contract**: `vm-prepare` detects the guest OS from
+  `/etc/os-release` and dispatches to a sibling provisioner (Alpine,
+  Ubuntu 24.04) — foreign guests fail fast naming the detected ID; the
+  vmbootstrap package doc declares the sibling-implementation rule.
 - **`bluegreen`** (`status | init | provision | flip | rollback`) —
   OCI reserved-IP pair cutovers, ACME-first with auto-rollback,
   native-or-inject provisioning, neutral `<container>-<color>` naming.

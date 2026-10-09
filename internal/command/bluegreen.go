@@ -117,6 +117,7 @@ func newBluegreenCommand(d Deps) *cobra.Command {
 	// them — cobra only inherits persistent flags).
 	pf := cmd.PersistentFlags()
 	pf.String("image-id", "", "provision: launch this exact image (skips the native/inject route detection)")
+	pf.String("os", "alpine", "provision: guest OS of the golden image (alpine|ubuntu)")
 	pf.String("qcow2", "", "provision inject route: golden qcow2 path (ALPINE_QCOW2 env, else error)")
 	pf.String("platform-key", "", "provision inject route: ssh public key FILE for the platform-image first boot (OPS_SSH_PUBKEY env, else error)")
 	pf.String("platform-user", "", "provision inject route: platform-image ssh user (PLATFORM_SSH_USER env, default ubuntu)")
@@ -138,11 +139,29 @@ var (
 	bgIPRe    = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$`)
 )
 
-// goldenImagePrefix is the golden-OS-image display-name prefix, derived
-// from the project container so provision's lookup and image-import's
-// naming can never drift apart.
-func goldenImagePrefix(container string) string {
-	return container + "-alpine"
+// checkGuestOS fails closed on an unknown --os value, naming the offender
+// and the supported set (mirror of cloud.CheckProvider's style).
+func checkGuestOS(guestOS string) error {
+	for _, s := range cloud.SupportedImportOSes() {
+		if guestOS == s {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported --os %q (supported: %s)", guestOS, strings.Join(cloud.SupportedImportOSes(), ", "))
+}
+
+// goldenImagePrefix is the golden-OS-image display-name prefix for the
+// guest os, derived from the project container so provision's lookup and
+// image-import's naming can never drift apart: alpine ->
+// <container>-alpine, ubuntu -> <container>-ubuntu-24.04.
+func goldenImagePrefix(container, guestOS string) (string, error) {
+	if err := checkGuestOS(guestOS); err != nil {
+		return "", err
+	}
+	if guestOS == "ubuntu" {
+		return container + "-ubuntu-24.04", nil
+	}
+	return container + "-alpine", nil
 }
 
 // bgPair is the resolved pair context: OCI compartment + auth, and the
@@ -344,6 +363,10 @@ func runBluegreenProvision(d Deps, c *cobra.Command, color string) error {
 	if !bgColorRe.MatchString(color) {
 		return fmt.Errorf("usage: kampodra bluegreen provision <blue|green>")
 	}
+	guestOS := flagString(c, "os")
+	if err := checkGuestOS(guestOS); err != nil {
+		return err
+	}
 	target, err := resolveAnyTarget(d, c)
 	if err != nil {
 		return err
@@ -361,7 +384,7 @@ func runBluegreenProvision(d Deps, c *cobra.Command, color string) error {
 	if err != nil {
 		return err
 	}
-	image, mode, sshKeyFile, err := bgProvisionImage(ctx, d, c, pair, tmpl)
+	image, mode, sshKeyFile, err := bgProvisionImage(ctx, d, c, pair, tmpl, guestOS)
 	if err != nil {
 		return err
 	}
@@ -400,7 +423,7 @@ func runBluegreenProvision(d Deps, c *cobra.Command, color string) error {
 	if err != nil {
 		return err
 	}
-	if err := bgInjectAlpine(d, ctx, pair.container, color, newRow.PublicIP, qcow2, sshKeyFile, platformUser); err != nil {
+	if err := bgInjectGuest(d, ctx, pair.container, color, newRow.PublicIP, qcow2, sshKeyFile, platformUser, guestOS); err != nil {
 		return err
 	}
 	return nil
@@ -432,20 +455,25 @@ func bgProvisionTemplate(ctx context.Context, pair bgPair, color string) (cloud.
 }
 
 // bgProvisionImage selects the launch image + mode. Explicit --image-id
-// wins; else the newest <container>-alpine* custom image with UEFI_64
-// firmware (native); else the template's LIVE image-id + injection (the
+// wins; else the newest <os-prefix>* custom image with UEFI_64 firmware
+// (native; <os-prefix> = goldenImagePrefix(container, os) — alpine or
+// ubuntu-24.04); else the template's LIVE image-id + injection (the
 // only sanctioned A1 route — imports pin BIOS, which A1 rejects at
 // launch).
-func bgProvisionImage(ctx context.Context, d Deps, c *cobra.Command, pair bgPair, tmpl cloud.BGInstance) (image, mode, sshKeyFile string, err error) {
+func bgProvisionImage(ctx context.Context, d Deps, c *cobra.Command, pair bgPair, tmpl cloud.BGInstance, guestOS string) (image, mode, sshKeyFile string, err error) {
 	mode = "native"
 	if image = flagString(c, "image-id"); image != "" {
 		return image, mode, "", nil
+	}
+	prefix, err := goldenImagePrefix(pair.container, guestOS)
+	if err != nil {
+		return "", "", "", err
 	}
 	imgOut, err := cloud.RunOCI(ctx, cloud.ImageListArgs(pair.auth, pair.compOCID))
 	if err != nil {
 		return "", "", "", err
 	}
-	if newest, ok := cloud.NewestPrefixedImage(imgOut, goldenImagePrefix(pair.container)); ok {
+	if newest, ok := cloud.NewestPrefixedImage(imgOut, prefix); ok {
 		fwOut, err := cloud.RunOCI(ctx, cloud.ImageGetArgs(pair.auth, newest))
 		if err != nil {
 			return "", "", "", err
@@ -454,7 +482,7 @@ func bgProvisionImage(ctx context.Context, d Deps, c *cobra.Command, pair bgPair
 			return newest, mode, "", nil
 		} else {
 			fmt.Fprintf(d.Stdout, "note: newest %s* custom image is firmware=%s — A1 rejects BIOS-pinned imports, using the platform-image + injection route\n",
-				goldenImagePrefix(pair.container), orUnknown(fw))
+				prefix, orUnknown(fw))
 		}
 	}
 	trec, err := cloud.RunOCI(ctx, cloud.InstanceGetArgs(pair.auth, tmpl.OCID))
@@ -528,14 +556,74 @@ func bgWaitRunning(d Deps, ctx context.Context, pair bgPair, iid string) error {
 	return fmt.Errorf("instance never reached RUNNING — check the console")
 }
 
+// stageGoldenDisk stages the golden qcow2 as a gzipped raw image
+// (qemu-img convert -> gzip), returning the archive path. It owns the
+// raw scratch file (removed on return); the CALLER owns the .gz — it is
+// consumed by the disk stream and removed after the verify. Missing
+// input and a missing qemu-img fail closed.
+func stageGoldenDisk(d Deps, ctx context.Context, qcow2 string) (string, error) {
+	if _, err := os.Stat(qcow2); err != nil {
+		return "", fmt.Errorf("golden qcow2 not found: %s", qcow2)
+	}
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		return "", fmt.Errorf("qemu-img not found in PATH — required for the qcow2 -> raw conversion")
+	}
+	raw, err := os.CreateTemp("", "kampodra-inject-raw.*")
+	if err != nil {
+		return "", err
+	}
+	rawPath := raw.Name()
+	raw.Close()
+	defer os.Remove(rawPath)
+	fmt.Fprintf(d.Stdout, "inject: converting %s -> raw…\n", qcow2)
+	conv := exec.CommandContext(ctx, "qemu-img", "convert", "-O", "raw", qcow2, rawPath)
+	if out, err := conv.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("qemu-img convert failed: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	gzPath := rawPath + ".gz"
+	gzFile, err := os.Create(gzPath)
+	if err != nil {
+		return "", err
+	}
+	rawIn, err := os.Open(rawPath)
+	if err != nil {
+		gzFile.Close()
+		return "", err
+	}
+	gzw := gzip.NewWriter(gzFile)
+	if _, err := io.Copy(gzw, rawIn); err != nil {
+		_ = gzw.Close()
+		rawIn.Close()
+		gzFile.Close()
+		return "", fmt.Errorf("gzip staging failed: %w", err)
+	}
+	// The writer Close flushes — its error is real (a failed flush would
+	// stream a corrupt archive), unlike the plain file closes below.
+	if err := gzw.Close(); err != nil {
+		rawIn.Close()
+		gzFile.Close()
+		return "", fmt.Errorf("gzip flush failed: %w", err)
+	}
+	rawIn.Close()
+	gzFile.Close()
+	return gzPath, nil
+}
+
 // bgInjectAlpine streams the golden disk onto a RUNNING platform-image
 // instance's boot volume (qcow2 -> raw locally, gzip | ssh gunzip | dd
-// over the ssh-detected boot disk, conv=fsync), reboots, and verifies a
-// real Alpine boot via /etc/alpine-release. The two boots share one IP
-// with two different host keys: a throwaway known-hosts file keeps the
-// operator's known_hosts untouched; the instance record keeps the
-// platform image metadata.
-func bgInjectAlpine(d Deps, ctx context.Context, container, color, ip, qcow2, sshKeyFile, platformUser string) error {
+// over the ssh-detected boot disk, conv=fsync), reboots, and verifies the
+// REAL golden guest booted via the per-OS release check (osReleaseCheck:
+// /etc/alpine-release 3.x for alpine, /etc/os-release ID=ubuntu for
+// ubuntu). The two boots share one IP with two different host keys: a
+// throwaway known-hosts file keeps the operator's known_hosts untouched;
+// the instance record keeps the platform image metadata.
+func bgInjectGuest(d Deps, ctx context.Context, container, color, ip, qcow2, sshKeyFile, platformUser, guestOS string) error {
+	osName := osDisplayName(guestOS)
+	verifyCmd, verifyPattern, err := osReleaseCheck(guestOS)
+	if err != nil {
+		return err
+	}
+	verifyRe := regexp.MustCompile(verifyPattern)
 	kh, err := os.CreateTemp("", "kampodra-inject-kh.*")
 	if err != nil {
 		return err
@@ -558,50 +646,10 @@ func bgInjectAlpine(d Deps, ctx context.Context, container, color, ip, qcow2, ss
 	if !probed {
 		return fmt.Errorf("ssh never came up on %s (%s) — check the instance console connection", ip, platformUser)
 	}
-	raw, err := os.CreateTemp("", "kampodra-inject-raw.*")
+	gzPath, err := stageGoldenDisk(d, ctx, qcow2)
 	if err != nil {
 		return err
 	}
-	rawPath := raw.Name()
-	raw.Close()
-	defer os.Remove(rawPath)
-	if _, err := os.Stat(qcow2); err != nil {
-		return fmt.Errorf("golden qcow2 not found: %s", qcow2)
-	}
-	if _, err := exec.LookPath("qemu-img"); err != nil {
-		return fmt.Errorf("qemu-img not found in PATH — required for the qcow2 -> raw conversion")
-	}
-	fmt.Fprintf(d.Stdout, "inject: converting %s -> raw…\n", qcow2)
-	conv := exec.CommandContext(ctx, "qemu-img", "convert", "-O", "raw", qcow2, rawPath)
-	if out, err := conv.CombinedOutput(); err != nil {
-		return fmt.Errorf("qemu-img convert failed: %v (%s)", err, strings.TrimSpace(string(out)))
-	}
-	gzPath := rawPath + ".gz"
-	gzFile, err := os.Create(gzPath)
-	if err != nil {
-		return err
-	}
-	rawIn, err := os.Open(rawPath)
-	if err != nil {
-		gzFile.Close()
-		return err
-	}
-	gzw := gzip.NewWriter(gzFile)
-	if _, err := io.Copy(gzw, rawIn); err != nil {
-		_ = gzw.Close()
-		rawIn.Close()
-		gzFile.Close()
-		return fmt.Errorf("gzip staging failed: %w", err)
-	}
-	// The writer Close flushes — its error is real (a failed flush would
-	// stream a corrupt archive), unlike the plain file closes below.
-	if err := gzw.Close(); err != nil {
-		rawIn.Close()
-		gzFile.Close()
-		return fmt.Errorf("gzip flush failed: %w", err)
-	}
-	rawIn.Close()
-	gzFile.Close()
 	defer os.Remove(gzPath)
 	fmt.Fprintf(d.Stdout, "inject: streaming golden disk -> %s boot volume (gunzip | dd, conv=fsync)…\n", ip)
 	gzIn, err := os.Open(gzPath)
@@ -613,7 +661,6 @@ func bgInjectAlpine(d Deps, ctx context.Context, container, color, ip, qcow2, ss
 	if _, err := d.Runner.RunWithStdin(ctx, plat(), dd, gzIn); err != nil {
 		return fmt.Errorf("disk stream to %s failed — instance left UNBOOTABLE-ish (platform image partially overwritten): terminate it, do NOT flip to %s: %w", ip, color, err)
 	}
-	os.Remove(rawPath)
 	// reboot -f kills the platform sshd WITHOUT closing TCP: bound the dead
 	// session instead of hanging on it, and REQUIRE success — a wedged
 	// (un-rebooted) guest keeps answering ssh and would false-verify below.
@@ -621,34 +668,59 @@ func bgInjectAlpine(d Deps, ctx context.Context, container, color, ip, qcow2, ss
 	rbCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	if _, err := d.Runner.Run(rbCtx, plat(), "sudo reboot -f"); err != nil {
-		fmt.Fprintf(d.Stdout, "inject: reboot call ended (%v) — continuing to the Alpine verify\n", err)
+		fmt.Fprintf(d.Stdout, "inject: reboot call ended (%v) — continuing to the %s verify\n", err, osName)
 	}
-	// The injected Alpine boots a NEW host key under the SAME ip — scrub
-	// the phase file so the probes below accept-new fresh.
+	// The injected golden guest boots a NEW host key under the SAME ip —
+	// scrub the phase file so the probes below accept-new fresh.
 	os.WriteFile(khPath, nil, 0o600)
-	fmt.Fprintf(d.Stdout, "inject: waiting for Alpine ssh (root@%s)…\n", ip)
-	alpine := transport.HostSpec{Host: "root@" + ip, AcceptNewHostKey: true, KnownHostsFile: khPath}
+	fmt.Fprintf(d.Stdout, "inject: waiting for %s ssh (root@%s)…\n", osName, ip)
+	guest := transport.HostSpec{Host: "root@" + ip, AcceptNewHostKey: true, KnownHostsFile: khPath}
 	rel := ""
 	for i := 0; i < 60; i++ {
-		out, err := d.Runner.Run(ctx, alpine, "cat /etc/alpine-release")
+		out, err := d.Runner.Run(ctx, guest, verifyCmd)
 		// Verify the RELEASE STRING, not non-empty output: an un-rebooted
 		// platform guest's banner would satisfy a non-empty check.
-		if err == nil && bgReleaseRe.MatchString(strings.TrimSpace(out)) {
+		if err == nil && verifyRe.MatchString(strings.TrimSpace(out)) {
 			rel = strings.TrimSpace(out)
 			break
 		}
 		time.Sleep(5 * time.Second)
 	}
 	if rel == "" {
-		return fmt.Errorf("injection streamed but no ALPINE 3.x ssh on %s after reboot — check the serial console; terminate, do NOT flip to %s", ip, color)
+		return fmt.Errorf("injection streamed but no verified %s ssh on %s after reboot — check the serial console; terminate, do NOT flip to %s", osName, ip, color)
 	}
-	fmt.Fprintf(d.Stdout, "INJECTED %s-%s: Alpine %s boots on %s (instance image metadata stays the platform image)\n", container, color, rel, ip)
+	fmt.Fprintf(d.Stdout, "INJECTED %s-%s: %s %s boots on %s (instance image metadata stays the platform image)\n", container, color, osName, rel, ip)
 	fmt.Fprintf(d.Stdout, "next: kampodra vm-prepare --host root@%s -> kampodra deploy --host root@%s\n", ip, ip)
 	fmt.Fprintf(d.Stdout, "then 'kampodra bluegreen flip --to %s' (health-gated) once its app checks green.\n", color)
 	return nil
 }
 
+// bgReleaseRe is the alpine injected-boot proof: a real 3.x release
+// string (cat /etc/alpine-release).
 var bgReleaseRe = regexp.MustCompile(`^3\.[0-9]+\.[0-9]+`)
+
+// osDisplayName is the human name for a validated guest os (progress and
+// error strings): alpine -> Alpine, ubuntu -> Ubuntu.
+func osDisplayName(guestOS string) string {
+	if guestOS == "ubuntu" {
+		return "Ubuntu"
+	}
+	return "Alpine"
+}
+
+// osReleaseCheck returns the per-OS injected-boot verify: the remote
+// command reading the guest's OS identity, plus the pattern proving the
+// REAL golden guest booted (not the un-rebooted platform image). The
+// verify code path stays single — only cmd+pattern vary.
+func osReleaseCheck(guestOS string) (remoteCmd, pattern string, err error) {
+	if err := checkGuestOS(guestOS); err != nil {
+		return "", "", err
+	}
+	if guestOS == "ubuntu" {
+		return "cat /etc/os-release", `(?m)^ID=ubuntu$`, nil
+	}
+	return "cat /etc/alpine-release", bgReleaseRe.String(), nil
+}
 
 // runBluegreenFlip performs the ACME-first health-gated cutover.
 func runBluegreenFlip(d Deps, c *cobra.Command) error {
