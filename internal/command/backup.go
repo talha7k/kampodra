@@ -3,6 +3,8 @@ package command
 import (
 	"archive/tar"
 	"compress/gzip"
+	crand "crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -16,10 +18,11 @@ import (
 	"github.com/talha7k/kampodra/internal/adapter/state"
 )
 
-// restoreVerifyRemote is the VM's restore-verify entrypoint (infra contract
-// of the VM image, not project naming): backups are piped over ssh stdin,
-// scratch only — it NEVER writes into the data dir.
-const restoreVerifyRemote = "/usr/local/bin/restore-verify /dev/stdin"
+// restoreVerifyBin is the VM's restore-verify entrypoint (infra contract
+// of the VM image, not project naming): FILE-based — `restore-verify -db
+// <path>` (the RUNBOOK drill shape). Members are uploaded to VM scratch
+// files, verified there, and removed — it NEVER touches the data dir.
+const restoreVerifyBin = "/usr/local/bin/restore-verify"
 
 // backupHelp is the shell backup.sh usage heredoc, kampodra-fied.
 const backupHelp = `Usage:
@@ -33,8 +36,10 @@ principal. kampodra never accepts, stores, or logs credential material.
 Bucket: --bucket (default from the project config, KAMPODRA_BACKUP_BUCKET
 overrides). LIST-denied by policy is not fatal for download/verify — GET
 works with just the object name; ` + "`list`" + ` prints the exact policy shape
-when denied. verify is read-only over ssh stdin into /usr/local/bin/
-restore-verify; scratch dirs only, NEVER writes into the data dir.
+when denied. verify uploads each .db member to a VM scratch file and runs
+/usr/local/bin/restore-verify -db on it (read-only; scratch only, NEVER
+writes into the data dir). --migrated-topology passes restore-verify's
+drill flag through (bulk-migration chain shape downgraded to warnings).
 restore-plan prints the documented stop/swap/start sequence and NEVER
 executes anything.
 
@@ -69,6 +74,7 @@ func newBackupCommand(d Deps) *cobra.Command {
 	pf.String("host", "", "VM target for verify (user@ip or ssh-config alias)")
 	pf.String("ssh-key", "", "identity file for verify — beats KAMPODRA_SSH_KEY")
 	pf.String("kampodine-profile", "", "kampodra INSTANCE profile for verify's ssh leg (frozen-spec flag name)")
+	pf.Bool("migrated-topology", false, "verify: pass restore-verify's --migrated-topology drill flag (migration-fallout chain shape → warnings)")
 
 	cmd.AddCommand(
 		&cobra.Command{
@@ -294,15 +300,39 @@ func runBackupVerify(d Deps, c *cobra.Command, obj string) error {
 		return err
 	}
 	if err := requireHost(target); err != nil {
-		return fmt.Errorf("verify needs a VM target: --host root@<ip>, --kampodine-profile <name>, KAMPODRA_PROFILE, config defaultProfile, or KAMPODINE_HOST")
+		return fmt.Errorf("verify needs a VM target: --host root@<ip>, --kampodine-profile <name>, KAMPODRA_PROFILE, config defaultProfile, or KAMPODRA_HOST")
 	}
 	ctx := c.Context()
+	migrated := flagBool(c, "migrated-topology")
+	seq := 0
+	run := func(remote string) (string, error) {
+		return d.Runner.Run(ctx, target.HostSpec, remote)
+	}
+	// verifyOneDb uploads one local db image to a VM scratch file, runs
+	// restore-verify -db on it, and always removes the scratch — the data
+	// dir is never touched.
+	verifyOneDb := func(label, localPath string) error {
+		seq++
+		scratch := verifyScratchPath(seq)
+		defer run("rm -f " + scratch) // tolerant: cleanup never masks the verdict
+		if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, "umask 077; cat > "+scratch, mustOpen(localPath)); err != nil {
+			return fmt.Errorf("scratch upload for %s: %w", label, err)
+		}
+		out, err := run(restoreVerifyCmd(scratch, migrated))
+		if out != "" {
+			fmt.Fprint(d.Stdout, out)
+		}
+		if err != nil {
+			return fmt.Errorf("restore-verify FAILED for %s: %w", label, err)
+		}
+		return nil
+	}
 	switch mode {
 	case "db":
-		fmt.Fprintf(d.Stdout, "[backup] piping %s over ssh stdin to /usr/local/bin/restore-verify on %s (read-only; scratch only — NEVER writes into %s)\n",
+		fmt.Fprintf(d.Stdout, "[backup] uploading %s to VM scratch + restore-verify -db on %s (read-only; scratch only — NEVER writes into %s)\n",
 			obj, target.HostSpec.Host, target.Project.DataDir)
-		if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, restoreVerifyRemote, mustOpen(obj)); err != nil {
-			return fmt.Errorf("restore-verify FAILED for %s: %w", filepath.Base(obj), err)
+		if err := verifyOneDb(filepath.Base(obj), obj); err != nil {
+			return err
 		}
 		fmt.Fprintln(d.Stdout, "[backup] OK — restore-verify accepted the db image")
 	case "tgz":
@@ -321,17 +351,49 @@ func runBackupVerify(d Deps, c *cobra.Command, obj string) error {
 		if len(members) == 0 {
 			return fmt.Errorf("no .db/.sqlite members in %s — nothing to verify", obj)
 		}
-		fmt.Fprintf(d.Stdout, "[backup] piping every .db member of %s over ssh stdin (read-only; scratch dir %s)\n", obj, scratch)
+		fmt.Fprintf(d.Stdout, "[backup] verifying every .db member of %s on %s via VM scratch files (read-only; local scratch %s)\n", obj, target.HostSpec.Host, scratch)
 		for _, m := range members {
 			rel, _ := filepath.Rel(scratch, m)
+			if isRootDbMember(rel) {
+				fmt.Fprintf(d.Stdout, "[backup] skipping %s (root db is schema-only — not in restore-verify scope)\n", rel)
+				continue
+			}
 			fmt.Fprintf(d.Stdout, "[backup] verify member: %s\n", rel)
-			if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, restoreVerifyRemote, mustOpen(m)); err != nil {
-				return fmt.Errorf("restore-verify FAILED for %s: %w", rel, err)
+			if err := verifyOneDb(rel, m); err != nil {
+				return err
 			}
 		}
 		fmt.Fprintln(d.Stdout, "[backup] OK — every db member passed restore-verify")
 	}
 	return nil
+}
+
+// verifyScratchPath mints one per-member VM scratch path under /tmp —
+// generated names only (never member-supplied), so the remote command needs
+// no quoting.
+func verifyScratchPath(seq int) string {
+	var b [4]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		panic(fmt.Sprintf("crypto/rand: %v", err))
+	}
+	return fmt.Sprintf("/tmp/kampodra-verify-%d-%s.db", seq, hex.EncodeToString(b[:]))
+}
+
+// isRootDbMember reports whether a tar member is the schema-only ROOT db —
+// restore-verify is a TENANT verifier (its gates scan the order/PIH chain
+// tables); feeding it root.db fails spuriously (2026-10-09 live fire).
+func isRootDbMember(rel string) bool {
+	return filepath.Base(rel) == "root.db" && filepath.Base(filepath.Dir(rel)) == "root"
+}
+
+// restoreVerifyCmd composes the file-based verify call — the RUNBOOK drill
+// shape (restore-verify -db <path>), with the --migrated-topology drill
+// flag passed through untouched.
+func restoreVerifyCmd(dbPath string, migratedTopology bool) string {
+	if migratedTopology {
+		return restoreVerifyBin + " -db " + dbPath + " --migrated-topology"
+	}
+	return restoreVerifyBin + " -db " + dbPath
 }
 
 func mustOpen(path string) io.Reader {

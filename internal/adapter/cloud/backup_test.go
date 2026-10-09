@@ -72,6 +72,30 @@ func TestParseObjectList(t *testing.T) {
 	}
 }
 
+// The live `oci os object list` CLI wraps rows DIRECTLY in an array under
+// .data (the raw-API {data:{objects:[]}} shape is the fixture above) and
+// often omits timeCreated entirely — 2026-10-09 live fire against bucket
+// esellar-libsql-backups returned exactly this shape.
+func TestParseObjectListCLIShape(t *testing.T) {
+	fixture := `{"data":[
+		{"name":"tenants/20261009_040000.tgz","size":"111260252"},
+		{"name":"tenants/20261008_194630.tgz","size":"107491215","timeCreated":null}
+	]}`
+	objs, err := ParseObjectList(fixture)
+	if err != nil {
+		t.Fatalf("ParseObjectList: %v", err)
+	}
+	if len(objs) != 2 {
+		t.Fatalf("got %d objects, want 2", len(objs))
+	}
+	if objs[0].Name != "tenants/20261009_040000.tgz" || objs[0].Size != 111260252 {
+		t.Errorf("objs[0] = %+v", objs[0])
+	}
+	if objs[0].TimeCreated != "-" || objs[1].TimeCreated != "-" {
+		t.Errorf("absent/null timeCreated must render as -, got %q / %q", objs[0].TimeCreated, objs[1].TimeCreated)
+	}
+}
+
 func TestIsAuthDenied(t *testing.T) {
 	denied := []string{
 		"ServiceError: NotAuthorizedOrNotFound",

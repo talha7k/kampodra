@@ -408,7 +408,14 @@ func waitUntil(ctx context.Context, runner transport.Runner, spec transport.Host
 // bootstrapped host (the shell's --refresh-config shape: inline inventory
 // + --private-key). Output streams; failure is fatal (explicit flag = intent).
 func runAnsiblePlaybook(d Deps, target Target, playbookPath string) error {
-	if _, err := os.Stat(playbookPath); err != nil {
+	// Absolutize BEFORE the chdir: the exec below runs ansible from the
+	// playbook's directory, so a relative arg would re-resolve against it
+	// and die with "the playbook … could not be found" (2026-10-09 live fire).
+	absPath, err := filepath.Abs(playbookPath)
+	if err != nil {
+		return fmt.Errorf("ansible playbook path: %w", err)
+	}
+	if _, err := os.Stat(absPath); err != nil {
 		return fmt.Errorf("ansible playbook not found: %s", playbookPath)
 	}
 	bin, err := exec.LookPath("ansible-playbook")
@@ -420,14 +427,31 @@ func runAnsiblePlaybook(d Deps, target Target, playbookPath string) error {
 		user = target.HostSpec.Host[:i]
 		host = target.HostSpec.Host[i+1:]
 	}
-	inventory := fmt.Sprintf("kampodra-vm ansible_host=%s,ansible_user=%s,", host, user)
-	args := []string{"-i", inventory, playbookPath}
+	// The -i STRING form is a bare host list — ansible-core 2.21 parses
+	// k=v pairs there as separate HOSTNAMES ("hostname contains invalid
+	// characters"; ssh to "ansible_user=root", 2026-10-09 live fire).
+	// Inline host vars are only reliably parsed in an inventory FILE:
+	// write a temp INI file (alias + k=v under an [alias] group).
+	invFile, err := os.CreateTemp("", "kampodra-inventory-*.ini")
+	if err != nil {
+		return fmt.Errorf("ansible inventory temp file: %w", err)
+	}
+	invPath := invFile.Name()
+	defer os.Remove(invPath)
+	if _, err := fmt.Fprintf(invFile, "[kampodra-vm]\nkampodra-vm ansible_host=%s ansible_user=%s\n", host, user); err != nil {
+		invFile.Close()
+		return fmt.Errorf("ansible inventory write: %w", err)
+	}
+	if err := invFile.Close(); err != nil {
+		return fmt.Errorf("ansible inventory close: %w", err)
+	}
+	args := []string{"-i", invPath, absPath}
 	if target.HostSpec.SSHKey != "" {
 		args = append(args, "--private-key", target.HostSpec.SSHKey)
 	}
 	fmt.Fprintf(d.Stdout, "[vm-prepare] ansible-playbook (bootstrap converge)…\n")
 	cmd := exec.CommandContext(context.Background(), bin, args...)
-	cmd.Dir = filepath.Dir(playbookPath)
+	cmd.Dir = filepath.Dir(absPath)
 	cmd.Stdout = d.Stdout
 	cmd.Stderr = d.Stderr
 	if err := cmd.Run(); err != nil {
