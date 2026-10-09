@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -364,11 +365,17 @@ func (r *deployRun) streamSidecars() error {
 	for _, sc := range r.opts.sidecars {
 		ref := r.target.Project.SidecarImageRef(sc.Name) + ":latest"
 		r.say("sidecar %s: building (%s, -f %s)…", sc.Name, ref, sc.Dockerfile)
+		// CONTEXT = the sidecar dockerfile's own directory (the RUNBOOK
+		// convention — e.g. `podman build -f apps/api-go/Dockerfile.backup
+		// apps/api-go`). Repo-root context failed on the first real sidecar
+		// Dockerfile (2026-10-09 live fire: COPY go.mod go.sum); the primary
+		// keeps the repo-root context its Dockerfile is written for.
+		sidecarCtx := filepath.Join(r.repoRoot, filepath.Dir(sc.Dockerfile))
 		buildArgs := []string{"build", "--platform", "linux/arm64",
 			"-f", sc.Dockerfile,
 			"--build-arg", "GIT_SHA=" + r.ver,
 			"-t", ref,
-			r.repoRoot}
+			sidecarCtx}
 		if err := localPassthrough(r.ctx, "podman", buildArgs...); err != nil {
 			return fmt.Errorf("sidecar %s build failed: %w", sc.Name, err)
 		}
