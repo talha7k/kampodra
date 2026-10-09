@@ -432,7 +432,7 @@ func runBluegreenProvision(d Deps, c *cobra.Command, color string) error {
 	if err != nil {
 		return err
 	}
-	if err := bgInjectGuest(d, ctx, pair.container, color, newRow.PublicIP, qcow2, sshKeyFile, platformUser, pair.sshKey, guestOS); err != nil {
+	if err := bgInjectGuest(d, ctx, pair.container, color, newRow.PublicIP, qcow2, platformUser, pair.sshKey, guestOS); err != nil {
 		return err
 	}
 	return nil
@@ -626,7 +626,7 @@ func stageGoldenDisk(d Deps, ctx context.Context, qcow2 string) (string, error) 
 // ubuntu). The two boots share one IP with two different host keys: a
 // throwaway known-hosts file keeps the operator's known_hosts untouched;
 // the instance record keeps the platform image metadata.
-func bgInjectGuest(d Deps, ctx context.Context, container, color, ip, qcow2, sshKeyFile, platformUser, targetKey, guestOS string) error {
+func bgInjectGuest(d Deps, ctx context.Context, container, color, ip, qcow2, platformUser, targetKey, guestOS string) error {
 	osName := osDisplayName(guestOS)
 	verifyCmd, verifyPattern, err := osReleaseCheck(guestOS)
 	if err != nil {
@@ -640,8 +640,12 @@ func bgInjectGuest(d Deps, ctx context.Context, container, color, ip, qcow2, ssh
 	khPath := kh.Name()
 	kh.Close()
 	defer os.Remove(khPath)
+	// The platform ssh identity is the RESOLVED private key (the pubkey file
+	// --platform-key authorizes it via --ssh-authorized-keys-file — it is
+	// NOT itself a usable identity; `ssh -i ops.pub` only limps through on
+	// agent fallback, 2026-10-09 live fire).
 	plat := func() transport.HostSpec {
-		return transport.HostSpec{Host: platformUser + "@" + ip, SSHKey: sshKeyFile, AcceptNewHostKey: true, KnownHostsFile: khPath}
+		return transport.HostSpec{Host: platformUser + "@" + ip, SSHKey: targetKey, AcceptNewHostKey: true, KnownHostsFile: khPath}
 	}
 	fmt.Fprintf(d.Stdout, "inject: waiting for ssh (%s@%s, platform-image first boot)…\n", platformUser, ip)
 	probed := false

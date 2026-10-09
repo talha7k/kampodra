@@ -13,7 +13,11 @@
   manifest/profile/env field `pairInstancePrefix` (default: fall back
   to `container`) — a running sibling named `esellar-green` (predating
   container-derived naming) resolves as the provision template /
-  rollback holder instead of "not provisioned".
+  rollback holder instead of "not provisioned". Also: the inject route's
+  platform ssh legs now authenticate with the RESOLVED `--ssh-key`
+  identity — `--platform-key` remains the authorized pubkey only
+  (`ssh -i ops.pub` relied on agent fallback and failed on an empty
+  agent).
 - **Lint-debt burn-down complete** — every function is now under the
   gocognit 25 / gocyclo 20 bar; the grandfather allowlist is DELETED
   from `.golangci.yml` (the gate fails on anything above the bar, new
