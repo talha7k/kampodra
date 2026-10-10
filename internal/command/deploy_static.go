@@ -82,6 +82,10 @@ func (r *deployRun) buildStaticDist() error {
 	done := r.step("build static dist (" + bin.Build + ")")
 	cmd := exec.CommandContext(r.ctx, "sh", "-c", bin.Build)
 	cmd.Dir = buildDir
+	// The build identity rides in as KAMPODRA_SHA — the SPA's
+	// VITE_BUILD_ID (build-id.txt + the client bundle) stamps from it so
+	// the freshness gate has something true to verify.
+	cmd.Env = append(os.Environ(), "KAMPODRA_SHA="+r.ver)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		err = fmt.Errorf("static build failed (%s): %w", bin.Build, err)

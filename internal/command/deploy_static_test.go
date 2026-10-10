@@ -36,6 +36,9 @@ func TestDeployStaticHappyPathNoRestart(t *testing.T) {
 	// The local build ran the declared command (the pnpm shim records it;
 	// its cwd is buildDir — the shim materializes <buildDir>/dist).
 	mustContain(t, inv, "pnpm build --filter web")
+	// The build identity rides in as KAMPODRA_SHA (the SPA's
+	// VITE_BUILD_ID stamps from it — the freshness gate's ground truth).
+	mustContain(t, inv, "pnpmenv KAMPODRA_SHA="+pipelineVer)
 	// No image machinery, no local podman gate (code+assets only).
 	for _, forbidden := range []string{"podman build", "podman save", "podman load", "podman info"} {
 		if strings.Contains(inv, forbidden) {
