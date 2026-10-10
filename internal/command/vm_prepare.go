@@ -153,7 +153,8 @@ func namingFromProject(pj project.Config, bin *project.ManifestBinary) vmbootstr
 	if bin != nil {
 		n.BinaryDir = bin.Dir
 		n.BinaryMount = bin.MountArg()
-		n.BinaryExec = bin.RunExec()
+		n.BinaryEntrypointFlag = bin.EntrypointFlag()
+		n.BinaryCmdOverride = bin.CmdOverride()
 		n.BinaryDepsPath = bin.DepsPath
 	}
 	return n
