@@ -706,6 +706,8 @@ func (r *deployRun) binarySwitch() error {
 		}
 		return err
 	}
+	// Success: NOW the identity bookkeeping advances.
+	r.writeMarkers(r.runPath())
 	return nil
 }
 
@@ -850,9 +852,13 @@ func (r *deployRun) pushArtifactDir() error {
 
 // binarySwap is the atomic in-place swap the whole safety story rests on:
 // one mkdir lock (a concurrent deploy dies naming it), the previous
-// artifact kept at <run>.prev (the rollback target), the sha marker
-// chain recorded beside it. Staging and run path share a filesystem, so
-// the mv is atomic — the running process never observes a partial file.
+// artifact kept at <run>.prev (the rollback target). Staging and run
+// path share a filesystem, so the mv is atomic — the running process
+// never observes a partial file. The SHA MARKER CHAIN is NOT written
+// here: markers only advance on SUCCESS (writeMarkers, after the health
+// gate) — a failed push must leave the identity bookkeeping exactly as
+// it was (2026-10-10 live fire: a crashed restart left a marker naming
+// an artifact the .prev file wasn't).
 func (r *deployRun) binarySwap(staging, runPath, postCmd string) error {
 	bin := r.bin
 	lock := bin.Dir + "/.kamdeploy.lock"
@@ -863,10 +869,16 @@ func (r *deployRun) binarySwap(staging, runPath, postCmd string) error {
 	if _, err := r.vm(fmt.Sprintf("rm -rf %[1]s.prev && { [ -e %[1]s ] && mv %[1]s %[1]s.prev || true; } && mv %[2]s %[1]s && %[3]s", runPath, staging, postCmd)); err != nil {
 		return fmt.Errorf("atomic swap into %s failed: %w", runPath, err)
 	}
+	return nil
+}
+
+// writeMarkers advances the sha marker chain AFTER the gates passed:
+// <run>.sha names the artifact now serving, <run>.prev.sha the one it
+// replaced (binary rollback's verification target).
+func (r *deployRun) writeMarkers(runPath string) {
 	if _, err := r.vm(fmt.Sprintf("{ [ -e %[1]s.sha ] && mv %[1]s.sha %[1]s.prev.sha || true; } && printf '%%s' %[2]s > %[1]s.sha", runPath, r.ver)); err != nil {
 		r.say("WARNING: could not record %s.sha — a binary rollback will need the marker", runPath)
 	}
-	return nil
 }
 
 func (r *deployRun) runPath() string {
@@ -899,7 +911,9 @@ func (r *deployRun) restorePreviousArtifact() error {
 	if _, err := r.vm(fmt.Sprintf("rm -rf %[1]s && mv %[1]s.prev %[1]s", r.runPath())); err != nil {
 		return fmt.Errorf("restore swap failed: %w", err)
 	}
-	r.vmTolerant(fmt.Sprintf("{ [ -e %[1]s.prev.sha ] && mv %[1]s.prev.sha %[1]s.sha || true; }", r.runPath()))
+	// Markers stay UNTOUCHED: the failed push never advanced them (the
+	// success-path invariant), so .sha still names the artifact this
+	// restore just brought back.
 	rcmd, err := initadapter.ActionCommand(r.initSys, r.target.Project.Container, "restart")
 	if err != nil {
 		return err
@@ -941,6 +955,10 @@ func (r *deployRun) binaryRollback() error {
 	if _, err := r.vm(fmt.Sprintf("printf '%%s' %s > %s", prevSha, pj.DeployedShaFile)); err != nil {
 		r.say("WARNING: could not rewrite %s — a bare image rollback will target the wrong sha", pj.DeployedShaFile)
 	}
+	// The marker chain re-aligns with the restored artifact: .sha names
+	// what is serving again, and the chain stops here (the .prev file was
+	// consumed by the restore).
+	r.vmTolerant(fmt.Sprintf("{ [ -e %[1]s.prev.sha ] && mv %[1]s.prev.sha %[1]s.sha || true; }", runPath))
 	return nil
 }
 
@@ -982,6 +1000,7 @@ func (r *deployRun) syncMountFromImage() error {
 		if err := r.binarySwap(staging, bin.Dir, "true"); err != nil {
 			return err
 		}
+		r.writeMarkers(bin.Dir)
 	} else {
 		tmp := filepath.Join(bin.Dir, "."+bin.Entry+".new")
 		if _, err := r.vm(fmt.Sprintf("podman cp %s:%s %s", ctr, bin.ImagePath, tmp)); err != nil {
@@ -990,6 +1009,7 @@ func (r *deployRun) syncMountFromImage() error {
 		if err := r.binarySwap(tmp, filepath.Join(bin.Dir, bin.Entry), "chmod 755 "+filepath.Join(bin.Dir, bin.Entry)); err != nil {
 			return err
 		}
+		r.writeMarkers(filepath.Join(bin.Dir, bin.Entry))
 	}
 	// The image IS the dependency snapshot (it was built from this same
 	// clean tree): stamp the marker so node code pushes pass the guard.
