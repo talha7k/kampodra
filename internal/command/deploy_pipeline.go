@@ -717,7 +717,13 @@ func (r *deployRun) buildArtifact() error {
 	buildDir := filepath.Join(r.repoRoot, bin.BuildDir)
 	switch bin.Kind {
 	case project.BinaryKindGo:
-		out := filepath.Join(os.TempDir(), "kamdeploy-"+bin.Entry)
+		// Unique staging per run: a fixed temp name collides with any
+		// stale leftover (go build refuses to overwrite a non-object
+		// file) — a failed run must never poison the next one.
+		out, err := stagingPath("kamdeploy-" + bin.Entry)
+		if err != nil {
+			return err
+		}
 		done := r.step("build go " + bin.Target + " (linux/arm64, CGO off, sha-stamped)")
 		cmd := exec.CommandContext(r.ctx, "go", "build",
 			"-ldflags", "-s -w -X main.buildSha="+r.ver+" -X main.gitSha="+r.ver,
@@ -815,7 +821,10 @@ func (r *deployRun) pushArtifact() error {
 // them), extracts it into a staging sibling, then swaps the whole dir.
 func (r *deployRun) pushArtifactDir() error {
 	bin := r.bin
-	tmpTar := filepath.Join(os.TempDir(), "kamdeploy-"+filepath.Base(bin.Dir)+".tgz")
+	tmpTar, err := stagingPath("kamdeploy-" + filepath.Base(bin.Dir) + ".tgz")
+	if err != nil {
+		return err
+	}
 	tar := exec.CommandContext(r.ctx, "tar", "-czf", tmpTar, "--exclude=node_modules", "-C", r.localArtifactDir, ".")
 	tar.Stdout, tar.Stderr = os.Stdout, os.Stderr
 	if err := tar.Run(); err != nil {
@@ -1011,6 +1020,19 @@ func (r *deployRun) singleDeclaredBinary() *project.ManifestBinary {
 	}
 	r.say("WARNING: %d \"binary\" blocks declared — the mount is pinned by vm-prepare --binary; skipping the image→mount sync", len(r.target.Binary))
 	return nil
+}
+
+// stagingPath returns a FRESH local staging path (created-then-removed
+// temp name — unique per run, so leftovers can never collide).
+func stagingPath(base string) (string, error) {
+	f, err := os.CreateTemp("", base)
+	if err != nil {
+		return "", fmt.Errorf("cannot create the staging path: %w", err)
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return name, nil
 }
 
 // hashDepManifest is the dependency closure's fingerprint: sha256 over
