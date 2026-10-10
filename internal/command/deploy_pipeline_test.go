@@ -83,6 +83,9 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 	fixture("vmimageexists", "0")
 	fixture("localimageexists", "1")
 	fixture("failon", "")
+	fixture("failonce", "")
+	fixture("prevsha", "ccc3333\n")
+	fixture("depssha", "")
 	stampFixture := fixture("reporoot", reporoot)
 
 	// The smoke handler and the VM-side health fetch both read the
@@ -115,9 +118,13 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 		"printf '%s\\n' \"$*\" >> '" + inv + "'\n" +
 		"cmd=\"${*: -1}\"\n" +
 		"failon=\"$(cat '" + filepath.Join(stubDir, "failon") + "' 2>/dev/null)\"\n" +
+		"failonce=\"$(cat '" + filepath.Join(stubDir, "failonce") + "' 2>/dev/null)\"\n" +
+		"if [ -n \"$failonce\" ] && [[ \"$cmd\" == *\"$failonce\"* ]]; then rm -f '" + filepath.Join(stubDir, "failonce") + "'; exit 1; fi\n" +
 		"if [ -n \"$failon\" ] && [[ \"$cmd\" == *\"$failon\"* ]]; then exit 1; fi\n" +
 		"case \"$cmd\" in\n" +
 		"  *\"cat > \"*) cat > '" + filepath.Join(stubDir, "stdin-capture") + "'; exit 0 ;;\n" +
+		"  *\".prev.sha\"*) cat '" + filepath.Join(stubDir, "prevsha") + "' 2>/dev/null; exit $? ;;\n" +
+		"  *\".deps-sha\"*) cat '" + filepath.Join(stubDir, "depssha") + "' 2>/dev/null; exit $? ;;\n" +
 		"  *\"podman images --format\"*) cat '" + filepath.Join(stubDir, "images") + "'; exit 0 ;;\n" +
 		"  *\"podman ps -a --format '{{.Names}}'\"*) cat '" + filepath.Join(stubDir, "psanames") + "'; exit 0 ;;\n" +
 		"  *\"podman ps --format '{{.Names}}'\"*) cat '" + filepath.Join(stubDir, "psnames") + "'; exit 0 ;;\n" +
@@ -165,7 +172,30 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 		"  image) if [ \"$2\" = exists ]; then exit \"$(cat '" + filepath.Join(stubDir, "localimageexists") + "')\"; fi ;;\n" +
 		"esac\n"
 
-	for name, content := range map[string]string{"ssh": sshShim, "git": gitShim, "podman": podmanShim} {
+	// The fast path's local builders: record argv + the cross-compile
+	// env (pinned separately) and materialize the artifact the pipeline
+	// then uploads.
+	goShim := "#!/bin/bash\n" +
+		"printf '%s\\n' \"go $*\" >> '" + inv + "'\n" +
+		"env | grep -E '^(CGO_ENABLED|GOOS|GOARCH)=' | sort | sed 's/^/goenv /' >> '" + inv + "'\n" +
+		"out=\"\"; prev=\"\"\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$prev\" = \"-o\" ]; then out=\"$a\"; fi\n" +
+		"  prev=\"$a\"\n" +
+		"done\n" +
+		"if [ -n \"$out\" ]; then printf 'fake-go-binary\\n' > \"$out\"; fi\n"
+
+	cargoShim := "#!/bin/bash\n" +
+		"printf '%s\\n' \"cargo $*\" >> '" + inv + "'\n" +
+		"bindir=\"\"; triple=\"\"; prev=\"\"\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$prev\" = \"--bin\" ]; then bindir=\"$a\"; fi\n" +
+		"  if [ \"$prev\" = \"--target\" ]; then triple=\"$a\"; fi\n" +
+		"  prev=\"$a\"\n" +
+		"done\n" +
+		"if [ -n \"$bindir\" ] && [ -n \"$triple\" ]; then mkdir -p \"$PWD/$triple/release\" && printf 'fake-rust-binary\\n' > \"$PWD/$triple/release/$bindir\"; fi\n"
+
+	for name, content := range map[string]string{"ssh": sshShim, "git": gitShim, "podman": podmanShim, "go": goShim, "cargo": cargoShim} {
 		if err := os.WriteFile(filepath.Join(stubDir, name), []byte(content), 0o755); err != nil {
 			t.Fatal(err)
 		}

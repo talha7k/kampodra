@@ -30,7 +30,7 @@ zero-downtime shadow-container double re-point.
 ```
 kampodra deploy [--host root@<ip>] [--profile <name>] [--sha <sha7>] [--rollback [<sha7>]] [--rolling]
                  [--drain-timeout <s>] [--dockerfile <path>] [--env-file <path>] [--ssh-key <path>]
-                 [--skip-smoke] [--disk-threshold <pct>]
+                 [--skip-smoke] [--disk-threshold <pct>] [--binary [<name>]]
 ```
 
 | flag | type | default | description |
@@ -44,6 +44,56 @@ kampodra deploy [--host root@<ip>] [--profile <name>] [--sha <sha7>] [--rollback
 | `--rolling` | bool | `false` | zero-downtime shadow-container double re-point |
 | `--drain-timeout` | int | `10` | seconds to wait for the proxy switch to confirm (`--rolling` only) |
 | `--disk-threshold` | string | `""` | fail closed BEFORE the build when VM disk usage ≥ pct (0–100) |
+| `--binary` | string | `""` | fast-push a declared artifact (kampodra.json `"binary"`) instead of the image: local cross-build → atomic remote swap → restart → the SAME identity gates (served-sha health gate, public smoke, stamp, ledger). Bare `--binary` picks the lone block; `--binary <name>` (space form) picks among several. Exclusive with `--sha`/`--rolling` |
+
+### deploy --binary (the fast path)
+
+`kampodra.json`'s `"binary"` block declares one artifact per stack — e.g.
+the Go api AND the TS api during a cutover:
+
+```json
+{
+  "binary": {
+    "api-go": { "kind": "go",   "dir": "/data/app", "buildDir": "apps/api-go",
+                "target": "./cmd/server", "entry": "esellar-api-go",
+                "imagePath": "/usr/local/bin/esellar-api-go" },
+    "api-ts": { "kind": "node", "dir": "/data/app", "buildDir": "apps/api",
+                "entry": "src/serve-node.ts", "exec": "tsx",
+                "imagePath": "/app/apps/api", "depsPath": "/app/node_modules" },
+    "api-rs": { "kind": "rust", "dir": "/data/app", "buildDir": "crates/api",
+                "target": "esellar-api", "entry": "esellar-api",
+                "imagePath": "/usr/local/bin/esellar-api" }
+  }
+}
+```
+
+- `vm-prepare --binary <name>` renders the app unit with that artifact's
+  bind mount (`-v <dir>:<dir>`) and its exec override (`<dir>/<entry>`,
+  or `<exec> <dir>/<entry>` for node). The repo's LONE block needs no
+  name; several blocks require the flag. `vm-prepare` also creates the
+  dir and, for node, symlinks `<dir>/node_modules` at `depsPath` — the
+  mount carries SOURCE only; dependencies stay baked in the image.
+- **go/rust**: a sha-stamped cross-build (go: `CGO_ENABLED=0 GOOS=linux
+  GOARCH=arm64`, same ldflags as the image; rust: `cargo build --release
+  --target <triple>`, default `aarch64-unknown-linux-musl` — the golden
+  images are musl-based), then a single-file scp.
+- **node**: no compile — the source tree is tarred (`node_modules`
+  excluded), extracted into a staging sibling, and the whole dir swaps.
+- The swap is atomic (staging and run path share a filesystem), guarded
+  by a remote mkdir lock (a concurrent push dies naming it), and keeps
+  the previous artifact at `<run>.prev` plus a `<run>.prev.sha` marker.
+- **Safety rails**: build failure touches nothing; the dependency-drift
+  guard (node) refuses when the dep manifest hash differs from the
+  image-stamped `.deps-sha` marker (the fast push is CODE-only —
+  dependency changes redeploy the image); a failed health gate or public
+  smoke AUTO-RESTORES the previous artifact, restarts, and re-verifies
+  before reporting the failure; `--binary --rollback` restores the
+  recorded previous artifact (marker-verified; only the last push is
+  undoable — image rollback stays `kampodra deploy --rollback`).
+- Image deploys keep the mount honest: every image deploy mirrors the
+  image's artifact into the mount (`podman cp` from a throwaway create)
+  so the unit's exec override never serves the last fast-pushed version.
+  Multiple blocks: pin the VM's artifact with `vm-prepare --binary <name>`.
 
 Deploy also builds+streams every sidecar declared in the repo manifest's
 `images.sidecars` block (deploy mode only — `--rollback`/`--sha` never
@@ -60,6 +110,9 @@ kampodra deploy --rollback                      # stamp-resolved
 kampodra deploy --rollback <sha7>               # explicit target
 kampodra deploy --sha <sha7> --skip-smoke   # stream an existing build
 kampodra deploy --disk-threshold 85
+kampodra deploy --binary                     # fast-push the lone artifact
+kampodra deploy --binary api-go              # pick among several
+kampodra deploy --binary api-go --rollback   # restore the recorded .prev
 ```
 
 - Modes are exclusive: `--rollback` with `--sha`, or with `--rolling`,

@@ -62,7 +62,6 @@ func LoadDefault() Config {
 	}
 }
 
-// Overrides is the profile "project" block (config.json): every field
 // optional, empty = "not overridden".
 type Overrides struct {
 	Container          string   `json:"container,omitempty"`

@@ -42,6 +42,10 @@ type Naming struct {
 	Port            string // the container's published port
 	Network         string // the podman network shared with kamal-proxy
 	DeployedShaFile string // the VM's deployed-sha stamp
+	BinaryMount     string // "" | "-v <dir>:<dir>" — the deploy --binary artifact bind mount
+	BinaryExec      string // "" | "<dir>/<entry>" | "<exec> <dir>/<entry>" — the run override after the image ref
+	BinaryDir       string // the artifact's VM dir (mount/chown/symlink target; "" = undeclared)
+	BinaryDepsPath  string // node: the in-image node_modules the mount symlinks at ("" = none)
 }
 
 // RegistriesConfPath / SysctlConfPath / SSHDHardeningPath / AnchorScriptPath
@@ -161,8 +165,9 @@ supervisor=supervise-daemon
 command="/usr/bin/podman"
 command_args="run --rm --name %[4]s --network %[7]s -p %[6]s:%[6]s"
 command_args="$command_args -v %[3]s:%[3]s"
+%[10]s
 command_args=" %[8]s"
-command_args="$command_args --env-file %[2]s %[5]s"
+command_args="$command_args --env-file %[2]s %[5]s%[11]s"
 
 # Respawn forever: a crash loop self-heals at the next deploy's restart;
 # the 10s delay bounds log noise.
@@ -191,7 +196,27 @@ stop_post() {
 	podman stop --time 10 %[4]s >/dev/null 2>&1 || true
 	podman rm -f --time 0 %[4]s >/dev/null 2>&1 || true
 }
-`, n.Registry, n.EnvFile, n.DataDir, n.Container, n.ImageRef, n.Port, n.Network, ClearEnvArgs(n.Port), APIStderrLogPath)
+`, n.Registry, n.EnvFile, n.DataDir, n.Container, n.ImageRef, n.Port, n.Network, ClearEnvArgs(n.Port), APIStderrLogPath, initDBinaryMountLine(n), initDBinaryExecSuffix(n))
+}
+
+// initDBinaryMountLine renders the OpenRC artifact mount as a full
+// command_args line (with its trailing newline) — empty when the repo
+// declares no binary block, keeping the unit byte-identical to before.
+func initDBinaryMountLine(n Naming) string {
+	if n.BinaryMount == "" {
+		return ""
+	}
+	return "command_args=\"$command_args " + n.BinaryMount + "\"\n"
+}
+
+// initDBinaryExecSuffix is the run override appended after the image ref
+// (`podman run ... <image> <override>`): the artifact the container execs
+// INSTEAD of the image's entrypoint. Empty = image entrypoint (unchanged).
+func initDBinaryExecSuffix(n Naming) string {
+	if n.BinaryExec == "" {
+		return ""
+	}
+	return " " + n.BinaryExec
 }
 
 // RenderInitDProxy ports the kamal-proxy OpenRC unit: the TLS edge with a
@@ -395,7 +420,7 @@ After=network-online.target
 # cleans CLEAN exits) — sweep any leftover before the supervised run
 # (the "-" prefix tolerates "nothing to remove").
 ExecStartPre=-/usr/bin/podman rm -f %[3]s
-ExecStart=/usr/bin/podman run --rm --name %[3]s --network %[6]s -p %[5]s:%[5]s -v %[2]s:%[2]s %[7]s --env-file %[1]s %[4]s
+ExecStart=/usr/bin/podman run --rm --name %[3]s --network %[6]s -p %[5]s:%[5]s -v %[2]s:%[2]s%[8]s %[7]s --env-file %[1]s %[4]s%[9]s
 
 # Respawn forever: a crash loop self-heals at the next deploy's restart; the
 # 10s delay bounds log noise.
@@ -409,7 +434,26 @@ ExecStopPost=-/usr/bin/podman rm -f --time 0 %[3]s
 
 [Install]
 WantedBy=multi-user.target
-`, n.EnvFile, n.DataDir, n.Container, n.ImageRef, n.Port, n.Network, ClearEnvArgs(n.Port))
+`, n.EnvFile, n.DataDir, n.Container, n.ImageRef, n.Port, n.Network, ClearEnvArgs(n.Port), systemdBindMountSuffix(n), systemdBinaryExecSuffix(n))
+}
+
+// systemdBindMountSuffix is the ExecStart-inline bind mount for the
+// artifact dir (a single ExecStart line cannot embed newlines): "" or
+// " -v <dir>:<dir>".
+func systemdBindMountSuffix(n Naming) string {
+	if n.BinaryMount == "" {
+		return ""
+	}
+	return " " + n.BinaryMount
+}
+
+// systemdBinaryExecSuffix is the systemd sibling of
+// initDBinaryExecSuffix — the run override after the image ref.
+func systemdBinaryExecSuffix(n Naming) string {
+	if n.BinaryExec == "" {
+		return ""
+	}
+	return " " + n.BinaryExec
 }
 
 // RenderProxyUnit is the Ubuntu sibling of RenderInitDProxy: the TLS edge

@@ -124,17 +124,20 @@ func newVMPrepareCommand(d Deps) *cobra.Command {
 	cmd.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json)")
 	cmd.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY")
 	cmd.Flags().String("ansible", "", "run this ansible-playbook file against the host after bootstrap")
+	cmd.Flags().String("binary", "", "binary artifact this VM serves (kampodra.json \"binary\" block) — required when the repo declares several; the unit bind-mounts its dir and execs its entry")
 	return cmd
 }
 
 // namingFromProject derives the bootstrap naming from the resolved project
 // config (the adapter never imports the project adapter sideways).
-func namingFromProject(pj project.Config) vmbootstrap.Naming {
+// bin is the deploy --binary artifact this VM's app unit serves (nil =
+// none — the unit renders byte-identical to the pre-binary shape).
+func namingFromProject(pj project.Config, bin *project.ManifestBinary) vmbootstrap.Naming {
 	envDir := pj.EnvFile
 	if i := strings.LastIndex(pj.EnvFile, "/"); i > 0 {
 		envDir = pj.EnvFile[:i]
 	}
-	return vmbootstrap.Naming{
+	n := vmbootstrap.Naming{
 		Container:       pj.Container,
 		EnvFile:         pj.EnvFile,
 		EnvDir:          envDir,
@@ -147,6 +150,13 @@ func namingFromProject(pj project.Config) vmbootstrap.Naming {
 		Network:         pj.Network,
 		DeployedShaFile: pj.DeployedShaFile,
 	}
+	if bin != nil {
+		n.BinaryDir = bin.Dir
+		n.BinaryMount = bin.MountArg()
+		n.BinaryExec = bin.RunExec()
+		n.BinaryDepsPath = bin.DepsPath
+	}
+	return n
 }
 
 // imageRegistryHost strips the path off a repo reference (the ImagePrefix's
@@ -163,6 +173,7 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 	key, _ := c.Flags().GetString("ssh-key")
 	profile, _ := c.Flags().GetString("profile")
 	ansiblePath, _ := c.Flags().GetString("ansible")
+	binaryName, _ := c.Flags().GetString("binary")
 
 	cfg, err := state.LoadConfig(d.Home)
 	if err != nil {
@@ -183,7 +194,18 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 	target.HostSpec.AcceptNewHostKey = true
 
 	ctx := c.Context()
-	p := &vmProvisioner{ctx: ctx, d: d, target: target, n: namingFromProject(target.Project)}
+	// The binary artifact this VM's app unit serves (deploy --binary's
+	// mount): the --binary flag names it; a lone repo block needs no name;
+	// a repo with NO blocks pre-pdates the fast path and renders the
+	// legacy image-entrypoint unit unchanged.
+	var bin *project.ManifestBinary
+	if len(target.Binary) > 0 {
+		bin, err = ChooseBinaryBlock(target.Binary, binaryName)
+		if err != nil {
+			return err
+		}
+	}
+	p := &vmProvisioner{ctx: ctx, d: d, target: target, n: namingFromProject(target.Project, bin)}
 
 	// --- 0. connectivity ------------------------------------------------------
 	p.say("waiting for ssh on %s…", target.HostSpec.Host)
@@ -266,6 +288,23 @@ func (p *vmProvisioner) managedState(sysctlSnippet string) error {
 	p.say("ensuring the data dir %s (the app unit bind-mounts it)…", n.DataDir)
 	if err := p.run("mkdir -p " + n.DataDir); err != nil {
 		return p.die("data dir create failed", err)
+	}
+	// The deploy --binary artifact mount: same crash-loop hazard as the
+	// dataDir (podman run statfs on a missing path) plus, for the node
+	// kind, the deps symlink — the mount carries SOURCE only, deps come
+	// from the image (node_modules -> the image's own install). Written
+	// here so a binary push never depends on provisioning order.
+	if n.BinaryDir != "" {
+		p.say("ensuring the binary artifact dir %s (the app unit bind-mounts it)…", n.BinaryDir)
+		if err := p.run("mkdir -p " + n.BinaryDir + " && chmod 755 " + n.BinaryDir); err != nil {
+			return p.die("binary artifact dir create failed", err)
+		}
+		if n.BinaryDepsPath != "" {
+			p.say("linking %s/node_modules -> %s (in-image deps; the mount never carries them)…", n.BinaryDir, n.BinaryDepsPath)
+			if err := p.run("ln -sfn " + n.BinaryDepsPath + " " + n.BinaryDir + "/node_modules"); err != nil {
+				return p.die("node_modules symlink failed", err)
+			}
+		}
 	}
 	p.say("writing /etc/containers/registries.conf (insecure %s; search docker.io)…", n.Registry)
 	if err := p.run("mkdir -p /etc/containers"); err != nil {

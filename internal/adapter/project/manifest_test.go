@@ -2,6 +2,7 @@ package project
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -213,7 +214,7 @@ func TestManifestKeyHintMatchesStruct(t *testing.T) {
 	if manifestKeyHint != "container, pairInstancePrefix, shadowSuffix, envFile, dataDir, bucket, "+
 		"objectPrefix, healthPath, proxyHost, services, imagePrefix, port, "+
 		"network, shadowProbePort, deployedShaFile, envClearKeys, dockerfile, "+
-		"migrateScript, images" {
+		"migrateScript, images, binary" {
 		t.Fatalf("manifestKeyHint const drifted from its own formatting")
 	}
 	if !strings.Contains(manifestKeyHint, want) || len(strings.Split(manifestKeyHint, ", ")) != len(keys) {
@@ -256,21 +257,8 @@ func TestManifestSchemaFileInLockstep(t *testing.T) {
 			continue
 		}
 		seen[name] = true
-		switch typ.Field(i).Type.Kind() {
-		case reflect.String:
-			if prop.Type != "string" {
-				t.Errorf("schema type of %q = %q, want string", name, prop.Type)
-			}
-		case reflect.Slice:
-			if prop.Type != "array" || prop.Items == nil || prop.Items.Type != "string" {
-				t.Errorf("schema type of %q must be array of string", name)
-			}
-		case reflect.Pointer:
-			if prop.Type != "object" {
-				t.Errorf("schema type of %q = %q, want object", name, prop.Type)
-			}
-		default:
-			t.Errorf("unexpected field kind %s on %s", typ.Field(i).Type.Kind(), typ.Field(i).Name)
+		for _, e := range schemaTypeErrors(name, typ.Field(i).Name, typ.Field(i).Type.Kind(), prop.Type, prop.Items) {
+			t.Error(e)
 		}
 	}
 	for name := range schema.Properties {
@@ -351,4 +339,31 @@ func TestParseManifestPairInstancePrefix(t *testing.T) {
 	if _, err := ParseManifest("/repo/kampodra.json", []byte(`{"pairInstancePrefix": 17}`)); err == nil {
 		t.Error("non-string pairInstancePrefix must fail closed")
 	}
+}
+
+// schemaTypeErrors checks one ManifestFields field against its schema
+// property: the Go kind maps to the JSON type (string, array-of-string,
+// object, or a keyed set described by additionalProperties).
+func schemaTypeErrors(key, fieldName string, kind reflect.Kind, propType string, items *struct {
+	Type string `json:"type"`
+}) []string {
+	switch kind {
+	case reflect.String:
+		if propType != "string" {
+			return []string{fmt.Sprintf("schema type of %q = %q, want string", key, propType)}
+		}
+	case reflect.Slice:
+		if propType != "array" || items == nil || items.Type != "string" {
+			return []string{fmt.Sprintf("schema type of %q must be array of string", key)}
+		}
+	case reflect.Pointer, reflect.Map:
+		// A keyed set (e.g. binary blocks by name): an object whose
+		// members are described by additionalProperties.
+		if propType != "object" {
+			return []string{fmt.Sprintf("schema type of %q = %q, want object", key, propType)}
+		}
+	default:
+		return []string{fmt.Sprintf("unexpected field kind %s on %s", kind, fieldName)}
+	}
+	return nil
 }

@@ -151,6 +151,8 @@ func newDeployCommand(d Deps) *cobra.Command {
 	cmd.Flags().String("disk-threshold", "", "fail closed when VM disk usage >= pct (pipeline)")
 	cmd.Flags().String("env-file", "", "push this env file (0600 + atomic mv, API_GIT_SHA stamped) before restart (pipeline)")
 	cmd.Flags().Bool("skip-smoke", false, "skip the public smoke (pipeline)")
+	cmd.Flags().String("binary", "", "fast-push a declared artifact (kampodra.json \"binary\") instead of the image: local build → atomic remote swap → restart → the same gates. Bare --binary picks the lone block; code-only — dependency changes redeploy the image")
+	cmd.Flags().Lookup("binary").NoOptDefVal = "-" // bare --binary = the lone block
 	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
 		fmt.Fprint(c.OutOrStdout(), deployHelp)
 	})
@@ -386,6 +388,13 @@ func validateDeployArgs(c *cobra.Command, args []string) (string, error) {
 	drain, _ := c.Flags().GetInt("drain-timeout")
 	diskThreshold, _ := c.Flags().GetString("disk-threshold")
 
+	// The --binary selector's positional form (`--binary api-go` — the
+	// same grammar as --rollback's NoOptDefVal).
+	args, err := applyBinaryPositional(c, args)
+	if err != nil {
+		return "", err
+	}
+
 	if c.Flags().Changed("sha") && rollbackSet {
 		return "", fmt.Errorf("--rollback and --sha are exclusive")
 	}
@@ -410,7 +419,47 @@ func validateDeployArgs(c *cobra.Command, args []string) (string, error) {
 	if c.Flags().Changed("sha") && !shaFragmentRe.MatchString(shaArg) {
 		return "", fmt.Errorf("--sha must be a git sha fragment (got: %s)", shaArg)
 	}
-	return positionalRollbackSha(c, args)
+	rollbackSha, err := positionalRollbackSha(c, args)
+	if err != nil {
+		return "", err
+	}
+	if err := validateBinaryExclusives(c, rolling, rollbackSet, rollbackSha); err != nil {
+		return "", err
+	}
+	return rollbackSha, nil
+}
+
+// validateBinaryExclusives pins the fast path's flag grammar: it is its
+// own artifact+switch strategy — it always builds (no existing image to
+// stream) and restarts in place (no shadow).
+func validateBinaryExclusives(c *cobra.Command, rolling, rollbackSet bool, rollbackSha string) error {
+	if !c.Flags().Changed("binary") {
+		return nil
+	}
+	if c.Flags().Changed("sha") {
+		return fmt.Errorf("--binary and --sha are exclusive — the fast path always builds (no image to stream)")
+	}
+	if c.Flags().Changed("rolling") && rolling {
+		return fmt.Errorf("--binary and --rolling are exclusive — the fast path restarts in place (image deploys use the rolling shadow)")
+	}
+	if rollbackSet && rollbackSha != "" {
+		return fmt.Errorf("--binary --rollback takes no sha — it restores the recorded previous artifact (image rollback: drop --binary)")
+	}
+	return nil
+}
+
+// applyBinaryPositional absorbs the `--binary <name>` positional form
+// (NoOptDefVal "-" makes bare --binary flag-like) and returns the
+// remaining args. Rollback's positional (the sha) keeps priority.
+func applyBinaryPositional(c *cobra.Command, args []string) ([]string, error) {
+	name, _ := c.Flags().GetString("binary")
+	if !c.Flags().Changed("binary") || name != "-" || len(args) == 0 || c.Flags().Changed("rollback") {
+		return args, nil
+	}
+	if err := c.Flags().Set("binary", args[0]); err != nil {
+		return nil, err
+	}
+	return args[1:], nil
 }
 
 // positionalRollbackSha applies the positional grammar: only the rollback
@@ -456,6 +505,7 @@ func assembleDeployRun(d Deps, c *cobra.Command) (Target, deployOpts, error) {
 	envFile, _ := c.Flags().GetString("env-file")
 	diskThreshold, _ := c.Flags().GetString("disk-threshold")
 	skipSmoke, _ := c.Flags().GetBool("skip-smoke")
+	binaryName, _ := c.Flags().GetString("binary")
 
 	cfg, err := state.LoadConfig(d.Home)
 	if err != nil {
@@ -483,6 +533,15 @@ func assembleDeployRun(d Deps, c *cobra.Command) (Target, deployOpts, error) {
 	if mf != nil && mf.Fields.Images != nil {
 		sidecars = mf.Fields.Images.Sidecars
 	}
+	// The fast path resolves its artifact selector BEFORE the pipeline
+	// runs: a wrong --binary name dies here, not at the remote swap.
+	if c.Flags().Changed("binary") {
+		if _, err := ChooseBinaryBlock(target.Binary, binaryName); err != nil {
+			return Target{}, deployOpts{}, err
+		}
+	} else {
+		binaryName = ""
+	}
 	return target, deployOpts{
 		dockerfile:    dockerfile,
 		envFile:       envFile,
@@ -491,6 +550,7 @@ func assembleDeployRun(d Deps, c *cobra.Command) (Target, deployOpts, error) {
 		rolling:       rolling,
 		drainTimeout:  drain,
 		sidecars:      sidecars,
+		binary:        binaryName,
 	}, nil
 }
 
@@ -508,6 +568,12 @@ func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
 	ctx := c.Context()
 
 	if rollbackSet {
+		if opts.binary != "" {
+			// Binary rollback's identity is the recorded marker (the
+			// pipeline resolves it) — the image stamp ladder does not
+			// apply.
+			return runDeployPipeline(d, ctx, target, "", "rollback", opts)
+		}
 		// THE resolution ladder: explicit arg > the VM's deployed-sha stamp
 		// file > die. NEVER git HEAD (the shell's silent-HEAD fallback
 		// redeployed the very build being rolled back from).
