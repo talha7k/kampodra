@@ -95,7 +95,7 @@ KAMPODRA_HOST; --ssh-key | profile sshKey | KAMPODRA_SSH_KEY | ssh-agent /
   shell    interactive sh inside the running api container; ` + "`exec -- <cmd>`" + `
            runs a one-shot command instead.
 
-ROLLING (--rolling, opt-in) — zero-downtime shadow double re-point:
+ROLLING (the default) — zero-downtime shadow double re-point:
   the new version boots as <container>-shadow from the SHA tag (never
   :latest) on the kamal network with a loopback-only probe port; the health
   gate passes BEFORE any traffic can reach it; kamal-proxy re-points to the
@@ -145,8 +145,9 @@ func newDeployCommand(d Deps) *cobra.Command {
 	cmd.Flags().String("sha", "", "stream an existing local build of this sha (required, never inferred)")
 	cmd.Flags().String("rollback", "", "instant image-tag rollback: explicit sha, else the VM's deployed-sha stamp, else die (never HEAD)")
 	cmd.Flags().Lookup("rollback").NoOptDefVal = "-" // bare --rollback = stamp-resolved
-	cmd.Flags().Bool("rolling", false, "zero-downtime: shadow container double re-point (see the ROLLING section in --help)")
-	cmd.Flags().Int("drain-timeout", deployRollingDrainTimeout, "seconds to wait for the proxy switch to confirm before continuing (--rolling only)")
+	cmd.Flags().Bool("rolling", true, "zero-downtime: shadow container double re-point — the DEFAULT since the 2026-10-10 promotion (OCI live-fire drill + two clean prod rolling deploys)")
+	cmd.Flags().Bool("in-place", false, "restart-in-place deploy (the pre-promotion default) — beats --rolling")
+	cmd.Flags().Int("drain-timeout", deployRollingDrainTimeout, "seconds to wait for the proxy switch to confirm before continuing (rolling mode only)")
 	cmd.Flags().String("disk-threshold", "", "fail closed when VM disk usage >= pct (pipeline)")
 	cmd.Flags().String("env-file", "", "push this env file (0600 + atomic mv, API_GIT_SHA stamped) before restart (pipeline)")
 	cmd.Flags().Bool("skip-smoke", false, "skip the public smoke (pipeline)")
@@ -364,6 +365,16 @@ func newDeployShellSub(d Deps, resolve func(*cobra.Command, string) (Target, err
 // runDeployRoot dispatches the pipeline surface: --rollback / --sha /
 // plain (optionally --rolling), with the shell's argument grammar (a
 // positional in rollback mode is the sha; anything else is unknown).
+// resolveRollingMode returns the effective deploy mode: rolling is the
+// DEFAULT since the 2026-10-10 promotion (OCI live-fire drill + two clean
+// prod rolling deploys); --in-place is the escape hatch (the pre-promotion
+// default) and beats --rolling.
+func resolveRollingMode(c *cobra.Command) bool {
+	rolling, _ := c.Flags().GetBool("rolling")
+	inPlace, _ := c.Flags().GetBool("in-place")
+	return rolling && !inPlace
+}
+
 // validateDeployArgs enforces deploy's flag contract: mode exclusivity,
 // percentage/fragment shapes, and the positional-sha rules (only the
 // rollback mode takes one; --rollback=<sha> + positional = given twice).
@@ -371,18 +382,22 @@ func newDeployShellSub(d Deps, resolve func(*cobra.Command, string) (Target, err
 func validateDeployArgs(c *cobra.Command, args []string) (string, error) {
 	shaArg, _ := c.Flags().GetString("sha")
 	rollbackSet := c.Flags().Changed("rollback")
-	rolling, _ := c.Flags().GetBool("rolling")
+	rolling := resolveRollingMode(c)
 	drain, _ := c.Flags().GetInt("drain-timeout")
 	diskThreshold, _ := c.Flags().GetString("disk-threshold")
 
 	if c.Flags().Changed("sha") && rollbackSet {
 		return "", fmt.Errorf("--rollback and --sha are exclusive")
 	}
-	if rolling && rollbackSet {
+	// Only an EXPLICIT --rolling conflicts with --rollback: a bare
+	// --rollback under the rolling default is the everyday instant
+	// rollback and stays valid (rollback never boots a shadow — it is
+	// inherently in-place; assembleDeployRun forces it).
+	if c.Flags().Changed("rolling") && rolling && rollbackSet {
 		return "", fmt.Errorf("--rolling and --rollback are exclusive (rollback is instant — the old image is already on the VM)")
 	}
 	if c.Flags().Changed("drain-timeout") && !rolling {
-		return "", fmt.Errorf("--drain-timeout requires --rolling")
+		return "", fmt.Errorf("--drain-timeout requires the rolling mode (the default) — not available with --in-place")
 	}
 	if drain < 0 {
 		return "", fmt.Errorf("--drain-timeout must be a non-negative number of seconds (got: %d)", drain)
@@ -430,7 +445,12 @@ func assembleDeployRun(d Deps, c *cobra.Command) (Target, deployOpts, error) {
 	host, _ := c.Flags().GetString("host")
 	key, _ := c.Flags().GetString("ssh-key")
 	profile, _ := c.Flags().GetString("profile")
-	rolling, _ := c.Flags().GetBool("rolling")
+	rolling := resolveRollingMode(c)
+	// Rollback never boots a shadow: it is instant and inherently
+	// in-place (the old image is already on the VM).
+	if c.Flags().Changed("rollback") {
+		rolling = false
+	}
 	drain, _ := c.Flags().GetInt("drain-timeout")
 	dockerfile, _ := c.Flags().GetString("dockerfile")
 	envFile, _ := c.Flags().GetString("env-file")

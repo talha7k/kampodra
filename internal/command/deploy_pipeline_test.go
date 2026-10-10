@@ -242,7 +242,7 @@ func mustContain(t *testing.T, where, what string) {
 
 func TestDeployPipelineHappyPathSequencePinned(t *testing.T) {
 	deps, stubDir, stdout, stderr, reporoot := setupDeployPipeline(t)
-	if code := runDeploy(t, deps, "--host", statusHost); code != 0 {
+	if code := runDeploy(t, deps, "--host", statusHost, "--in-place"); code != 0 {
 		t.Fatalf("exit = %d, stdout:\n%sstderr:\n%s", code, stdout.String(), stderr.String())
 	}
 	inv := invocations(t, stubDir)
@@ -434,7 +434,7 @@ func TestDeployPipelineBuildFailureRecordsFailedLedger(t *testing.T) {
 func TestDeployPipelineUnhealthyGateDiesWithRollbackHint(t *testing.T) {
 	deps, stubDir, _, stderr, _ := setupDeployPipeline(t)
 	writeFixture(t, stubDir, "health", `{"ok":true,"git":"0000000"}`)
-	if code := runDeploy(t, deps, "--host", statusHost); code != 1 {
+	if code := runDeploy(t, deps, "--host", statusHost, "--in-place"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	errStr := stderr.String()
@@ -449,7 +449,7 @@ func TestDeployPipelineUnhealthyGateDiesWithRollbackHint(t *testing.T) {
 func TestDeployPipelineSmokeMismatchDies(t *testing.T) {
 	deps, stubDir, _, stderr, _ := setupDeployPipeline(t)
 	writeFixture(t, stubDir, "served-sha", "bbb2222") // edge still serving the OLD build
-	if code := runDeploy(t, deps, "--host", statusHost); code != 1 {
+	if code := runDeploy(t, deps, "--host", statusHost, "--in-place"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	mustContain(t, stderr.String(), "served git sha mismatch")
@@ -459,7 +459,7 @@ func TestDeployPipelineSkipSmoke(t *testing.T) {
 	deps, _, stdout, _, _ := setupDeployPipeline(t)
 	// Dead prober: with --skip-smoke the deploy must still succeed.
 	deps.Prober = &probe.Prober{HTTPClient: &http.Client{Transport: deadTransport{}}}
-	if code := runDeploy(t, deps, "--host", statusHost, "--skip-smoke"); code != 0 {
+	if code := runDeploy(t, deps, "--host", statusHost, "--skip-smoke", "--in-place"); code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
 	mustContain(t, stdout.String(), "--skip-smoke")
@@ -487,12 +487,12 @@ func TestDeployPipelineFlagValidation(t *testing.T) {
 		}
 		mustContain(t, stderr.String(), "exclusive")
 	})
-	t.Run("--drain-timeout requires --rolling", func(t *testing.T) {
+	t.Run("--drain-timeout requires rolling (dies with --in-place)", func(t *testing.T) {
 		deps, _, _, stderr, _ := setupDeployPipeline(t)
-		if code := runDeploy(t, deps, "--host", statusHost, "--drain-timeout", "5"); code != 1 {
+		if code := runDeploy(t, deps, "--host", statusHost, "--drain-timeout", "5", "--in-place"); code != 1 {
 			t.Fatalf("exit = %d, want 1", code)
 		}
-		mustContain(t, stderr.String(), "--drain-timeout requires --rolling")
+		mustContain(t, stderr.String(), "--drain-timeout requires the rolling mode")
 	})
 	t.Run("unknown positional argument dies", func(t *testing.T) {
 		deps, _, _, stderr, _ := setupDeployPipeline(t)
@@ -570,7 +570,7 @@ func TestDeployPipelineSidecarsStreamed(t *testing.T) {
 		t.Fatal(err)
 	}
 	deps.Dir = reporoot
-	if code := runDeploy(t, deps, "--host", statusHost); code != 0 {
+	if code := runDeploy(t, deps, "--host", statusHost, "--in-place"); code != 0 {
 		t.Fatalf("exit = %d, stdout:\n%sstderr:\n%s", code, stdout.String(), stderr.String())
 	}
 	inv := invocations(t, stubDir)
