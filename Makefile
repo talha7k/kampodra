@@ -3,7 +3,7 @@
 # `make publish` is the documented release flow; it NEVER auto-runs and is
 # never wired into CI. It requires: a clean tree on a tagged commit
 # (git tag v<version> == npm/package.json version), and npm auth for the
-# @kampodra scope.
+# @talha7k scope.
 
 GO        ?= go
 VERSION   := $(shell node -p "require('./npm/package.json').version")
@@ -86,7 +86,7 @@ publish:
 	$(MAKE) cross-compile
 	$(MAKE) release-check
 	set -e; for triple in $(PLATFORMS); do \
-		echo "== npm publish @kampodra/$$triple@$(VERSION)"; \
+		echo "== npm publish @talha7k/$$triple@$(VERSION)"; \
 		npm publish ./npm/platforms/$$triple --tag $(NPM_TAG) --access public; \
 	done
 	echo "== npm publish kampodra@$(VERSION)"
