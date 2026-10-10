@@ -1,6 +1,6 @@
 {
   "name": "@kampodra/linux-x64",
-  "version": "0.7.0-beta.3",
+  "version": "0.7.0-beta.4",
   "description": "kampodra native binary for linux-x64 (placeholder — make release fills bin/kampodra from dist/)",
   "license": "AGPL-3.0",
   "os": [

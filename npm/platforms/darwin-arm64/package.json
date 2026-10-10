@@ -1,6 +1,6 @@
 {
   "name": "@kampodra/darwin-arm64",
-  "version": "0.7.0-beta.3",
+  "version": "0.7.0-beta.4",
   "description": "kampodra native binary for darwin-arm64 (placeholder — make release fills bin/kampodra from dist/)",
   "license": "AGPL-3.0",
   "os": [
