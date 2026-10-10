@@ -145,10 +145,10 @@ green never touched).
 
 ### Release hygiene
 
-- [ ] **Publish to npm** — `make cross-compile && git tag v<version> &&
+- [x] **Publish to npm** — `make cross-compile && git tag v<version> &&
       make publish` (publishes platform packages first, then root; needs
-      npm auth/OTP). First publish claims the `@kampodra` scope — verify
-      it's free. (Repo is on GitHub since 2026-10-09:
+      npm auth/OTP). Published under the personal `@talha7k` scope
+      (2026-10-10, 0.7.0-beta.4: root + 4 platform packages, `beta` tag). (Repo is on GitHub since 2026-10-09:
       github.com/talha7k/kampodra, main pushed.)
 - [x] **Version stamping** — main.version stamped from the npm package
       version (`-X main.version=$(VERSION)` in cross-compile), plus a
