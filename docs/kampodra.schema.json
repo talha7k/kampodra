@@ -117,6 +117,69 @@
     "migrateScript": {
       "type": "string",
       "description": "Repo-relative path of the app's db migrate script (migrate runs it on the VM)."
+    },
+    "binary": {
+      "type": "object",
+      "description": "Deploy --binary artifacts, keyed by name (a repo ships one per stack \u2014 e.g. the Go api AND the TS api during a cutover). `deploy --binary <name>` fast-pushes one: local build \u2192 atomic remote swap \u2192 restart \u2192 the same identity gates. The app unit bind-mounts each declared dir and execs the block's entry; vm-prepare --binary pins which one a VM serves. Code-only: dependency changes redeploy the image.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "dir",
+          "buildDir",
+          "entry",
+          "imagePath"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["go", "rust", "node"],
+            "description": "go/rust: a single native executable (local cross-build, file swap, direct exec). node: a source tree run through a runtime (tsx/node): tar the tree, swap the dir, exec <exec> <dir>/<entry>."
+          },
+          "dir": {
+            "type": "string",
+            "description": "Absolute VM dir bind-mounted into the container (host path == in-container path). Staging and the run path share this filesystem so the swap mv is atomic."
+          },
+          "buildDir": {
+            "type": "string",
+            "description": "Repo-relative local build cwd (e.g. apps/api-go)."
+          },
+          "target": {
+            "type": "string",
+            "description": "go: the package (./cmd/server). rust: the bin name. node: unused (source-run)."
+          },
+          "artifact": {
+            "type": "string",
+            "description": "Artifact path under buildDir after the build. go: must be empty (the build writes staging). rust: default <triple>/release/<target>. node: the source dir under buildDir (empty = buildDir itself)."
+          },
+          "entry": {
+            "type": "string",
+            "description": "The file the container execs under dir: go/rust the binary's name, node the entry script (e.g. src/serve-node.ts)."
+          },
+          "exec": {
+            "type": "string",
+            "description": "node only, required: the runtime (tsx or node) the unit prefixes the entry with. go/rust must leave it empty (the artifact IS the executable)."
+          },
+          "imagePath": {
+            "type": "string",
+            "description": "Absolute path of the artifact INSIDE the image \u2014 image deploys mirror it into the mount so the unit's override serves the deployed version."
+          },
+          "depsPath": {
+            "type": "string",
+            "description": "node only, required: the in-image node_modules the mount symlinks at \u2014 the mount never carries dependencies (the image is the dep snapshot)."
+          },
+          "depsManifest": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "node only: repo-relative dep-manifest files hashed for drift detection (default: <buildDir>/package.json + root pnpm-lock.yaml). A code push whose hash differs from the image-stamped marker refuses."
+          },
+          "triple": {
+            "type": "string",
+            "description": "rust: cargo target triple (default aarch64-unknown-linux-musl \u2014 the golden images are musl-based)."
+          }
+        }
+      }
     }
   }
 }
