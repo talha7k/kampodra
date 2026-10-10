@@ -40,6 +40,7 @@ type CloudAuth struct {
 	Provider          string `json:"provider"`
 	Profile           string `json:"profile"`
 	Compartment       string `json:"compartment"`
+	Namespace         string `json:"namespace"`
 	InstancePrincipal bool   `json:"instancePrincipal"`
 }
 
@@ -83,25 +84,40 @@ func withProfile(args []string, profile string, instancePrincipal bool) []string
 	return append(args, AuthArgs(instancePrincipal)...)
 }
 
+// withNamespace appends the resolved tenancy namespace. Empty stays
+// flag-free: the caller explicitly chose CLI-native resolution.
+func withNamespace(args []string, namespace string) []string {
+	if namespace != "" {
+		args = append(args, "--namespace", namespace)
+	}
+	return args
+}
+
 // ObjectListArgs ports the `oci os object list --all` shape (--profile stays
 // on the composed vector; the scripts' static gates read it there).
-func ObjectListArgs(bucket, prefix, profile string, instancePrincipal bool) []string {
+// namespace is the RESOLVED tenancy namespace ("" = let the CLI resolve
+// natively) — the laptop path must pass it: the CLI's internal resolution
+// fails there ("Unable to retrieve namespace internally").
+func ObjectListArgs(bucket, prefix, namespace, profile string, instancePrincipal bool) []string {
 	args := []string{"os", "object", "list", "--all", "--bucket-name", bucket}
 	if prefix != "" {
 		args = append(args, "--prefix", prefix)
 	}
+	args = withNamespace(args, namespace)
 	return withProfile(args, profile, instancePrincipal)
 }
 
 // ObjectHeadArgs ports `oci os object head` (digest metadata source).
-func ObjectHeadArgs(bucket, object, profile string, instancePrincipal bool) []string {
+func ObjectHeadArgs(bucket, object, namespace, profile string, instancePrincipal bool) []string {
 	args := []string{"os", "object", "head", "--bucket-name", bucket, "--name", object}
+	args = withNamespace(args, namespace)
 	return withProfile(args, profile, instancePrincipal)
 }
 
 // ObjectGetArgs ports `oci os object get --file` (the download leg).
-func ObjectGetArgs(bucket, object, file, profile string, instancePrincipal bool) []string {
+func ObjectGetArgs(bucket, object, file, namespace, profile string, instancePrincipal bool) []string {
 	args := []string{"os", "object", "get", "--bucket-name", bucket, "--name", object, "--file", file}
+	args = withNamespace(args, namespace)
 	return withProfile(args, profile, instancePrincipal)
 }
 

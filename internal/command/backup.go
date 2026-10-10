@@ -27,24 +27,26 @@ const restoreVerifyBin = "/usr/local/bin/restore-verify"
 
 // backupHelp is the shell backup.sh usage heredoc, kampodra-fied.
 const backupHelp = `Usage:
-  kampodra backup list [--prefix <prefix>] [--bucket <name>]
-  kampodra backup download <object> [--out <file>] [--bucket <name>]
+  kampodra backup list [--prefix <prefix>] [--bucket <name>] [--namespace <ns>]
+  kampodra backup download <object> [--out <file>] [--bucket <name>] [--namespace <ns>]
   kampodra backup verify <local.db|.tgz> [--host <user@ip>] [--ssh-key <path>] [--profile <name>]
   kampodra backup restore-plan <object> [--bucket <name>]
 
 Auth is the oci CLI's own — kampodra passes no auth flags unless the
 instance profile's "cloud" block overrides it (profile, compartment,
-instancePrincipal); OCI_PROFILE / OCI_COMPARTMENT env are the escape
-hatch. kampodra never accepts, stores, or logs credential material.
-Bucket: --bucket (default from the project config; KAMPODRA_BUCKET
-overrides). LIST-denied by policy is not fatal for download/verify — GET
-works with just the object name; ` + "`list`" + ` prints the exact policy shape
-when denied. verify uploads each .db member to a VM scratch file and runs
-/usr/local/bin/restore-verify -db on it (read-only; scratch only, NEVER
-writes into the data dir). --migrated-topology passes restore-verify's
-drill flag through (bulk-migration chain shape downgraded to warnings).
-restore-plan prints the documented stop/swap/start sequence and NEVER
-executes anything.
+namespace, instancePrincipal); OCI_PROFILE / OCI_COMPARTMENT / OCI_NAMESPACE
+env are the escape hatch. kampodra never accepts, stores, or logs credential
+material. The tenancy namespace resolves --namespace > cloud block /
+OCI_NAMESPACE > oci os ns get and is passed explicitly (the CLI's internal
+namespace resolution fails on laptop configs). Bucket: --bucket (default
+from the project config; KAMPODRA_BUCKET overrides). LIST-denied by policy
+is not fatal for download/verify — GET works with just the object name;
+` + "`list`" + ` prints the exact policy shape when denied. verify uploads each .db
+member to a VM scratch file and runs /usr/local/bin/restore-verify -db on it
+(read-only; scratch only, NEVER writes into the data dir).
+--migrated-topology passes restore-verify's drill flag through
+(bulk-migration chain shape downgraded to warnings). restore-plan prints
+the documented stop/swap/start sequence and NEVER executes anything.
 
 Examples:
   kampodra backup list --prefix tenants/
@@ -69,6 +71,7 @@ func newBackupCommand(d Deps) *cobra.Command {
 	})
 	pf := cmd.PersistentFlags()
 	pf.String("bucket", "", "object-storage bucket (default: project config bucket; KAMPODRA_BUCKET overrides)")
+	pf.String("namespace", "", "tenancy object-storage namespace (default: resolved via oci os ns get; OCI_NAMESPACE / the profile cloud block \"namespace\" override)")
 	pf.String("prefix", "", "object name prefix for list")
 	pf.String("out", "", "download destination (default: the object's basename)")
 	pf.String("profile", "", "kampodra INSTANCE profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
@@ -161,7 +164,39 @@ func cloudAuthFor(d Deps, target Target) cloud.CloudAuth {
 			auth.Compartment = v
 		}
 	}
+	if auth.Namespace == "" {
+		if v, ok := d.Env("OCI_NAMESPACE"); ok {
+			auth.Namespace = v
+		}
+	}
 	return auth
+}
+
+// resolveOSNamespace resolves the tenancy object-storage namespace for the
+// `os object` calls, in preference order: an explicit --namespace flag, the
+// cloud block / OCI_NAMESPACE (carried on auth), else `oci os ns get` — the
+// same call the oci CLI itself wraps for its internal resolution. The ns get
+// leg is load-bearing on the operator laptop: the CLI's internal namespace
+// resolution fails under user-principal configs ("Unable to retrieve
+// namespace internally", 2026-10-10 live fire) while instance-principal VMs
+// resolved fine — `os ns get` works in both worlds. Shared by the backup
+// family and image-import.
+func resolveOSNamespace(ctx context.Context, auth cloud.CloudAuth, explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	if auth.Namespace != "" {
+		return auth.Namespace, nil
+	}
+	nsOut, err := cloud.RunOCI(ctx, cloud.OSNamespaceArgs(auth))
+	if err != nil {
+		return "", fmt.Errorf("could not resolve the tenancy object-storage namespace (pass it explicitly: --namespace <ns>, the profile cloud block \"namespace\", or OCI_NAMESPACE): %w", err)
+	}
+	ns := cloud.OSNamespace(nsOut)
+	if ns == "" {
+		return "", fmt.Errorf("could not resolve the tenancy object-storage namespace — pass it explicitly: --namespace <ns>, the profile cloud block \"namespace\", or OCI_NAMESPACE")
+	}
+	return ns, nil
 }
 
 // profileLabel renders the auth identity for human output: the configured
@@ -196,6 +231,10 @@ func runBackupList(d Deps, c *cobra.Command) error {
 	if err := cloud.CheckProvider(auth); err != nil {
 		return err
 	}
+	namespace, err := resolveOSNamespace(c.Context(), auth, flagString(c, "namespace"))
+	if err != nil {
+		return err
+	}
 	prefix := flagString(c, "prefix")
 
 	suffix := fmt.Sprintf(" (profile: %s", profileLabel(auth))
@@ -209,7 +248,7 @@ func runBackupList(d Deps, c *cobra.Command) error {
 		fmt.Fprintf(d.Stdout, "[backup] objects in bucket %s%s\n", bucket, suffix)
 	}
 
-	out, err := cloud.RunOCI(c.Context(), cloud.ObjectListArgs(bucket, prefix, auth.Profile, auth.InstancePrincipal))
+	out, err := cloud.RunOCI(c.Context(), cloud.ObjectListArgs(bucket, prefix, namespace, auth.Profile, auth.InstancePrincipal))
 	if err != nil {
 		msg := err.Error()
 		if cloud.IsAuthDenied(msg) {
@@ -247,13 +286,17 @@ func runBackupDownload(d Deps, c *cobra.Command, obj string) error {
 	if err := cloud.CheckProvider(auth); err != nil {
 		return err
 	}
+	namespace, err := resolveOSNamespace(c.Context(), auth, flagString(c, "namespace"))
+	if err != nil {
+		return err
+	}
 
 	out := flagString(c, "out")
 	if out == "" {
 		out = filepath.Base(obj)
 	}
 
-	headJSON, _ := cloud.RunOCI(c.Context(), cloud.ObjectHeadArgs(bucket, obj, auth.Profile, auth.InstancePrincipal))
+	headJSON, _ := cloud.RunOCI(c.Context(), cloud.ObjectHeadArgs(bucket, obj, namespace, auth.Profile, auth.InstancePrincipal))
 	expected := cloud.ExpectedDigest(headJSON)
 
 	// 0600 FROM CREATION: pre-create the file 0600, oci get truncates into it.
@@ -262,7 +305,7 @@ func runBackupDownload(d Deps, c *cobra.Command, obj string) error {
 		return fmt.Errorf("cannot write %s", out)
 	}
 	f.Close()
-	if _, err := cloud.RunOCI(c.Context(), cloud.ObjectGetArgs(bucket, obj, out, auth.Profile, auth.InstancePrincipal)); err != nil {
+	if _, err := cloud.RunOCI(c.Context(), cloud.ObjectGetArgs(bucket, obj, out, namespace, auth.Profile, auth.InstancePrincipal)); err != nil {
 		return fmt.Errorf("object get failed for %s (bucket %s): %w", obj, bucket, err)
 	}
 	if err := os.Chmod(out, 0o600); err != nil {

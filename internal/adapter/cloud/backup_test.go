@@ -149,23 +149,59 @@ func TestHashFile(t *testing.T) {
 // ONLY. Every arg vector carries --profile; instance principal adds --auth.
 func TestArgBuildersCarryProfile(t *testing.T) {
 	vecs := [][]string{
-		ObjectListArgs("bkt", "db/", "myprof", false),
-		ObjectHeadArgs("bkt", "db/x.db", "myprof", false),
-		ObjectGetArgs("bkt", "db/x.db", "/tmp/out", "myprof", false),
+		ObjectListArgs("bkt", "db/", "", "myprof", false),
+		ObjectHeadArgs("bkt", "db/x.db", "", "myprof", false),
+		ObjectGetArgs("bkt", "db/x.db", "/tmp/out", "", "myprof", false),
 	}
 	for i, v := range vecs {
 		if !contains(v, "--profile") {
 			t.Errorf("vec %d missing --profile: %v", i, v)
 		}
 	}
-	ip := ObjectListArgs("bkt", "", "myprof", true)
+	ip := ObjectListArgs("bkt", "", "", "myprof", true)
 	if !contains(ip, "--auth") || !contains(ip, "instance_principal") {
 		t.Errorf("instance-principal auth args missing: %v", ip)
 	}
-	noIP := ObjectListArgs("bkt", "", "myprof", false)
+	noIP := ObjectListArgs("bkt", "", "", "myprof", false)
 	for _, a := range noIP {
 		if a == "instance_principal" {
 			t.Errorf("--auth leaked into config-file auth vector: %v", noIP)
+		}
+	}
+}
+
+// The 2026-10-10 laptop-path fix: the tenancy namespace resolved by the
+// caller must ride EVERY `os object` vector as `--namespace` — the oci
+// CLI's internal namespace resolution fails under user-principal laptop
+// configs ("Unable to retrieve namespace internally"), so kampodra
+// resolves it first (explicit flag/config, else `oci os ns get`) and
+// passes it explicitly. An empty namespace stays flag-free (the caller
+// chose to let the CLI resolve natively).
+func TestObjectArgsCarryResolvedNamespace(t *testing.T) {
+	vecs := map[string][]string{
+		"list": ObjectListArgs("bkt", "db/", "test-ns", "myprof", false),
+		"head": ObjectHeadArgs("bkt", "db/x.db", "test-ns", "myprof", false),
+		"get":  ObjectGetArgs("bkt", "db/x.db", "/tmp/out", "test-ns", "myprof", false),
+	}
+	for name, v := range vecs {
+		found := false
+		for i, a := range v {
+			if a == "--namespace" && i+1 < len(v) && v[i+1] == "test-ns" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s vector missing --namespace test-ns: %v", name, v)
+		}
+	}
+	empty := [][]string{
+		ObjectListArgs("bkt", "", "", "myprof", false),
+		ObjectHeadArgs("bkt", "x", "", "myprof", false),
+		ObjectGetArgs("bkt", "x", "/tmp/o", "", "myprof", false),
+	}
+	for i, v := range empty {
+		if contains(v, "--namespace") {
+			t.Errorf("vec %d must omit --namespace when unresolved: %v", i, v)
 		}
 	}
 }
@@ -211,13 +247,13 @@ func TestParseCloudAuthLenient(t *testing.T) {
 }
 
 func TestWithProfileOmitsUnset(t *testing.T) {
-	got := ObjectListArgs("bkt", "", "", false)
+	got := ObjectListArgs("bkt", "", "", "", false)
 	for _, a := range got {
 		if a == "--profile" {
 			t.Errorf("empty profile must not reach the oci CLI: %v", got)
 		}
 	}
-	got = ObjectListArgs("bkt", "", "myprof", false)
+	got = ObjectListArgs("bkt", "", "", "myprof", false)
 	found := false
 	for i, a := range got {
 		if a == "--profile" && i+1 < len(got) && got[i+1] == "myprof" {
