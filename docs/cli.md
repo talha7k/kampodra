@@ -44,7 +44,7 @@ kampodra deploy [--host root@<ip>] [--profile <name>] [--sha <sha7>] [--rollback
 | `--rolling` | bool | `false` | zero-downtime shadow-container double re-point |
 | `--drain-timeout` | int | `10` | seconds to wait for the proxy switch to confirm (`--rolling` only) |
 | `--disk-threshold` | string | `""` | fail closed BEFORE the build when VM disk usage ≥ pct (0–100) |
-| `--binary` | string | `""` | fast-push a declared artifact (kampodra.json `"binary"`) instead of the image: local cross-build → atomic remote swap → restart → the SAME identity gates (served-sha health gate, public smoke, stamp, ledger). Bare `--binary` picks the lone block; `--binary <name>` (space form) picks among several. Exclusive with `--sha`/`--rolling` |
+| `--binary` | string | `""` | fast-push a declared artifact (kampodra.json `"binary"`) instead of the image: local build → atomic remote swap → restart → the SAME identity gates (served-sha health gate, public smoke, stamp, ledger). The `static` kind restarts NOTHING: the built dist swaps in and the next request serves it (freshness gated on `/build-id.txt`). Bare `--binary` picks the lone block; `--binary <name>` (space form) picks among several. Exclusive with `--sha`/`--rolling` |
 
 ### deploy --binary (the fast path)
 
@@ -62,7 +62,10 @@ the Go api AND the TS api during a cutover:
                 "imagePath": "/app/apps/api", "depsPath": "/app/node_modules" },
     "api-rs": { "kind": "rust", "dir": "/data/app", "buildDir": "crates/api",
                 "target": "esellar-api", "entry": "esellar-api",
-                "imagePath": "/usr/local/bin/esellar-api" }
+                "imagePath": "/usr/local/bin/esellar-api" },
+    "web-dist": { "kind": "static", "dir": "/data/web", "buildDir": "apps/web",
+                  "artifact": "dist", "imagePath": "/app/apps/web/dist",
+                  "build": "pnpm build --filter web", "env": "WEB_DIST_DIR" }
   }
 }
 ```
@@ -79,6 +82,16 @@ the Go api AND the TS api during a cutover:
   images are musl-based), then a single-file scp.
 - **node**: no compile — the source tree is tarred (`node_modules`
   excluded), extracted into a staging sibling, and the whole dir swaps.
+- **static** (a built SPA dist): the declared `build` command runs with
+  cwd=`buildDir`, its `artifact` dir is tarred, and the mount swaps —
+  with **no restart**: the app serves the mount per-request, so the very
+  next request sees the new dist. The freshness gate fetches
+  `/build-id.txt` VM-side and requires it to serve the pushed sha (the
+  same signal the app's BuildVersionWatcher consumes). The stamp rides
+  into the swap, so `.prev` rollback restores the dist AND its build-id.
+  `vm-prepare` renders the unit with `-v <dir>:<dir>` plus
+  `-e <env>=<dir>` (the app's read-through env); static blocks never
+  render an exec override — the image's entrypoint keeps serving.
 - The swap is atomic (staging and run path share a filesystem), guarded
   by a remote mkdir lock (a concurrent push dies naming it), and keeps
   the previous artifact at `<run>.prev` plus a `<run>.prev.sha` marker.
@@ -90,10 +103,12 @@ the Go api AND the TS api during a cutover:
   before reporting the failure; `--binary --rollback` restores the
   recorded previous artifact (marker-verified; only the last push is
   undoable — image rollback stays `kampodra deploy --rollback`).
-- Image deploys keep the mount honest: every image deploy mirrors the
-  image's artifact into the mount (`podman cp` from a throwaway create)
-  so the unit's exec override never serves the last fast-pushed version.
-  Multiple blocks: pin the VM's artifact with `vm-prepare --binary <name>`.
+- Image deploys keep every mount honest: each image deploy mirrors EVERY
+  declared block's image artifact into its mount (`podman cp` from a
+  throwaway create, one per block) so neither the backend binary nor the
+  frontend dist drifts from the release. `vm-prepare --binary <name>`
+  pins which exec-kind block the unit's entrypoint override targets
+  (static blocks always render their mount + env).
 
 Deploy also builds+streams every sidecar declared in the repo manifest's
 `images.sidecars` block (deploy mode only — `--rollback`/`--sha` never

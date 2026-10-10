@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/talha7k/kampodra/internal/adapter/project"
 	"github.com/talha7k/kampodra/internal/adapter/transport"
 )
 
@@ -73,3 +74,45 @@ func (f *flakyRunner) RunWithStdin(context.Context, transport.HostSpec, string, 
 	return "", nil
 }
 func (f *flakyRunner) Stream(context.Context, []string) (int, error) { return 0, nil }
+
+// namingFromProject renders the unit's bind mounts: the pinned block's
+// mount + exec override, plus EVERY static block's mount + env — a static
+// SPA dist shares the unit with the exec-kind backend.
+func TestNamingFromProjectStaticBlock(t *testing.T) {
+	apiGo := project.ManifestBinary{Kind: project.BinaryKindGo, Dir: "/data/app", Entry: "esellar-api-go"}
+	web := project.ManifestBinary{Kind: project.BinaryKindStatic, Dir: "/data/web", Env: "WEB_DIST_DIR"}
+
+	n := namingFromProject(project.Config{}, &apiGo, []project.ManifestBinary{web})
+
+	if n.BinaryMount != "-v /data/app:/data/app" || n.BinaryEntrypointFlag != "--entrypoint /data/app/esellar-api-go" {
+		t.Errorf("the pinned exec-kind block must keep its mount+override: %+v", n)
+	}
+	if len(n.StaticMounts) != 1 || n.StaticMounts[0] != "-v /data/web:/data/web" {
+		t.Errorf("StaticMounts = %v, want the web mount", n.StaticMounts)
+	}
+	if len(n.StaticEnvs) != 1 || n.StaticEnvs[0] != "-e WEB_DIST_DIR=/data/web" {
+		t.Errorf("StaticEnvs = %v, want the env passthrough", n.StaticEnvs)
+	}
+}
+
+// When the PINNED block is itself static, its mount renders once (via
+// BinaryMount) and the static sweep must not duplicate it — but the env
+// still renders exactly once.
+func TestNamingFromProjectPinnedStaticNoDoubleMount(t *testing.T) {
+	web := project.ManifestBinary{Kind: project.BinaryKindStatic, Dir: "/data/web", Env: "WEB_DIST_DIR"}
+
+	n := namingFromProject(project.Config{}, &web, []project.ManifestBinary{web})
+
+	if n.BinaryMount != "-v /data/web:/data/web" {
+		t.Errorf("BinaryMount = %q", n.BinaryMount)
+	}
+	if n.BinaryEntrypointFlag != "" || n.BinaryCmdOverride != "" {
+		t.Errorf("a static block must render no exec override: %+v", n)
+	}
+	if len(n.StaticMounts) != 0 {
+		t.Errorf("StaticMounts = %v — the pinned mount must not duplicate", n.StaticMounts)
+	}
+	if len(n.StaticEnvs) != 1 || n.StaticEnvs[0] != "-e WEB_DIST_DIR=/data/web" {
+		t.Errorf("StaticEnvs = %v, want exactly the one env", n.StaticEnvs)
+	}
+}
