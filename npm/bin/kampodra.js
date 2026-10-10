@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // kampodra bin shim (the esbuild-style platform-binary pattern): resolve
-// this platform's native binary from the matching @kampodra/<platform>
+// this platform's native binary from the matching @talha7k/<platform>
 // optionalDependency and hand it the argv verbatim. Clear, actionable error
 // when the binary is missing — never a raw stack trace.
 import { spawnSync } from "node:child_process";
@@ -19,7 +19,7 @@ const require = createRequire(import.meta.url);
 
 let bin;
 try {
-  bin = require.resolve(`@kampodra/${platform}/bin/kampodra`);
+  bin = require.resolve(`@talha7k/${platform}/bin/kampodra`);
 } catch (err) {
   console.error(`kampodra: no native binary for ${platform}.`);
   if (!SUPPORTED.has(platform)) {
@@ -28,7 +28,7 @@ try {
     );
   } else {
     console.error(
-      `  The optionalDependency @kampodra/${platform} was not installed.`,
+      `  The optionalDependency @talha7k/${platform} was not installed.`,
     );
     console.error(
       `  npm installs optional dependencies by default — check --omit=optional / "optional": false in your config, then reinstall.`,
@@ -42,7 +42,7 @@ try {
 
 if (!existsSync(bin)) {
   console.error(
-    `kampodra: @kampodra/${platform} is installed but ${bin} is missing — the package is broken, reinstall it.`,
+    `kampodra: @talha7k/${platform} is installed but ${bin} is missing — the package is broken, reinstall it.`,
   );
   process.exit(1);
 }
