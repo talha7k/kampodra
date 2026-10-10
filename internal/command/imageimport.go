@@ -132,13 +132,9 @@ func runImageImport(d Deps, c *cobra.Command) error {
 		return err
 	}
 	image, bucket, namePrefix, keepObject := stage.image, stage.bucket, stage.namePrefix, stage.keepObject
-	nsOut, err := cloud.RunOCI(ctx, cloud.OSNamespaceArgs(auth))
+	namespace, err := resolveOSNamespace(ctx, auth, "")
 	if err != nil {
 		return err
-	}
-	namespace := cloud.OSNamespace(nsOut)
-	if namespace == "" {
-		return fmt.Errorf("could not resolve the tenancy object-storage namespace")
 	}
 
 	stamp := time.Now().UTC().Format("20060102-150405")

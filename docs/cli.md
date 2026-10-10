@@ -262,16 +262,20 @@ kampodra config print                # effective project config + per-field prov
 
 OCI Object Storage backups. Auth is the `oci` CLI's own — kampodra passes
 no auth flags unless the instance profile's `cloud` block overrides it
-(`{"profile": "…", "compartment": "…", "instancePrincipal": true}`);
-`OCI_PROFILE` / `OCI_COMPARTMENT` env are the escape hatch. kampodra never
-accepts, stores, or logs credential material. The bucket resolves
-`--bucket` > `KAMPODRA_BUCKET` > project config. LIST denied by policy is
-not fatal for `download`/`verify` (GET works with just the object name);
+(`{"profile": "…", "compartment": "…", "namespace": "…", "instancePrincipal": true}`);
+`OCI_PROFILE` / `OCI_COMPARTMENT` / `OCI_NAMESPACE` env are the escape
+hatch. kampodra never accepts, stores, or logs credential material. The
+bucket resolves `--bucket` > `KAMPODRA_BUCKET` > project config. The
+tenancy namespace resolves `--namespace` > cloud block / `OCI_NAMESPACE` >
+`oci os ns get` and is passed explicitly to every `os object` call — the
+oci CLI's internal namespace resolution fails on user-principal laptop
+configs ("Unable to retrieve namespace internally"). LIST denied by policy
+is not fatal for `download`/`verify` (GET works with just the object name);
 `list` prints the exact policy shape when denied (exit 1).
 
 ```
-kampodra backup list [--prefix <prefix>] [--bucket <name>]
-kampodra backup download <object> [--out <file>] [--bucket <name>]
+kampodra backup list [--prefix <prefix>] [--bucket <name>] [--namespace <ns>]
+kampodra backup download <object> [--out <file>] [--bucket <name>] [--namespace <ns>]
 kampodra backup verify <local.db|.tgz> [--host <user@ip>] [--ssh-key <path>] [--migrated-topology]
 kampodra backup restore-plan <object> [--bucket <name>]
 ```
@@ -279,6 +283,7 @@ kampodra backup restore-plan <object> [--bucket <name>]
 | flag | type | default | description |
 |---|---|---|---|
 | `--bucket` | string | `""` | object-storage bucket (default: project config bucket; `KAMPODRA_BUCKET` overrides) |
+| `--namespace` | string | `""` | tenancy object-storage namespace (default: resolved via `oci os ns get`; `OCI_NAMESPACE` / the profile cloud block `namespace` override) |
 | `--prefix` | string | `""` | object name prefix (`list`) |
 | `--out` | string | `""` | download destination (default: the object's basename) |
 | `--host` | string | `""` | VM target for `verify` |
