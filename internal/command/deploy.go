@@ -389,7 +389,10 @@ func validateDeployArgs(c *cobra.Command, args []string) (string, error) {
 	diskThreshold, _ := c.Flags().GetString("disk-threshold")
 
 	// The --binary selector's positional form (`--binary api-go` — the
-	// same grammar as --rollback's NoOptDefVal).
+	// same grammar as --rollback's NoOptDefVal). With --rollback also
+	// bare, a sha-looking positional stays the rollback target; anything
+	// else names the binary block (a block named like a sha fragment
+	// uses the explicit --binary=<name> form).
 	args, err := applyBinaryPositional(c, args)
 	if err != nil {
 		return "", err
@@ -450,10 +453,14 @@ func validateBinaryExclusives(c *cobra.Command, rolling, rollbackSet bool, rollb
 
 // applyBinaryPositional absorbs the `--binary <name>` positional form
 // (NoOptDefVal "-" makes bare --binary flag-like) and returns the
-// remaining args. Rollback's positional (the sha) keeps priority.
+// remaining args. A sha-looking positional alongside bare --rollback
+// keeps priority as the rollback target.
 func applyBinaryPositional(c *cobra.Command, args []string) ([]string, error) {
 	name, _ := c.Flags().GetString("binary")
-	if !c.Flags().Changed("binary") || name != "-" || len(args) == 0 || c.Flags().Changed("rollback") {
+	if !c.Flags().Changed("binary") || name != "-" || len(args) == 0 {
+		return args, nil
+	}
+	if c.Flags().Changed("rollback") && shaFragmentRe.MatchString(args[0]) {
 		return args, nil
 	}
 	if err := c.Flags().Set("binary", args[0]); err != nil {
