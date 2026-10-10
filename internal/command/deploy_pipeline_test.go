@@ -196,6 +196,7 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 
 	pnpmShim := "#!/bin/bash\n" +
 		"printf '%s\\n' \"pnpm $*\" >> '" + inv + "'\n" +
+		"printf 'pnpmenv KAMPODRA_SHA=%s\\n' \"$KAMPODRA_SHA\" >> '" + inv + "'\n" +
 		"mkdir -p \"$PWD/dist\" && printf '<html>built</html>\\n' > \"$PWD/dist/index.html\"\n"
 
 	cargoShim := "#!/bin/bash\n" +
