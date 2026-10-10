@@ -1,6 +1,6 @@
 {
   "name": "kampodra",
-  "version": "0.7.0-beta.6",
+  "version": "0.7.0-beta.7",
   "description": "Registry-free deployment CLI for single-VM container stacks over SSH (Podman + kamal-proxy)",
   "license": "AGPL-3.0",
   "type": "module",
@@ -8,10 +8,10 @@
     "kampodra": "bin/kampodra.js"
   },
   "optionalDependencies": {
-    "@talha7k/darwin-arm64": "0.7.0-beta.5",
-    "@talha7k/darwin-x64": "0.7.0-beta.5",
-    "@talha7k/linux-arm64": "0.7.0-beta.5",
-    "@talha7k/linux-x64": "0.7.0-beta.5"
+    "@talha7k/darwin-arm64": "0.7.0-beta.6",
+    "@talha7k/darwin-x64": "0.7.0-beta.6",
+    "@talha7k/linux-arm64": "0.7.0-beta.6",
+    "@talha7k/linux-x64": "0.7.0-beta.6"
   },
   "engines": {
     "node": ">=20"
