@@ -1,3 +1,12 @@
+// vm-prepare — the host bootstrap (vm-prepare.sh port), OS-dispatching:
+// the guest's /etc/os-release picks the provisioner. The VM goes to
+// production from its first boot: no blue->green flip, no cert carry; the
+// first TLS certificate issues during the first deploy.
+//
+// Wiring, the provisioner core, and the shared wait/ansible legs live here;
+// the guest-OS-agnostic steps in vm_prepare_shared.go; the per-OS
+// sequences in vm_prepare_alpine.go / vm_prepare_ubuntu.go.
+
 package command
 
 import (
@@ -124,7 +133,7 @@ func newVMPrepareCommand(d Deps) *cobra.Command {
 	cmd.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json)")
 	cmd.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY")
 	cmd.Flags().String("ansible", "", "run this ansible-playbook file against the host after bootstrap")
-	cmd.Flags().String("binary", "", "binary artifact this VM serves (kampodra.json \"binary\" block) — required when the repo declares several; the unit bind-mounts its dir and execs its entry")
+	cmd.Flags().String("binary", "", "binary artifact this VM serves (kampodra.json \"binary\" block) — required when the repo declares several exec-kind blocks; the unit bind-mounts its dir and execs its entry (every static block's mount + env always renders)")
 	return cmd
 }
 
@@ -132,7 +141,10 @@ func newVMPrepareCommand(d Deps) *cobra.Command {
 // config (the adapter never imports the project adapter sideways).
 // bin is the deploy --binary artifact this VM's app unit serves (nil =
 // none — the unit renders byte-identical to the pre-binary shape).
-func namingFromProject(pj project.Config, bin *project.ManifestBinary) vmbootstrap.Naming {
+// statics are EVERY static-kind block's mounts/envs (a SPA dist shares the
+// unit with the exec-kind backend; the pinned block's own dir is skipped —
+// its mount already rode in via BinaryMount).
+func namingFromProject(pj project.Config, bin *project.ManifestBinary, statics []project.ManifestBinary) vmbootstrap.Naming {
 	envDir := pj.EnvFile
 	if i := strings.LastIndex(pj.EnvFile, "/"); i > 0 {
 		envDir = pj.EnvFile[:i]
@@ -156,8 +168,35 @@ func namingFromProject(pj project.Config, bin *project.ManifestBinary) vmbootstr
 		n.BinaryEntrypointFlag = bin.EntrypointFlag()
 		n.BinaryCmdOverride = bin.CmdOverride()
 		n.BinaryDepsPath = bin.DepsPath
+		// A pinned static block's env still renders (its mount rode in
+		// above as BinaryMount).
+		if env := bin.StaticEnvArg(); env != "" {
+			n.StaticEnvs = append(n.StaticEnvs, env)
+		}
+	}
+	for _, s := range statics {
+		if bin != nil && s.Dir == bin.Dir {
+			continue // the pinned block already rendered this dir's mount
+		}
+		n.StaticMounts = append(n.StaticMounts, s.MountArg())
+		if env := s.StaticEnvArg(); env != "" {
+			n.StaticEnvs = append(n.StaticEnvs, env)
+		}
 	}
 	return n
+}
+
+// staticBlocks collects the repo's static-kind blocks in a stable order
+// (name-sorted — the unit render is deterministic) for the naming sweep.
+func staticBlocks(blocks map[string]project.ManifestBinary) []project.ManifestBinary {
+	names := sortedBinaryNames(blocks)
+	out := make([]project.ManifestBinary, 0, len(names))
+	for _, name := range names {
+		if b := blocks[name]; b.Kind == project.BinaryKindStatic {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // imageRegistryHost strips the path off a repo reference (the ImagePrefix's
@@ -206,7 +245,7 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 			return err
 		}
 	}
-	p := &vmProvisioner{ctx: ctx, d: d, target: target, n: namingFromProject(target.Project, bin)}
+	p := &vmProvisioner{ctx: ctx, d: d, target: target, n: namingFromProject(target.Project, bin, staticBlocks(target.Binary))}
 
 	// --- 0. connectivity ------------------------------------------------------
 	p.say("waiting for ssh on %s…", target.HostSpec.Host)
@@ -246,491 +285,6 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 //
 // The siblings differ ONLY in init system + package manager; these stages
 // are the OS-agnostic skeleton both sequences call in the same order.
-
-// sshdHardening — the SAME paths/flow on both guests: ensure the Include
-// line, land the drop-in, restart, then gate. Only the restart command
-// differs (OpenRC's sshd unit vs systemd's ssh unit).
-func (p *vmProvisioner) sshdHardening(restart string) error {
-	p.say("sshd hardening: ensure drop-in + Include + restart…")
-	if err := p.run(`grep -q "^Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config || sed -i "1i Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config`); err != nil {
-		return p.die("could not ensure the sshd_config Include line", err)
-	}
-	if err := p.run("mkdir -p /etc/ssh/sshd_config.d && chmod 700 /etc/ssh/sshd_config.d"); err != nil {
-		return p.die("could not create /etc/ssh/sshd_config.d", err)
-	}
-	if err := p.upload(vmbootstrap.SSHDHardeningPath, vmbootstrap.RenderSSHDHardening()); err != nil {
-		return err
-	}
-	if err := p.run(restart); err != nil {
-		return p.die("sshd restart failed after hardening ensure", err)
-	}
-	p.say("gate: sshd hardening effective")
-	if err := p.run(vmbootstrap.GateSSHDHardened); err != nil {
-		return p.die("sshd still allows passwords (hardening ensure failed?)", err)
-	}
-	return nil
-}
-
-// managedState — the state dir + managed config files (registries.conf,
-// the sysctl drop-in); only the sysctl APPLY differs per OS (OpenRC's
-// sysctl service vs `sysctl --system`).
-func (p *vmProvisioner) managedState(sysctlSnippet string) error {
-	n := p.n
-	p.say("creating %s (the env file lands here via kampodra env push, 0600 root)…", n.EnvDir)
-	if err := p.run("mkdir -p " + n.EnvDir + " && chmod 700 " + n.EnvDir); err != nil {
-		return p.die("state dir create failed", err)
-	}
-	// The app unit bind-mounts the dataDir — ensure it exists. A
-	// volume-less host's datamount tolerates absence and only mkdirs when
-	// it mounts a volume; without this the first deploy's podman run
-	// crash-loops on `statfs <dataDir>: no such file or directory`
-	// (2026-10-09 live fire, disposable VM). On a mounted volume this is a
-	// no-op (the mountpoint exists).
-	p.say("ensuring the data dir %s (the app unit bind-mounts it)…", n.DataDir)
-	if err := p.run("mkdir -p " + n.DataDir); err != nil {
-		return p.die("data dir create failed", err)
-	}
-	// The deploy --binary artifact mount: same crash-loop hazard as the
-	// dataDir (podman run statfs on a missing path) plus, for the node
-	// kind, the deps symlink — the mount carries SOURCE only, deps come
-	// from the image (node_modules -> the image's own install). Written
-	// here so a binary push never depends on provisioning order.
-	if n.BinaryDir != "" {
-		p.say("ensuring the binary artifact dir %s (the app unit bind-mounts it)…", n.BinaryDir)
-		if err := p.run("mkdir -p " + n.BinaryDir + " && chmod 755 " + n.BinaryDir); err != nil {
-			return p.die("binary artifact dir create failed", err)
-		}
-		if n.BinaryDepsPath != "" {
-			p.say("linking %s/node_modules -> %s (in-image deps; the mount never carries them)…", n.BinaryDir, n.BinaryDepsPath)
-			if err := p.run("ln -sfn " + n.BinaryDepsPath + " " + n.BinaryDir + "/node_modules"); err != nil {
-				return p.die("node_modules symlink failed", err)
-			}
-		}
-	}
-	p.say("writing /etc/containers/registries.conf (insecure %s; search docker.io)…", n.Registry)
-	if err := p.run("mkdir -p /etc/containers"); err != nil {
-		return p.die("mkdir /etc/containers failed", err)
-	}
-	if err := p.upload(vmbootstrap.RegistriesConfPath, vmbootstrap.RenderRegistriesConf(n)); err != nil {
-		return err
-	}
-	p.say("writing %s + applying live…", vmbootstrap.SysctlConfPath)
-	if err := p.upload(vmbootstrap.SysctlConfPath, vmbootstrap.RenderSysctlConf()); err != nil {
-		return err
-	}
-	if err := p.runSh(sysctlSnippet); err != nil {
-		return p.die("sysctl ensure/apply failed", err)
-	}
-	return nil
-}
-
-// ensurePodmanNetwork — the shared app<->proxy network ensure (the proxy
-// re-point resolves the api by network DNS).
-func (p *vmProvisioner) ensurePodmanNetwork() error {
-	n := p.n
-	p.say("ensuring the '%s' podman network (the proxy re-point resolves %s:%s by network DNS)…", n.Network, n.Container, n.Port)
-	if err := p.run(fmt.Sprintf("podman network exists %s 2>/dev/null || podman network create %s", n.Network, n.Network)); err != nil {
-		return p.die(fmt.Sprintf("podman network create %s failed", n.Network), err)
-	}
-	return nil
-}
-
-// pullProxyImage — the shared kamal-proxy pre-pull (the unit/service start
-// stays offline-fast).
-func (p *vmProvisioner) pullProxyImage() error {
-	pullProxy := fmt.Sprintf("podman image exists %s || podman pull %s", vmbootstrap.ProxyImageRef, vmbootstrap.ProxyImageRef)
-	if err := p.run(pullProxy); err != nil {
-		return p.die("kamal-proxy image pull failed (docker.io reachable from the VM?)", err)
-	}
-	return nil
-}
-
-// awaitProxy — the shared kamal-proxy readiness loop (statusHint names the
-// guest's init-system status command for the failure message).
-func (p *vmProvisioner) awaitProxy(statusHint string) error {
-	proxyPS := fmt.Sprintf(`podman ps --format "{{.Names}}" | grep -qx %s`, vmbootstrap.ProxyContainer)
-	return waitUntil(p.ctx, p.d.Runner, p.target.HostSpec, vmPrepareProxyWait, proxyPS,
-		"kamal-proxy container never came up (podman logs kamal-proxy; "+statusHint+")")
-}
-
-// runProvisionSequence — both siblings are the same fail-closed pipeline:
-// run each stage in order, stop at the first failure. The stages carry the
-// OS specifics; the pipeline shape is shared.
-func runProvisionSequence(steps ...func() error) error {
-	for _, step := range steps {
-		if err := step(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// provisionAlpine — the Alpine sequence, unchanged by the dispatch: the
-// fail-closed gates through the post gates, the summary, the ansible tail.
-func (p *vmProvisioner) provisionAlpine(ansiblePath string) error {
-	err := runProvisionSequence(
-		p.alpineInitGates,
-		func() error { return p.sshdHardening("rc-service sshd restart") },
-		p.alpinePodmanStack,
-		func() error { return p.managedState(vmbootstrap.SysctlApplySnippet()) },
-		p.alpineOpenRCUnits,
-		p.alpineProxyUp,
-		p.alpineConvergeAPI,
-		p.alpinePostGates,
-	)
-	if err != nil {
-		return err
-	}
-	return p.finish("(OpenRC, no systemd anywhere)", ansiblePath)
-}
-
-// alpineInitGates — the Alpine pre gates (fail BEFORE mutating anything).
-func (p *vmProvisioner) alpineInitGates() error {
-	p.say("gate: OpenRC init + tooling")
-	if err := p.run(vmbootstrap.GateNoSystemd); err != nil {
-		return p.die("systemd is PID1 — this is not the Alpine golden image (start-fresh has NO systemd anywhere)", err)
-	}
-	if err := p.run(vmbootstrap.GateOpenRCTooling); err != nil {
-		return p.die("OpenRC tooling missing or not operational (openrc/rc-service/rc-update/supervise-daemon, rc-status)", err)
-	}
-	return nil
-}
-
-// alpinePodmanStack — apk community repo + the podman stack + cgroups.
-func (p *vmProvisioner) alpinePodmanStack() error {
-	p.say("ensuring the community repo (podman stack lives there)…")
-	if err := p.runSh(vmbootstrap.CommunityRepoSnippet()); err != nil {
-		return p.die("community repo enable / apk update failed", err)
-	}
-	if err := p.run(`grep -Eq "^[^#].*/community" /etc/apk/repositories`); err != nil {
-		return p.die("community repo could not be enabled (/etc/apk/repositories)", err)
-	}
-	p.say("installing the podman stack (idempotent)…")
-	if err := p.runSh(vmbootstrap.PodmanStackSnippet()); err != nil {
-		return p.die("podman stack install failed (apk output above)", err)
-	}
-	if err := p.runSh(vmbootstrap.PodstackGateSnippet()); err != nil {
-		return p.die("podman stack install failed", err)
-	}
-	if err := p.run(`rc-update show boot | grep -q cgroups || rc-update add cgroups boot`); err != nil {
-		return p.die("rc-update cgroups failed", err)
-	}
-	if err := p.run(`rc-service cgroups status >/dev/null 2>&1 || rc-service cgroups start`); err != nil {
-		return p.die("cgroups start failed", err)
-	}
-	return nil
-}
-
-// alpineOpenRCUnits — the network, the supervise-daemon wrappers, and the
-// anchor watcher, rc-update'd into the default runlevel (boot survival).
-func (p *vmProvisioner) alpineOpenRCUnits() error {
-	n := p.n
-	if err := p.ensurePodmanNetwork(); err != nil {
-		return err
-	}
-	p.say("installing OpenRC services %s + %s (supervise-daemon around podman run)…", n.Container, vmbootstrap.ProxyContainer)
-	apiInitD := "/etc/init.d/" + n.Container
-	if err := p.upload(apiInitD, vmbootstrap.RenderInitDAPI(n)); err != nil {
-		return err
-	}
-	if err := p.upload(vmbootstrap.ProxyInitDPath, vmbootstrap.RenderInitDProxy(n)); err != nil {
-		return err
-	}
-	if err := p.run("chmod 755 " + apiInitD + " " + vmbootstrap.ProxyInitDPath); err != nil {
-		return p.die("chmod init.d units failed", err)
-	}
-
-	// --- the anchor watcher (blue/green flip guest half) -----------------------
-	p.say("installing the kampodra-anchor watcher service (blue-green flip guest half)…")
-	if err := p.run("mkdir -p /usr/local/sbin"); err != nil {
-		return p.die("mkdir /usr/local/sbin failed", err)
-	}
-	if err := p.upload(vmbootstrap.AnchorScriptPath, vmbootstrap.RenderAnchorScript(n)); err != nil {
-		return err
-	}
-	anchorInitD := "/etc/init.d/kampodra-anchor"
-	if err := p.upload(anchorInitD, vmbootstrap.RenderInitDAnchor(n)); err != nil {
-		return err
-	}
-	if err := p.run("chmod 755 " + vmbootstrap.AnchorScriptPath + " " + anchorInitD); err != nil {
-		return p.die("chmod kampodra-anchor files failed", err)
-	}
-	if err := p.run("sh -n " + vmbootstrap.AnchorScriptPath); err != nil {
-		return p.die(vmbootstrap.AnchorScriptPath+" does not parse (busybox sh)", err)
-	}
-	if err := p.run("sh -n " + anchorInitD); err != nil {
-		return p.die(anchorInitD+" does not parse", err)
-	}
-	if err := p.run(`rc-update show default | grep -qE "^[[:space:]]*kampodra-anchor[[:space:]]*\|" || rc-update add kampodra-anchor default`); err != nil {
-		return p.die("rc-update add kampodra-anchor default failed", err)
-	}
-	if err := p.run("rc-service kampodra-anchor start"); err != nil {
-		return p.die("rc-service kampodra-anchor start failed", err)
-	}
-
-	for _, svc := range []string{n.Container, vmbootstrap.ProxyContainer} {
-		if err := p.run(fmt.Sprintf(`rc-update show default | grep -qE "^[[:space:]]*%[1]s[[:space:]]*\|" || rc-update add %[1]s default`, svc)); err != nil {
-			return p.die(fmt.Sprintf("rc-update add %s default failed", svc), err)
-		}
-	}
-
-	// Warn (never auto-restart) if a rewrite changed a unit of a RUNNING
-	// service — re-runs after a deploy must not bounce production.
-	_ = p.runSh(vmbootstrap.UnitDriftSnippet())
-	return nil
-}
-
-// alpineProxyUp — pull the edge image, start the service, await the container.
-func (p *vmProvisioner) alpineProxyUp() error {
-	p.say("pulling kamal-proxy image + starting the service…")
-	if err := p.pullProxyImage(); err != nil {
-		return err
-	}
-	if err := p.run("rc-service " + vmbootstrap.ProxyContainer + " start"); err != nil {
-		return p.die("rc-service kamal-proxy start failed", err)
-	}
-	return p.awaitProxy("rc-service kamal-proxy status")
-}
-
-// alpineConvergeAPI — start the api ONLY if a previous deploy left image + env.
-func (p *vmProvisioner) alpineConvergeAPI() error {
-	n := p.n
-	p.say("%s start check (needs image + %s — first deploy provides both)…", n.Container, n.EnvFile)
-	if err := p.runSh(vmbootstrap.APIConvergeSnippet(n)); err != nil {
-		return p.die(fmt.Sprintf("%s start failed (image + env present — investigate: podman logs %s)", n.Container, n.Container), err)
-	}
-	return nil
-}
-
-// alpinePostGates — readiness, fail-closed.
-func (p *vmProvisioner) alpinePostGates() error {
-	n := p.n
-	p.say("gate: podman >= 4.9 + netavark backend")
-	if err := p.run(vmbootstrap.GatePodmanVersion); err != nil {
-		return p.die("podman too old (need >= 4.9 for netavark)", err)
-	}
-	if err := p.run(vmbootstrap.GateNetavark); err != nil {
-		return p.die("network backend is not netavark", err)
-	}
-	p.say("gate: sysctl effective")
-	if err := p.run(vmbootstrap.GateSysctl); err != nil {
-		return p.die("net.ipv4.ip_unprivileged_port_start is not 80", err)
-	}
-	p.say("gate: registries.conf effective")
-	if err := p.run(vmbootstrap.RegistriesGate(n)); err != nil {
-		return p.die("registries.conf incomplete ("+n.Registry+" insecure + docker.io search)", err)
-	}
-	p.say("gate: services enabled in the default runlevel")
-	for _, svc := range []string{n.Container, vmbootstrap.ProxyContainer} {
-		if err := p.run(vmbootstrap.RunlevelGate(svc)); err != nil {
-			return p.die(svc+" not in the default runlevel", err)
-		}
-	}
-	if err := p.run("rc-service " + vmbootstrap.ProxyContainer + " status >/dev/null"); err != nil {
-		return p.die("kamal-proxy service not started", err)
-	}
-	p.say("gate: kampodra-anchor watcher running + INERT (no anchor conf on a fresh VM)")
-	if err := p.run(vmbootstrap.RunlevelGate("kampodra-anchor")); err != nil {
-		return p.die("kampodra-anchor not in the default runlevel", err)
-	}
-	if err := p.run("rc-service kampodra-anchor status >/dev/null"); err != nil {
-		return p.die("kampodra-anchor service not started", err)
-	}
-	if err := p.run("! test -e " + n.AnchorConf); err != nil {
-		return p.die(n.AnchorConf+" already exists on a fresh VM (wrong machine?)", err)
-	}
-	if err := p.run(vmbootstrap.GateAnchorIdleLog); err != nil {
-		return p.die("kampodra-anchor is started but never logged its idle transition (watcher loop not running?)", err)
-	}
-	return nil
-}
-
-// provisionUbuntu — the Ubuntu 24.04 sibling of provisionAlpine: the same
-// contract (fail-closed gates before ANY mutation, the same sshd hardening
-// paths, the same managed files, the same container semantics, the same
-// readiness gates) rendered for systemd + apt instead of OpenRC + apk.
-func (p *vmProvisioner) provisionUbuntu(ansiblePath string) error {
-	err := runProvisionSequence(
-		p.ubuntuInitGates,
-		func() error { return p.sshdHardening("systemctl restart ssh") },
-		p.ubuntuPodmanStack,
-		func() error { return p.managedState(vmbootstrap.SysctlApplyUbuntuSnippet()) },
-		p.ubuntuSystemdUnits,
-		p.ubuntuUnitsLive,
-		p.ubuntuConvergeAPI,
-		p.ubuntuPostGates,
-	)
-	if err != nil {
-		return err
-	}
-	return p.finish("(systemd, Ubuntu 24.04)", ansiblePath)
-}
-
-// ubuntuInitGates — the Ubuntu pre gates (fail BEFORE mutating anything):
-// systemd must BE pid1 (the inverse of Alpine's no-systemd gate) and apt
-// must be operational.
-func (p *vmProvisioner) ubuntuInitGates() error {
-	p.say("gate: systemd is PID1")
-	if err := p.run(vmbootstrap.GateSystemdPID1); err != nil {
-		return p.die("systemd is NOT PID1 — this is not the Ubuntu golden image (start-fresh boots systemd)", err)
-	}
-	p.say("gate: apt operational")
-	if err := p.run(vmbootstrap.GateAptOperational); err != nil {
-		return p.die("apt is not operational (apt-get update failed — is the mirror reachable?)", err)
-	}
-	return nil
-}
-
-// ubuntuPodmanStack — universe + the podman stack via apt, then the
-// podman/netavark verify (the apt sibling of PodstackGateSnippet's role).
-func (p *vmProvisioner) ubuntuPodmanStack() error {
-	p.say("ensuring universe + installing the podman stack (idempotent)…")
-	if err := p.runSh(vmbootstrap.AptPodmanSnippet()); err != nil {
-		return p.die("podman stack install failed (apt output above)", err)
-	}
-	p.say("gate: podman >= 4.9 + netavark backend")
-	if err := p.run(vmbootstrap.GatePodmanVersion); err != nil {
-		return p.die("podman too old (need >= 4.9 for netavark — Ubuntu 24.04 ships 4.9.x)", err)
-	}
-	if err := p.run(vmbootstrap.GateNetavark); err != nil {
-		return p.die("network backend is not netavark", err)
-	}
-	return nil
-}
-
-// ubuntuSystemdUnits — the network, the systemd units (api + kamal-proxy +
-// the anchor watcher), syntax-checked but not yet live.
-func (p *vmProvisioner) ubuntuSystemdUnits() error {
-	n := p.n
-	if err := p.ensurePodmanNetwork(); err != nil {
-		return err
-	}
-	p.say("installing systemd units %s + %s (podman run under Restart=always)…", n.Container, vmbootstrap.ProxyContainer)
-	apiUnit := vmbootstrap.APIUnitPath(n)
-	if err := p.upload(apiUnit, vmbootstrap.RenderAPIUnit(n)); err != nil {
-		return err
-	}
-	if err := p.upload(vmbootstrap.ProxyUnitPath, vmbootstrap.RenderProxyUnit(n)); err != nil {
-		return err
-	}
-	p.say("installing the kampodra-anchor watcher unit (blue-green flip guest half)…")
-	if err := p.run("mkdir -p /usr/local/sbin"); err != nil {
-		return p.die("mkdir /usr/local/sbin failed", err)
-	}
-	if err := p.upload(vmbootstrap.AnchorScriptPath, vmbootstrap.RenderAnchorScript(n)); err != nil {
-		return err
-	}
-	if err := p.upload(vmbootstrap.AnchorUnitPath, vmbootstrap.RenderAnchorUnit(n)); err != nil {
-		return err
-	}
-	if err := p.run("chmod 755 " + vmbootstrap.AnchorScriptPath); err != nil {
-		return p.die("chmod kampodra-anchor script failed", err)
-	}
-	if err := p.run("chmod 644 " + apiUnit + " " + vmbootstrap.ProxyUnitPath + " " + vmbootstrap.AnchorUnitPath); err != nil {
-		return p.die("chmod systemd units failed", err)
-	}
-	if err := p.run("sh -n " + vmbootstrap.AnchorScriptPath); err != nil {
-		return p.die(vmbootstrap.AnchorScriptPath+" does not parse (sh)", err)
-	}
-
-	// Warn (never auto-restart) if a rewrite changed a unit of a RUNNING
-	// service — re-runs after a deploy must not bounce production.
-	_ = p.runSh(vmbootstrap.UnitDriftUbuntuSnippet())
-	return nil
-}
-
-// ubuntuUnitsLive — daemon-reload after the unit uploads, enable the api
-// (its start defers to the first deploy), pull the edge image, then
-// enable --now the edge and the watcher.
-func (p *vmProvisioner) ubuntuUnitsLive() error {
-	n := p.n
-	p.say("reloading systemd + enabling units (the api defers its start to the first deploy)…")
-	if err := p.run("systemctl daemon-reload"); err != nil {
-		return p.die("systemctl daemon-reload failed", err)
-	}
-	if err := p.run("systemctl enable " + vmbootstrap.APIUnitName(n)); err != nil {
-		return p.die(fmt.Sprintf("systemctl enable %s failed", vmbootstrap.APIUnitName(n)), err)
-	}
-	p.say("pulling kamal-proxy image + starting the edge and the watcher…")
-	if err := p.pullProxyImage(); err != nil {
-		return err
-	}
-	if err := p.run("systemctl enable --now " + vmbootstrap.ProxyUnitName + " " + vmbootstrap.AnchorUnitName); err != nil {
-		return p.die("systemctl enable --now kamal-proxy/kampodra-anchor failed", err)
-	}
-	return p.awaitProxy("systemctl status kamal-proxy")
-}
-
-// ubuntuConvergeAPI — start the api unit ONLY if a previous deploy left
-// image + env.
-func (p *vmProvisioner) ubuntuConvergeAPI() error {
-	n := p.n
-	p.say("%s start check (needs image + %s — first deploy provides both)…", n.Container, n.EnvFile)
-	if err := p.runSh(vmbootstrap.APIConvergeUbuntuSnippet(n)); err != nil {
-		return p.die(fmt.Sprintf("%s start failed (image + env present — investigate: podman logs %s)", n.Container, n.Container), err)
-	}
-	return nil
-}
-
-// ubuntuPostGates — readiness, fail-closed (systemd siblings of the Alpine
-// post gates; the podman/sysctl/registries/anchor gates are OS-agnostic).
-func (p *vmProvisioner) ubuntuPostGates() error {
-	n := p.n
-	p.say("gate: podman >= 4.9 + netavark backend")
-	if err := p.run(vmbootstrap.GatePodmanVersion); err != nil {
-		return p.die("podman too old (need >= 4.9 for netavark)", err)
-	}
-	if err := p.run(vmbootstrap.GateNetavark); err != nil {
-		return p.die("network backend is not netavark", err)
-	}
-	p.say("gate: sysctl effective")
-	if err := p.run(vmbootstrap.GateSysctl); err != nil {
-		return p.die("net.ipv4.ip_unprivileged_port_start is not 80", err)
-	}
-	p.say("gate: registries.conf effective")
-	if err := p.run(vmbootstrap.RegistriesGate(n)); err != nil {
-		return p.die("registries.conf incomplete ("+n.Registry+" insecure + docker.io search)", err)
-	}
-	p.say("gate: units enabled (boot survival)")
-	for _, unit := range []string{vmbootstrap.APIUnitName(n), vmbootstrap.ProxyUnitName, vmbootstrap.AnchorUnitName} {
-		if err := p.run(vmbootstrap.SystemdEnabledGate(unit)); err != nil {
-			return p.die(unit+" not enabled", err)
-		}
-	}
-	p.say("gate: edge + watcher active")
-	for _, unit := range []string{vmbootstrap.ProxyUnitName, vmbootstrap.AnchorUnitName} {
-		if err := p.run(vmbootstrap.SystemdActiveGate(unit)); err != nil {
-			return p.die(unit+" not active", err)
-		}
-	}
-	p.say("gate: kampodra-anchor watcher running + INERT (no anchor conf on a fresh VM)")
-	if err := p.run("! test -e " + n.AnchorConf); err != nil {
-		return p.die(n.AnchorConf+" already exists on a fresh VM (wrong machine?)", err)
-	}
-	if err := p.run(vmbootstrap.GateAnchorIdleLog); err != nil {
-		return p.die("kampodra-anchor is started but never logged its idle transition (watcher loop not running?)", err)
-	}
-	return nil
-}
-
-// finish — the shared summary tail + the optional ansible converge
-// (initNote names the guest's init contract for the operator).
-func (p *vmProvisioner) finish(initNote, ansiblePath string) error {
-	ip := p.target.HostSpec.Host
-	if i := strings.LastIndex(p.target.HostSpec.Host, "@"); i >= 0 {
-		ip = p.target.HostSpec.Host[i+1:]
-	}
-	p.say("PREPARED: %s passes all gates %s.", p.target.HostSpec.Host, initNote)
-	p.say("next — first deploy (fresh ACME TLS issued during it):")
-	p.say("  PROXY_HOST=%s kampodra deploy --host %s", vmbootstrap.SuggestedProxyHost(ip), p.target.HostSpec.Host)
-	p.say("  (DNS must point at %s first — <ip-dashes>.sslip.io resolves automatically)", ip)
-
-	if ansiblePath != "" {
-		return runAnsiblePlaybook(p.d, p.ctx, p.target, ansiblePath)
-	}
-	return nil
-}
-
 // waitForSSH polls the host until `true` succeeds (vm-prepare's readiness
 // loop: 60 × 5s against a booting VM).
 func waitForSSH(ctx context.Context, runner transport.Runner, spec transport.HostSpec, p waitPolicy) error {

@@ -1,0 +1,436 @@
+// deploy's lifecycle subcommands: the cobra constructors (converge, list,
+// prune, logs, restart, shell) sharing the resolveDeploy closure, the root
+// dispatch, and the RunE bodies for the VM-side lifecycle legs.
+
+package command
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+
+	"github.com/spf13/cobra"
+
+	initadapter "github.com/talha7k/kampodra/internal/adapter/init"
+	"github.com/talha7k/kampodra/internal/adapter/osfacts"
+	"github.com/talha7k/kampodra/internal/adapter/runtime"
+	"github.com/talha7k/kampodra/internal/adapter/state"
+	"github.com/talha7k/kampodra/internal/adapter/transport"
+)
+
+// newDeployConvergeSub is deploy's `converge` subcommand: finish an
+// interrupted --rolling deploy (retag → restart → gate → re-point → rm
+// shadow).
+func newDeployConvergeSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "converge [<sha7>]",
+		Short: "finish an interrupted --rolling deploy: retag → restart → health gate → re-point to main → remove the shadow",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(c *cobra.Command, args []string) error {
+			target, err := resolve(c, "")
+			if err != nil {
+				return err
+			}
+			if err := requireHost(target); err != nil {
+				return err
+			}
+			sha := ""
+			if len(args) == 1 {
+				sha = args[0]
+				if !shaFragmentRe.MatchString(sha) {
+					return fmt.Errorf("converge <sha> must be a git sha fragment (got: %s)", sha)
+				}
+			}
+			drain, _ := c.Flags().GetInt("drain-timeout")
+			return runDeployConverge(d, c.Context(), target, sha, drain)
+		},
+	}
+	cmd.Flags().Int("drain-timeout", deployRollingDrainTimeout, "drain budget carried from the interrupted deploy (s)")
+	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
+		fmt.Fprint(c.OutOrStdout(), deployHelp)
+	})
+	return cmd
+}
+
+// newDeployListSub is deploy's `list` subcommand: deployment history,
+// one section per profile (--all-profiles / --group fan-out).
+func newDeployListSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "deployment history: VM sha-tagged images (running one marked) merged with the local ledger + total deployments count",
+		Args:  cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			cfg, err := state.LoadConfig(d.Home)
+			if err != nil {
+				return err
+			}
+			allProfiles, _ := c.Flags().GetBool("all-profiles")
+			flagGroup, _ := c.Flags().GetString("group")
+			names, err := fanOutProfileNames(cfg, allProfiles, flagGroup, state.ConfigPath(d.Home))
+			if err != nil {
+				return err
+			}
+			for _, name := range names {
+				target, err := resolve(c, name)
+				if err != nil {
+					return err
+				}
+				if err := requireHost(target); err != nil {
+					return err
+				}
+				if name != "" {
+					fmt.Fprintf(d.Stdout, "== profile: %s ==\n", name)
+				}
+				if err := runDeployList(d, c.Context(), target); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().Bool("all-profiles", false, "render one history section per configured profile")
+	cmd.Flags().String("group", "", "render history for every profile in this group (exclusive with --all-profiles/--host/--profile)")
+	return cmd
+}
+
+// newDeployPruneSub is deploy's `prune` subcommand: reclaim VM disk by
+// removing old sha-tagged images (keeps running + ts-rollback + newest N).
+func newDeployPruneSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "prune",
+		Short: "reclaim VM disk: remove old sha-tagged images (keeps running + ts-rollback + newest N); --dry-run prints exact commands",
+		Args:  cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			target, err := resolve(c, "")
+			if err != nil {
+				return err
+			}
+			if err := requireHost(target); err != nil {
+				return err
+			}
+			keep, _ := c.Flags().GetString("keep")
+			if !positiveIntRe.MatchString(keep) {
+				return fmt.Errorf("--keep must be a non-negative integer (got: %s)", keep)
+			}
+			// Validated non-negative by the regex above — Atoi cannot fail
+			// here; the error return exists so the check is explicit.
+			keepN, err := strconv.Atoi(keep)
+			if err != nil {
+				return fmt.Errorf("--keep must be a non-negative integer (got: %s)", keep)
+			}
+			dryRun, _ := c.Flags().GetBool("dry-run")
+			return runDeployPrune(d, c.Context(), target, keepN, dryRun)
+		},
+	}
+	cmd.Flags().String("keep", fmt.Sprintf("%d", deployKeepN), "newest N sha-tagged images to always keep")
+	cmd.Flags().Bool("dry-run", false, "print the exact podman rmi commands and remove nothing")
+	return cmd
+}
+
+// newDeployLogsSub is deploy's `logs` subcommand: tail the running api
+// container's logs; --follow streams until ctrl-c.
+func newDeployLogsSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "logs",
+		Short: "tail the running api container's logs (--lines N); --follow streams until ctrl-c",
+		Args:  cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			target, err := resolve(c, "")
+			if err != nil {
+				return err
+			}
+			if err := requireHost(target); err != nil {
+				return err
+			}
+			lines, _ := c.Flags().GetString("lines")
+			if !nonZeroIntRe.MatchString(lines) {
+				return fmt.Errorf("--lines must be a positive integer (got: %s)", lines)
+			}
+			follow, _ := c.Flags().GetBool("follow")
+			return runDeployLogs(d, c, target, lines, follow)
+		},
+	}
+	cmd.Flags().String("lines", deployLogLines, "number of lines to tail")
+	cmd.Flags().Bool("follow", false, "stream the logs until ctrl-c (clean exit)")
+	return cmd
+}
+
+// newDeployRestartSub is deploy's `restart` subcommand: init-aware api
+// service restart (rc-service on Alpine, systemctl on systemd hosts).
+func newDeployRestartSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
+	return &cobra.Command{
+		Use:   "restart",
+		Short: "restart the api service (init-aware: rc-service on Alpine, systemctl on systemd hosts)",
+		Args:  cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			target, err := resolve(c, "")
+			if err != nil {
+				return err
+			}
+			if err := requireHost(target); err != nil {
+				return err
+			}
+			return runDeployRestart(d, c.Context(), target)
+		},
+	}
+}
+
+// newDeployShellSub is deploy's `shell` subcommand: interactive sh in the
+// api container (exec -- <cmd> for one-shot).
+func newDeployShellSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
+	return &cobra.Command{
+		Use:   "shell [exec -- <cmd>...]",
+		Short: "interactive sh in the api container (exec -- <cmd> for one-shot)",
+		Args:  cobra.ArbitraryArgs,
+		RunE: func(c *cobra.Command, args []string) error {
+			target, err := resolve(c, "")
+			if err != nil {
+				return err
+			}
+			if err := requireHost(target); err != nil {
+				return err
+			}
+			return runDeployShell(d, c, target, args)
+		},
+	}
+}
+
+// runDeployRoot dispatches the pipeline surface: --rollback / --sha /
+// plain (optionally --rolling), with the shell's argument grammar (a
+// positional in rollback mode is the sha; anything else is unknown).
+func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
+	rollbackSha, err := validateDeployArgs(c, args)
+	if err != nil {
+		return err
+	}
+	rollbackSet := c.Flags().Changed("rollback")
+	shaArg, _ := c.Flags().GetString("sha")
+	target, opts, err := assembleDeployRun(d, c)
+	if err != nil {
+		return err
+	}
+	ctx := c.Context()
+
+	if rollbackSet {
+		if opts.binary != "" {
+			// Binary rollback's identity is the recorded marker (the
+			// pipeline resolves it) — the image stamp ladder does not
+			// apply.
+			return runDeployPipeline(d, ctx, target, "", "rollback", opts)
+		}
+		// THE resolution ladder: explicit arg > the VM's deployed-sha stamp
+		// file > die. NEVER git HEAD (the shell's silent-HEAD fallback
+		// redeployed the very build being rolled back from).
+		sha, _, err := resolveRollbackSha(d, ctx, target, rollbackSha)
+		if err != nil {
+			return err
+		}
+		return runDeployPipeline(d, ctx, target, sha, "rollback", opts)
+	}
+
+	ver := shaArg
+	mode := "deploy"
+	if c.Flags().Changed("sha") {
+		// version mode: stream an EXISTING build — no rebuild, no clean-tree
+		// gate (the build already happened when that sha was HEAD).
+		mode = "sha"
+	} else {
+		// deploy mode: build HEAD — the sha comes from git rev-parse (the
+		// clean-tree gate guarantees the tree shipped what HEAD names).
+		out, err := localOutput(ctx, "", "git", "rev-parse", "--short", "HEAD")
+		if err != nil {
+			return fmt.Errorf("cannot resolve HEAD (not a git repository?) — deploy stamps the git sha; from a non-repo directory use --sha <sha7> to stream an existing build")
+		}
+		ver = strings.TrimSpace(out)
+	}
+	return runDeployPipeline(d, ctx, target, ver, mode, opts)
+}
+
+// runDeployList ports the `deploy list` case: header, VM truth (sha-tagged
+// images + running) merged with the local ledger, Total deployments footer.
+func runDeployList(d Deps, ctx context.Context, target Target) error {
+	host := target.HostSpec.Host
+	ledgerPath := state.LedgerPath(d.Home)
+	fmt.Fprintf(d.Stdout, "== deployment history for %s (ledger: %s) ==\n", host, ledgerPath)
+
+	imagesRaw, imagesErr := d.Runner.Run(ctx, target.HostSpec,
+		fmt.Sprintf("podman images --format '{{.Tag}}|{{.CreatedAt}}|{{.Size}}' %s 2>/dev/null", target.Project.ImagePrefix))
+	runningRaw, runningErr := d.Runner.Run(ctx, target.HostSpec, "podman ps --format '{{.Image}}' 2>/dev/null")
+	if imagesErr != nil && runningErr != nil {
+		// Reachable-but-empty is NOT unreachable: probe once more, and only
+		// a dead VM degrades the view loudly.
+		if _, probeErr := d.Runner.Run(ctx, target.HostSpec, "podman images >/dev/null 2>&1"); probeErr != nil {
+			fmt.Fprintf(d.Stdout, "WARNING: cannot reach VM %s — showing ledger-only history (no VM truth)\n", host)
+		}
+	}
+
+	ledger := state.LedgerEntries(ledgerPath, host)
+	rows := buildDeployListRows(runtime.ParseImages(imagesRaw), runningRaw, ledger)
+	fmt.Fprint(d.Stdout, headerDeployList)
+	if len(rows) == 0 {
+		fmt.Fprintln(d.Stdout, "(no deployments recorded yet — the ledger fills as you deploy)")
+	} else {
+		fmt.Fprint(d.Stdout, renderDeployListRows(rows))
+	}
+	fmt.Fprintf(d.Stdout, "Total deployments: %d · on %s\n", len(rows), host)
+	return nil
+}
+
+const headerDeployList = "TAG       CREATED           STATE     RESULT    SUBJECT\n"
+
+// runDeployPrune ports the `deploy prune` case: plan from the shared
+// keep-set math, --dry-run prints and stops, apply removes one by one and
+// re-reads the disk guard.
+func runDeployPrune(d Deps, ctx context.Context, target Target, keepN int, dryRun bool) error {
+	imagesRaw, err := d.Runner.Run(ctx, target.HostSpec,
+		fmt.Sprintf("podman images --format '{{.Tag}}|{{.CreatedAt}}|{{.Size}}' %s 2>/dev/null", target.Project.ImagePrefix))
+	if err != nil {
+		return fmt.Errorf("cannot list images on %s (ssh failed — refusing to prune blind)", target.HostSpec.Host)
+	}
+	runningRaw, _ := d.Runner.Run(ctx, target.HostSpec, "podman ps --format '{{.Image}}' 2>/dev/null")
+	removals, err := runtime.PruneSelect(runtime.ShaTagged(runtime.ParseImages(imagesRaw)), runningRaw, keepN)
+	if err != nil {
+		return fmt.Errorf("prune selection failed: %w", err)
+	}
+	if len(removals) == 0 {
+		fmt.Fprintf(d.Stdout, "nothing to prune (keep set: running + ts-rollback + newest %d)\n", keepN)
+		return nil
+	}
+	sizes := make([]string, 0, len(removals))
+	for _, r := range removals {
+		sizes = append(sizes, r.Size)
+	}
+	fmt.Fprintf(d.Stdout, "plan: %d image(s), %s reclaimed (keep: running + ts-rollback + newest %d)\n",
+		len(removals), runtime.SumSizesHuman(sizes), keepN)
+	for _, r := range removals {
+		fmt.Fprintf(d.Stdout, "  podman rmi %s:%s   # %s\n", target.Project.ImagePrefix, r.Tag, r.Size)
+	}
+	if dryRun {
+		fmt.Fprintln(d.Stdout, "dry-run: nothing removed — re-run without --dry-run to apply")
+		return nil
+	}
+	for _, r := range removals {
+		fmt.Fprintf(d.Stdout, "removing %s:%s\n", target.Project.ImagePrefix, r.Tag)
+		if _, err := d.Runner.Run(ctx, target.HostSpec, fmt.Sprintf("podman rmi %s:%s", target.Project.ImagePrefix, r.Tag)); err != nil {
+			return fmt.Errorf("podman rmi %s:%s failed (in use? remove manually after checking podman ps)", target.Project.ImagePrefix, r.Tag)
+		}
+	}
+	if dfOut, err := d.Runner.Run(ctx, target.HostSpec, fmt.Sprintf("df -P %s 2>/dev/null", deployDiskPath)); err == nil {
+		if pct, ok := osfacts.DiskUsedPct(dfOut); ok {
+			fmt.Fprintf(d.Stdout, "VM disk after prune: %d%% used on %s\n", pct, deployDiskPath)
+			if pct > 90 {
+				fmt.Fprintf(d.Stdout, "WARNING: disk still above 90%% — investigate before the next deploy\n")
+			}
+		}
+	}
+	return nil
+}
+
+// runDeployLogs ports the `deploy logs` case; --follow streams with a
+// clean-exit ctrl-c contract (signal-cancelled context, exit 0).
+func runDeployLogs(d Deps, cmd *cobra.Command, target Target, lines string, follow bool) error {
+	host := target.HostSpec.Host
+	verb, tail := "", fmt.Sprintf("--tail %s %s", lines, target.Project.Container)
+	if follow {
+		verb = "-f "
+		fmt.Fprintf(d.Stdout, "[deploy logs] streaming %s on %s (last %s lines) — ctrl-c to stop\n", target.Project.Container, host, lines)
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		code, err := d.Runner.Stream(ctx, transport.SSHArgs(target.HostSpec, fmt.Sprintf("podman logs %s%s", verb, tail)))
+		if err != nil {
+			return err
+		}
+		if code != 0 {
+			return &exitError{code: code}
+		}
+		return nil
+	}
+	fmt.Fprintf(d.Stdout, "[deploy logs] tailing %s on %s (last %s lines)\n", target.Project.Container, host, lines)
+	out, err := d.Runner.Run(cmd.Context(), target.HostSpec, fmt.Sprintf("podman logs %s%s", verb, tail))
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(d.Stdout, out)
+	return nil
+}
+
+// runDeployRestart ports the `deploy restart` case: init detection (cached
+// in the profile), the svc_action restart, then a best-effort status check.
+func runDeployRestart(d Deps, ctx context.Context, target Target) error {
+	runErr := func(ctx context.Context, remote string) (string, error) {
+		return d.Runner.Run(ctx, target.HostSpec, remote)
+	}
+	initSys, _, _ := initadapter.Detect(ctx, runErr, target.ProfileInit)
+	restartCmd, err := initadapter.ActionCommand(initSys, target.Project.Container, "restart")
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(d.Stdout, "%s (deploy's restart path: supervise-daemon on Alpine re-runs podman run on :latest)\n", restartCmd)
+	if _, err := d.Runner.Run(ctx, target.HostSpec, restartCmd); err != nil {
+		return fmt.Errorf("%s failed: %w", restartCmd, err)
+	}
+	statusCmd, err := initadapter.ActionCommand(initSys, target.Project.Container, "status")
+	if err == nil {
+		fmt.Fprintln(d.Stdout, "service status:")
+		if out, err := d.Runner.Run(ctx, target.HostSpec, statusCmd); err != nil {
+			fmt.Fprintln(d.Stdout, "status command failed — check: kampodra deploy logs")
+		} else {
+			fmt.Fprint(d.Stdout, out)
+		}
+	}
+	fmt.Fprintln(d.Stdout, "done — verify: kampodra deploy logs --lines 50")
+	return nil
+}
+
+// runDeployShell ports the `deploy shell` case: interactive (forced tty)
+// or `exec -- <cmd>` one-shot with POSIX sh-quoting (shell parity). pflag
+// consumes the `--` terminator, so the command vector is located via
+// ArgsLenAtDash — the same contract the shell parser implements by hand.
+func runDeployShell(d Deps, c *cobra.Command, target Target, args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintf(d.Stdout, "[deploy shell] interactive sh in %s on %s (exit to leave)\n", target.Project.Container, target.HostSpec.Host)
+		fmt.Fprintln(d.Stdout, "[deploy shell] one-shot instead: kampodra deploy shell exec -- <cmd>")
+		code, err := d.Runner.Stream(c.Context(), transport.SSHInteractiveArgs(target.HostSpec, fmt.Sprintf("podman exec -it %s sh", target.Project.Container)))
+		if err != nil {
+			return err
+		}
+		if code != 0 {
+			return &exitError{code: code}
+		}
+		return nil
+	}
+	dash := c.ArgsLenAtDash()
+	if args[0] != "exec" || dash != 1 {
+		if args[0] != "exec" {
+			return fmt.Errorf("unknown shell argument: %s (--help; one-shot is: kampodra deploy shell exec -- <cmd>)", args[0])
+		}
+		return fmt.Errorf("shell exec requires -- before the command: kampodra deploy shell exec -- <cmd>")
+	}
+	argv := args[dash:]
+	if len(argv) == 0 {
+		return fmt.Errorf("shell exec -- requires a command")
+	}
+	code, err := d.Runner.Stream(c.Context(), transport.SSHArgs(target.HostSpec,
+		fmt.Sprintf("podman exec %s %s", target.Project.Container, shQuoteArgs(argv))))
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return &exitError{code: code}
+	}
+	return nil
+}
+
+// shQuoteArgs ports sh_quote_args: POSIX-single-quote each argument for
+// safe composition into one remote sh command (busybox-safe).
+func shQuoteArgs(argv []string) string {
+	quoted := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		quoted = append(quoted, "'"+strings.ReplaceAll(arg, "'", `'\''`)+"'")
+	}
+	return strings.Join(quoted, " ")
+}

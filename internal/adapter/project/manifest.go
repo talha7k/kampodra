@@ -73,10 +73,16 @@ type ManifestFields struct {
 //	           (or one), tar the tree, swap the directory, the container
 //	           execs `<runtime> <dir>/<entry>`; deps stay baked in the
 //	           image (depsPath symlink) — the mount never carries them.
+//	static   — a self-contained dist tree (built frontend): local build
+//	           command, tar the output, swap the directory, NO restart —
+//	           the app serves the mount per-request; freshness is gated on
+//	           /build-id.txt serving the pushed sha. Carries no exec
+//	           override (the image's own entrypoint keeps serving).
 const (
-	BinaryKindGo   = "go"
-	BinaryKindRust = "rust"
-	BinaryKindNode = "node"
+	BinaryKindGo     = "go"
+	BinaryKindRust   = "rust"
+	BinaryKindNode   = "node"
+	BinaryKindStatic = "static"
 
 	// defaultRustTriple is the Alpine/arm64 static triple: the golden
 	// images are musl-based, so the gnu triple's glibc dependency would
@@ -91,13 +97,15 @@ const (
 // parse time (see validateBinaryBlock) — a typo must error, never resolve
 // to a silently broken fast path.
 type ManifestBinary struct {
-	Kind         string   `json:"kind"`                   // go | rust | node
+	Kind         string   `json:"kind"`                   // go | rust | node | static
 	Dir          string   `json:"dir"`                    // VM bind-mount dir (host path == in-container path)
 	BuildDir     string   `json:"buildDir"`               // repo-relative local build cwd
 	Target       string   `json:"target"`                 // go: package · rust: bin name · node: "" (source-run)
-	Artifact     string   `json:"artifact"`               // artifact path under BuildDir ("" = kind default)
+	Artifact     string   `json:"artifact"`               // artifact path under BuildDir ("" = kind default; static: required — the dist dir)
 	Entry        string   `json:"entry"`                  // the exec'd file under Dir: go/rust the binary, node the entry script
 	Exec         string   `json:"exec"`                   // "" = direct exec · node: the runtime (tsx/node)
+	Build        string   `json:"build,omitempty"`        // static: the local build command, run with cwd=BuildDir (e.g. "pnpm build --filter web")
+	Env          string   `json:"env,omitempty"`          // static: the env var the app reads the mount through — the unit renders -e NAME=Dir
 	ImagePath    string   `json:"imagePath"`              // the artifact's path INSIDE the image (mount sync + parity)
 	DepsPath     string   `json:"depsPath"`               // node: in-image deps dir — the mount symlinks node_modules at it
 	DepsManifest []string `json:"depsManifest,omitempty"` // node: repo-relative dep-manifest files hashed for drift detection ("" = [<buildDir>/package.json, pnpm-lock.yaml])
@@ -115,9 +123,21 @@ func (b ManifestBinary) DepsManifestFiles() []string {
 	return []string{b.BuildDir + "/package.json", "pnpm-lock.yaml"}
 }
 
-// IsDirShape reports whether the artifact is a directory tree (node) or a
-// single executable file (go/rust).
-func (b ManifestBinary) IsDirShape() bool { return b.Kind == BinaryKindNode }
+// IsDirShape reports whether the artifact is a directory tree (node's
+// source tree, static's dist) or a single executable file (go/rust).
+func (b ManifestBinary) IsDirShape() bool {
+	return b.Kind == BinaryKindNode || b.Kind == BinaryKindStatic
+}
+
+// StaticEnvArg renders the static kind's env passthrough (-e NAME=Dir):
+// how the app inside the container learns the mount's path. "" for every
+// other kind and for a static block that declares no env.
+func (b ManifestBinary) StaticEnvArg() string {
+	if b.Kind == BinaryKindStatic && b.Env != "" {
+		return "-e " + b.Env + "=" + b.Dir
+	}
+	return ""
+}
 
 // RustTriple is the effective cargo target triple.
 func (b ManifestBinary) RustTriple() string {
@@ -135,17 +155,22 @@ func (b ManifestBinary) RustTriple() string {
 //	          the mounted file instead of the image's entrypoint.
 //	node    — a positional AFTER the image ref: it REPLACES the image's
 //	          CMD (tsx/node runtime + the mounted entry script).
+//	static  — NONE: the image's own entrypoint serves the mounted dist
+//	          from the bind mount (no override to place).
 func (b ManifestBinary) RunExec() string {
-	if b.Kind == BinaryKindNode {
+	switch b.Kind {
+	case BinaryKindNode:
 		return b.Exec + " " + b.Dir + "/" + b.Entry
+	case BinaryKindStatic:
+		return ""
 	}
 	return "--entrypoint " + b.Dir + "/" + b.Entry
 }
 
 // EntrypointFlag is RunExec for the pre-image flag form (go/rust); empty
-// for node.
+// for node and static.
 func (b ManifestBinary) EntrypointFlag() string {
-	if b.Kind == BinaryKindNode {
+	if b.Kind == BinaryKindNode || b.Kind == BinaryKindStatic {
 		return ""
 	}
 	return "--entrypoint " + b.Dir + "/" + b.Entry
@@ -174,6 +199,8 @@ func (b ManifestBinary) LocalArtifactDir() string {
 		}
 		return filepath.Join(b.RustTriple(), "release", b.Target)
 	case BinaryKindNode:
+		return b.Artifact
+	case BinaryKindStatic:
 		return b.Artifact
 	}
 	return ""
@@ -216,21 +243,36 @@ func validateBinaryBlock(name string, b ManifestBinary) error {
 func validateBinaryKind(name string, b ManifestBinary) error {
 	switch b.Kind {
 	case "":
-		return fmt.Errorf("binary.%s: \"kind\" is required (go, rust, or node)", name)
-	case BinaryKindGo, BinaryKindRust, BinaryKindNode:
+		return fmt.Errorf("binary.%s: \"kind\" is required (go, rust, node, or static)", name)
+	case BinaryKindGo, BinaryKindRust, BinaryKindNode, BinaryKindStatic:
 		return nil
 	}
-	return fmt.Errorf("binary.%s: unknown kind %q (valid: go, rust, node)", name, b.Kind)
+	return fmt.Errorf("binary.%s: unknown kind %q (valid: go, rust, node, static)", name, b.Kind)
 }
 
 func validateBinaryRequiredKeys(name string, b ManifestBinary) error {
-	for _, kv := range [][2]string{{"dir", b.Dir}, {"buildDir", b.BuildDir}, {"entry", b.Entry}, {"imagePath", b.ImagePath}} {
+	for _, kv := range [][2]string{{"dir", b.Dir}, {"buildDir", b.BuildDir}, {"imagePath", b.ImagePath}} {
 		if kv[1] == "" {
 			return fmt.Errorf("binary.%s: \"%s\" is required", name, kv[0])
 		}
 	}
+	if err := validateBinaryKindKeys(name, b); err != nil {
+		return err
+	}
+	if b.Env != "" && !envNameRe.MatchString(b.Env) {
+		return fmt.Errorf("binary.%s: \"env\" must be an environment variable name (e.g. WEB_DIST_DIR), got %q", name, b.Env)
+	}
+	return nil
+}
+
+// validateBinaryKindKeys is the per-kind required/forbidden key contract
+// (split out of validateBinaryRequiredKeys to keep each leg gocognit-clean).
+func validateBinaryKindKeys(name string, b ManifestBinary) error {
 	switch b.Kind {
 	case BinaryKindGo, BinaryKindRust:
+		if b.Entry == "" {
+			return fmt.Errorf("binary.%s: \"entry\" is required", name)
+		}
 		if b.Target == "" {
 			return fmt.Errorf("binary.%s: \"target\" is required for kind %q (go: the package, e.g. ./cmd/server; rust: the bin name)", name, b.Kind)
 		}
@@ -238,6 +280,9 @@ func validateBinaryRequiredKeys(name string, b ManifestBinary) error {
 			return fmt.Errorf("binary.%s: \"exec\" must be empty for kind %q (the artifact IS the executable)", name, b.Kind)
 		}
 	case BinaryKindNode:
+		if b.Entry == "" {
+			return fmt.Errorf("binary.%s: \"entry\" is required", name)
+		}
 		if b.Exec == "" {
 			return fmt.Errorf("binary.%s: \"exec\" is required for kind \"node\" (the runtime: tsx or node)", name)
 		}
@@ -246,6 +291,16 @@ func validateBinaryRequiredKeys(name string, b ManifestBinary) error {
 		}
 		if !filepath.IsAbs(b.DepsPath) {
 			return fmt.Errorf("binary.%s: \"depsPath\" must be absolute (in-image), got %q", name, b.DepsPath)
+		}
+	case BinaryKindStatic:
+		if b.Artifact == "" {
+			return fmt.Errorf("binary.%s: \"artifact\" is required for kind \"static\" (the build output dir under buildDir, e.g. dist)", name)
+		}
+		if b.Build == "" {
+			return fmt.Errorf("binary.%s: \"build\" is required for kind \"static\" (the local build command, run in buildDir — e.g. \"pnpm build --filter web\")", name)
+		}
+		if b.Exec != "" {
+			return fmt.Errorf("binary.%s: \"exec\" must be empty for kind \"static\" (the image's own entrypoint serves the SPA — a static artifact carries no exec)", name)
 		}
 	}
 	return nil
@@ -308,6 +363,11 @@ type ManifestSidecar struct {
 // (it becomes `<ImagePrefix>-<name>` verbatim — no shell/registry
 // surprises).
 var sidecarNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// envNameRe constrains a static block's `env` value to a POSIX environment
+// variable name (it is rendered verbatim into the unit's `-e NAME=Dir` —
+// a malformed name would corrupt the podman run args).
+var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // manifestKeyHint lists the valid kampodra.json keys for parse errors.
 // Kept in lockstep with ManifestFields by TestManifestKeyHintMatchesStruct.

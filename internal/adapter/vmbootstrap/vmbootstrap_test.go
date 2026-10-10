@@ -96,6 +96,55 @@ func TestRenderInitDAPI(t *testing.T) {
 	}
 }
 
+// The static artifact kind: every static block renders its mount + the
+// env var the app reads it through, on BOTH OS siblings (one runArgs);
+// the pinned exec-kind block keeps its own mount + override.
+func TestRenderStaticMountsAndEnv(t *testing.T) {
+	n := testNaming()
+	n.BinaryMount = "-v /data/app:/data/app"
+	n.BinaryEntrypointFlag = "--entrypoint /data/app/esellar-api-go"
+	n.StaticMounts = []string{"-v /data/web:/data/web"}
+	n.StaticEnvs = []string{"-e WEB_DIST_DIR=/data/web"}
+
+	args := n.runArgs()
+	for _, want := range []string{
+		"-v /data/web:/data/web",
+		"-e WEB_DIST_DIR=/data/web",
+		"-v /data/app:/data/app",
+		"--entrypoint /data/app/esellar-api-go",
+	} {
+		if !strings.Contains(args, want) {
+			t.Errorf("runArgs missing %q:\n%s", want, args)
+		}
+	}
+	// The static env rides with the mounts (pre-image flags), NOT after
+	// the image ref — a post-image positional would become the CMD.
+	if i, j := strings.Index(args, "-e WEB_DIST_DIR"), strings.Index(args, "127.0.0.1:5000/app:latest"); i > j {
+		t.Errorf("the static env must precede the image ref:\n%s", args)
+	}
+	// Static mounts never render an exec override of their own.
+	for _, unit := range []string{RenderInitDAPI(n), RenderAPIUnit(n)} {
+		if !strings.Contains(unit, "-v /data/web:/data/web") || !strings.Contains(unit, "-e WEB_DIST_DIR=/data/web") {
+			t.Errorf("unit render is missing the static mount/env:\n%s", unit)
+		}
+	}
+}
+
+// A static-only VM (no exec-kind block): the mounts render, and NO exec
+// override appears — the image's own entrypoint serves the SPA.
+func TestRenderStaticOnlyNoExecOverride(t *testing.T) {
+	n := testNaming()
+	n.StaticMounts = []string{"-v /data/web:/data/web"}
+	n.StaticEnvs = []string{"-e WEB_DIST_DIR=/data/web"}
+	args := n.runArgs()
+	if strings.Contains(args, "--entrypoint") || strings.Contains(args, "tsx ") {
+		t.Errorf("a static-only unit must render no exec override:\n%s", args)
+	}
+	if !strings.Contains(args, "-e NODE_ENV=production -e PORT=8080 -v /data/web:/data/web -e WEB_DIST_DIR=/data/web") {
+		t.Errorf("the static mount+env must ride with the run flags:\n%s", args)
+	}
+}
+
 func TestRenderInitDProxy(t *testing.T) {
 	got := RenderInitDProxy(testNaming())
 	for _, want := range []string{

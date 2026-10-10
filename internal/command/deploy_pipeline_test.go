@@ -21,6 +21,13 @@ import (
 // pipeline runs git and podman on the deploy machine and ssh on the VM —
 // all three record into ONE invocations file, so ORDER pins span the whole
 // pipeline). No test touches a real VM, podman machine, or network.
+// Gate/failure-path tests: deploy_pipeline_gate_test.go; flag grammar:
+// deploy_pipeline_flags_test.go; sidecars: deploy_pipeline_sidecar_test.go.
+
+// the lifecycle tests, extended with local `git` + `podman` shims (the
+// pipeline runs git and podman on the deploy machine and ssh on the VM —
+// all three record into ONE invocations file, so ORDER pins span the whole
+// pipeline). No test touches a real VM, podman machine, or network.
 
 const (
 	pipelineVer      = "abc1234"
@@ -86,6 +93,7 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 	fixture("failonce", "")
 	fixture("prevsha", "ccc3333\n")
 	fixture("depssha", "")
+	fixture("buildid", pipelineVer+"\n")
 	stampFixture := fixture("reporoot", reporoot)
 
 	// The smoke handler and the VM-side health fetch both read the
@@ -145,6 +153,7 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 		"  *\"rc-service " + deployContainer + "\"*) exit 0 ;;\n" +
 		"  *\"kamal-proxy ls\"*) cat '" + filepath.Join(stubDir, "proxy-ls") + "'; exit 0 ;;\n" +
 		"  *\"kamal-proxy deploy\"*) exit 0 ;;\n" +
+		"  *build-id.txt*) cat '" + filepath.Join(stubDir, "buildid") + "'; exit 0 ;;\n" +
 		"  *http://127.0.0.1:*) cat '" + filepath.Join(stubDir, "health") + "'; exit 0 ;;\n" +
 		"  *) exit 0 ;;\n" +
 		"esac\n"
@@ -185,6 +194,10 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 		"done\n" +
 		"if [ -n \"$out\" ]; then printf 'fake-go-binary\\n' > \"$out\"; fi\n"
 
+	pnpmShim := "#!/bin/bash\n" +
+		"printf '%s\\n' \"pnpm $*\" >> '" + inv + "'\n" +
+		"mkdir -p \"$PWD/dist\" && printf '<html>built</html>\\n' > \"$PWD/dist/index.html\"\n"
+
 	cargoShim := "#!/bin/bash\n" +
 		"printf '%s\\n' \"cargo $*\" >> '" + inv + "'\n" +
 		"bindir=\"\"; triple=\"\"; prev=\"\"\n" +
@@ -195,7 +208,7 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 		"done\n" +
 		"if [ -n \"$bindir\" ] && [ -n \"$triple\" ]; then mkdir -p \"$PWD/$triple/release\" && printf 'fake-rust-binary\\n' > \"$PWD/$triple/release/$bindir\"; fi\n"
 
-	for name, content := range map[string]string{"ssh": sshShim, "git": gitShim, "podman": podmanShim, "go": goShim, "cargo": cargoShim} {
+	for name, content := range map[string]string{"ssh": sshShim, "git": gitShim, "podman": podmanShim, "go": goShim, "cargo": cargoShim, "pnpm": pnpmShim} {
 		if err := os.WriteFile(filepath.Join(stubDir, name), []byte(content), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -446,124 +459,6 @@ func TestDeployPipelineEnvPushSequence(t *testing.T) {
 	}
 }
 
-func TestDeployPipelineBuildFailureRecordsFailedLedger(t *testing.T) {
-	deps, stubDir, stdout, _, _ := setupDeployPipeline(t)
-	writeFixture(t, stubDir, "failon", "podman build")
-	if code := runDeploy(t, deps, "--host", statusHost); code != 1 {
-		t.Fatalf("exit = %d, want 1", code)
-	}
-	ledger := readLedgerFile(t, deps.Home)
-	lines := ledgerLines(ledger)
-	last := lines[len(lines)-1]
-	if !strings.Contains(last, `"result":"failed"`) || !strings.Contains(last, `"sha":"`+pipelineVer+`"`) {
-		t.Errorf("failed deploy never reached the ledger: %s", last)
-	}
-	mustContain(t, stdout.String(), fmt.Sprintf("Total deployments: 4 · FAILED — attempted tag: %s (not activated)", pipelineVer))
-}
-
-func TestDeployPipelineUnhealthyGateDiesWithRollbackHint(t *testing.T) {
-	deps, stubDir, _, stderr, _ := setupDeployPipeline(t)
-	writeFixture(t, stubDir, "health", `{"ok":true,"git":"0000000"}`)
-	if code := runDeploy(t, deps, "--host", statusHost, "--in-place"); code != 1 {
-		t.Fatalf("exit = %d, want 1", code)
-	}
-	errStr := stderr.String()
-	mustContain(t, errStr, "never became healthy")
-	mustContain(t, errStr, "--rollback")
-	// The hint resolves the stamp best-effort: the fixture serves ccc3333.
-	mustContain(t, errStr, "--rollback ccc3333")
-	// Diagnostics before dying: container logs were pulled.
-	mustContain(t, invocations(t, stubDir), "podman logs --tail 30 "+deployContainer)
-}
-
-func TestDeployPipelineSmokeMismatchDies(t *testing.T) {
-	deps, stubDir, _, stderr, _ := setupDeployPipeline(t)
-	writeFixture(t, stubDir, "served-sha", "bbb2222") // edge still serving the OLD build
-	if code := runDeploy(t, deps, "--host", statusHost, "--in-place"); code != 1 {
-		t.Fatalf("exit = %d, want 1", code)
-	}
-	mustContain(t, stderr.String(), "served git sha mismatch")
-}
-
-func TestDeployPipelineSkipSmoke(t *testing.T) {
-	deps, _, stdout, _, _ := setupDeployPipeline(t)
-	// Dead prober: with --skip-smoke the deploy must still succeed.
-	deps.Prober = &probe.Prober{HTTPClient: &http.Client{Transport: deadTransport{}}}
-	if code := runDeploy(t, deps, "--host", statusHost, "--skip-smoke", "--in-place"); code != 0 {
-		t.Fatalf("exit = %d", code)
-	}
-	mustContain(t, stdout.String(), "--skip-smoke")
-}
-
-func TestDeployPipelineFlagValidation(t *testing.T) {
-	t.Run("--rollback and --sha are exclusive", func(t *testing.T) {
-		deps, _, _, stderr, _ := setupDeployPipeline(t)
-		if code := runDeploy(t, deps, "--host", statusHost, "--rollback", "--sha", "abc1234"); code != 1 {
-			t.Fatalf("exit = %d, want 1", code)
-		}
-		mustContain(t, stderr.String(), "exclusive")
-	})
-	t.Run("--sha requires a sha fragment", func(t *testing.T) {
-		deps, _, _, stderr, _ := setupDeployPipeline(t)
-		if code := runDeploy(t, deps, "--host", statusHost, "--sha", "release-42"); code != 1 {
-			t.Fatalf("exit = %d, want 1", code)
-		}
-		mustContain(t, stderr.String(), "git sha fragment")
-	})
-	t.Run("--rolling and --rollback are exclusive", func(t *testing.T) {
-		deps, _, _, stderr, _ := setupDeployPipeline(t)
-		if code := runDeploy(t, deps, "--host", statusHost, "--rolling", "--rollback"); code != 1 {
-			t.Fatalf("exit = %d, want 1", code)
-		}
-		mustContain(t, stderr.String(), "exclusive")
-	})
-	t.Run("--drain-timeout requires rolling (dies with --in-place)", func(t *testing.T) {
-		deps, _, _, stderr, _ := setupDeployPipeline(t)
-		if code := runDeploy(t, deps, "--host", statusHost, "--drain-timeout", "5", "--in-place"); code != 1 {
-			t.Fatalf("exit = %d, want 1", code)
-		}
-		mustContain(t, stderr.String(), "--drain-timeout requires the rolling mode")
-	})
-	t.Run("unknown positional argument dies", func(t *testing.T) {
-		deps, _, _, stderr, _ := setupDeployPipeline(t)
-		if code := runDeploy(t, deps, "--host", statusHost, "wat"); code != 1 {
-			t.Fatalf("exit = %d, want 1", code)
-		}
-		mustContain(t, stderr.String(), "unknown argument")
-	})
-	t.Run("retired --refresh-config is gone", func(t *testing.T) {
-		deps, _, _, stderr, _ := setupDeployPipeline(t)
-		if code := runDeploy(t, deps, "--host", statusHost, "--refresh-config"); code != 1 {
-			t.Fatalf("exit = %d, want 1 (unknown flag — no legacy aliases)", code)
-		}
-		mustContain(t, stderr.String(), "unknown flag")
-	})
-}
-
-func TestDeployHelpDocumentsPipelineRollingAndConverge(t *testing.T) {
-	deps, _, stdout, _, _ := setupDeployPipeline(t)
-	if code := runDeploy(t, deps, "--help"); code != 0 {
-		t.Fatalf("exit = %d", code)
-	}
-	out := stdout.String()
-	for _, want := range []string{
-		"--rolling", "--drain-timeout", "--env-file", "converge",
-		"deployed-sha stamp", "NEVER", "two-writer", "shadow",
-		"podman save | ssh podman load", "--disk-threshold", "--skip-smoke",
-		"keep-set image cleanup",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("deploy --help missing %q", want)
-		}
-	}
-	if strings.Contains(out, "--refresh-config") {
-		t.Error("deploy --help still documents the retired --refresh-config no-op")
-	}
-	if strings.Contains(out, "newest 3") {
-		t.Error("deploy --help hardcodes the pipeline keep count — reference the keep-set, not a number that contradicts prune's --keep")
-	}
-}
-
 // --- small helpers -------------------------------------------------------
 
 func readLedgerFile(t *testing.T, home string) string {
@@ -591,64 +486,4 @@ func stderrString(t *testing.T, deps command.Deps) string {
 		return bb.String()
 	}
 	return ""
-}
-
-func TestDeployPipelineSidecarsStreamed(t *testing.T) {
-	deps, stubDir, stdout, stderr, reporoot := setupDeployPipeline(t)
-	manifest := `{"images":{"sidecars":[{"name":"backup","dockerfile":"deploy/backup.Dockerfile"}]}}`
-	if err := os.WriteFile(filepath.Join(reporoot, "kampodra.json"), []byte(manifest), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	deps.Dir = reporoot
-	if code := runDeploy(t, deps, "--host", statusHost, "--in-place"); code != 0 {
-		t.Fatalf("exit = %d, stdout:\n%sstderr:\n%s", code, stdout.String(), stderr.String())
-	}
-	inv := invocations(t, stubDir)
-	sidecarTag := deployImageRepo + "-backup:latest"
-
-	// build: same platform + identity stamp as the primary, own dockerfile,
-	// :latest tag (sidecars are not sha-versioned — rollback never needs
-	// an old sidecar). CONTEXT = the sidecar dockerfile's own directory —
-	// the RUNBOOK contract (`podman build -f apps/api-go/Dockerfile.backup
-	// apps/api-go`); the 2026-10-09 live fire caught repo-root context
-	// failing on the first real sidecar Dockerfile (COPY go.mod go.sum).
-	sidecarCtx := filepath.Dir(filepath.Join(reporoot, "deploy/backup.Dockerfile"))
-	mustContain(t, inv, "podman build --platform linux/arm64 -f deploy/backup.Dockerfile --build-arg GIT_SHA="+pipelineVer+" -t "+sidecarTag+" "+sidecarCtx)
-	// stream: the same save|load pipe as the primary…
-	mustContain(t, inv, "podman save --format docker-archive "+sidecarTag)
-	// …and a fail-closed existence check on the VM after the load.
-	mustContain(t, inv, "podman image exists "+sidecarTag)
-
-	// ORDER: the sidecar pass runs after the primary retag (the primary's
-	// contract is settled before sidecars start) and before the restart.
-	primary := indexOf(inv, "podman tag "+pipelineImageTag+" "+deployImageRepo+":latest")
-	sidecar := indexOf(inv, "podman build --platform linux/arm64 -f deploy/backup.Dockerfile")
-	restart := indexOf(inv, "rc-service "+deployContainer+" restart")
-	if primary < 0 || sidecar < 0 || restart < 0 {
-		t.Fatalf("sequence incomplete: primary=%d sidecar=%d restart=%d", primary, sidecar, restart)
-	}
-	if primary > sidecar {
-		t.Error("sidecar build must follow the primary retag")
-	}
-	if sidecar > restart {
-		t.Error("sidecar pass must precede the restart")
-	}
-}
-
-func TestDeployPipelineRollbackNeverTouchesSidecars(t *testing.T) {
-	deps, stubDir, _, _, reporoot := setupDeployPipeline(t)
-	manifest := `{"images":{"sidecars":[{"name":"backup","dockerfile":"deploy/backup.Dockerfile"}]}}`
-	if err := os.WriteFile(filepath.Join(reporoot, "kampodra.json"), []byte(manifest), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	deps.Dir = reporoot
-	// The harness's rollback contract ends at the health gate (exit 1 —
-	// served-sha != rolled-back sha), which is PAST the point where sidecar
-	// invocations would have been recorded. Purity is the assertion, not
-	// the exit code.
-	runDeploy(t, deps, "--host", statusHost, "--rollback")
-	inv := invocations(t, stubDir)
-	if strings.Contains(inv, "-backup:latest") {
-		t.Errorf("rollback must not build/stream/verify sidecars:\n%s", inv)
-	}
 }
