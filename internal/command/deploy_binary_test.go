@@ -81,14 +81,14 @@ func TestDeployBinaryGoHappySequencePinned(t *testing.T) {
 	mustContain(t, inv, "mkdir /data/app/.kamdeploy.lock")
 	mustContain(t, inv, "mv "+binaryRunPath+" "+binarySwap)
 	mustContain(t, inv, "mv /data/app/.esellar-api-go.new "+binaryRunPath+" && chmod 755 "+binaryRunPath)
-	mustContain(t, inv, "mv "+binaryRunPath+".sha "+binaryMarkerPrev)
-	mustContain(t, inv, "printf '%s' "+pipelineVer+" > "+binaryRunPath+".sha")
-
 	// The SAME identity gates as an image deploy: restart, served-sha
 	// health gate, public smoke, stamp, ledger.
 	mustContain(t, inv, "rc-service "+deployContainer+" restart")
 	mustContain(t, inv, "http://127.0.0.1:8080"+pipelineHealthPath)
 	mustContain(t, inv, "echo "+pipelineVer+" > "+pipelineStamp)
+	// The marker chain advances ONLY after the gates passed.
+	mustContain(t, inv, "mv "+binaryRunPath+".sha "+binaryMarkerPrev)
+	mustContain(t, inv, "printf '%s' "+pipelineVer+" > "+binaryRunPath+".sha")
 	restart := indexOf(inv, "rc-service "+deployContainer+" restart")
 	health := indexOf(inv, "http://127.0.0.1:8080")
 	stamp := indexOf(inv, "echo "+pipelineVer+" > "+pipelineStamp)
@@ -151,8 +151,8 @@ func TestDeployBinaryNodeDirSwapPinned(t *testing.T) {
 	mustContain(t, inv, "mkdir /data/app/.kamdeploy.lock")
 	mustContain(t, inv, "mv /data/app /data/app.prev")
 	mustContain(t, inv, "mv /data/app.staging /data/app && true")
-	mustContain(t, inv, "printf '%s' "+pipelineVer+" > /data/app.sha")
 	mustContain(t, inv, "rc-service "+deployContainer+" restart")
+	mustContain(t, inv, "printf '%s' "+pipelineVer+" > /data/app.sha")
 
 	lines := ledgerLines(readLedgerFile(t, deps.Home))
 	if last := lines[len(lines)-1]; !strings.Contains(last, `"result":"success"`) {
@@ -209,11 +209,14 @@ func TestDeployBinaryHealthFailureAutoRestoresPrevious(t *testing.T) {
 	inv := invocations(t, stubDir)
 	out := stdout.String()
 
-	// The restore sequence: .prev back into place, markers swapped, VM
-	// restarted, health re-verified against the previous sha.
+	// The restore sequence: .prev back into place, VM restarted, health
+	// re-verified against the previous sha. The MARKER CHAIN stays
+	// untouched (the failed push never advanced it).
 	mustContain(t, inv, "test -e "+binarySwap)
 	mustContain(t, inv, "rm -rf "+binaryRunPath+" && mv "+binarySwap+" "+binaryRunPath)
-	mustContain(t, inv, "mv "+binaryMarkerPrev+" "+binaryRunPath+".sha")
+	if strings.Contains(inv, "mv "+binaryMarkerPrev+" "+binaryRunPath+".sha") {
+		t.Error("the auto-restore must not rotate markers (the failed push never advanced them)")
+	}
 	restarts := strings.Count(inv, "rc-service "+deployContainer+" restart")
 	if restarts < 2 {
 		t.Errorf("want the deploy restart AND the restore restart, got %d:\n%s", restarts, inv)
@@ -376,5 +379,32 @@ func writeTree(t *testing.T, repoRoot, rel, content string) {
 	}
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestDeployBinaryFailedPushLeavesMarkersUntouched pins the identity
+// invariant: a push that fails its health gate must NOT advance the sha
+// marker chain (2026-10-10 live fire: a crashed restart left .sha naming
+// an artifact the .prev file wasn't — a later rollback would have failed
+// its own verification).
+func TestDeployBinaryFailedPushLeavesMarkersUntouched(t *testing.T) {
+	deps, stubDir, _, _, reporoot := setupDeployPipeline(t)
+	writeBinaryManifest(t, reporoot, binaryGoManifest)
+	deps.Dir = reporoot
+	writeTree(t, reporoot, "apps/api-go/main.go", "package main\n")
+	writeFixture(t, stubDir, "stamp", "old0001\n")
+	writeFixture(t, stubDir, "health", `{"ok":true,"git":"old0001"}`)
+	writeFixture(t, stubDir, "served-sha", "old0001")
+
+	if code := runDeploy(t, deps, "--host", statusHost, "--binary"); code == 0 {
+		t.Fatal("exit = 0, want the health gate to fail")
+	}
+	inv := invocations(t, stubDir)
+	markerAt := indexOf(inv, "printf '%s' "+pipelineVer+" > "+binaryRunPath+".sha")
+	if markerAt >= 0 {
+		t.Errorf("the failed push advanced the marker chain (at %d):\n%s", markerAt, inv)
+	}
+	if strings.Contains(inv, "mv "+binaryRunPath+".sha "+binaryMarkerPrev) {
+		t.Error("the failed push rotated .prev.sha")
 	}
 }
