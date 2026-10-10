@@ -127,14 +127,37 @@ func (b ManifestBinary) RustTriple() string {
 	return defaultRustTriple
 }
 
-// RunExec is the in-container exec override the app unit renders after
-// the image ref: the binary itself (go/rust) or `<exec> <dir>/<entry>`
-// (node).
+// RunExec is the in-container override the app unit renders for this
+// artifact. Kind decides the PLACEMENT (a wrong placement silently runs
+// the image's binary instead — 2026-10-10 live fire):
+//
+//	go/rust — a --entrypoint run FLAG (pre-image): the container execs
+//	          the mounted file instead of the image's entrypoint.
+//	node    — a positional AFTER the image ref: it REPLACES the image's
+//	          CMD (tsx/node runtime + the mounted entry script).
 func (b ManifestBinary) RunExec() string {
 	if b.Kind == BinaryKindNode {
 		return b.Exec + " " + b.Dir + "/" + b.Entry
 	}
-	return b.Dir + "/" + b.Entry
+	return "--entrypoint " + b.Dir + "/" + b.Entry
+}
+
+// EntrypointFlag is RunExec for the pre-image flag form (go/rust); empty
+// for node.
+func (b ManifestBinary) EntrypointFlag() string {
+	if b.Kind == BinaryKindNode {
+		return ""
+	}
+	return "--entrypoint " + b.Dir + "/" + b.Entry
+}
+
+// CmdOverride is RunExec for the post-image CMD-replacement form (node);
+// empty for go/rust.
+func (b ManifestBinary) CmdOverride() string {
+	if b.Kind == BinaryKindNode {
+		return b.Exec + " " + b.Dir + "/" + b.Entry
+	}
+	return ""
 }
 
 // MountArg is the podman run bind-mount argument for the artifact dir.

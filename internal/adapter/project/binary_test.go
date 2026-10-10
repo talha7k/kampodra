@@ -78,11 +78,20 @@ func TestBinaryDerivedSurfaces(t *testing.T) {
 	if !nodeBin.IsDirShape() {
 		t.Error("node must be dir-shape")
 	}
-	if got := goBin.RunExec(); got != "/data/app/esellar-api-go" {
+	if got := goBin.RunExec(); got != "--entrypoint /data/app/esellar-api-go" {
 		t.Errorf("go RunExec = %q", got)
 	}
-	if got := nodeBin.RunExec(); got != "tsx /data/app/src/serve-node.ts" {
-		t.Errorf("node RunExec = %q", got)
+	if got := goBin.EntrypointFlag(); got != "--entrypoint /data/app/esellar-api-go" {
+		t.Errorf("go EntrypointFlag = %q", got)
+	}
+	if got := goBin.CmdOverride(); got != "" {
+		t.Errorf("go must not render a post-image CMD override, got %q", got)
+	}
+	if got := nodeBin.EntrypointFlag(); got != "" {
+		t.Errorf("node must not render a --entrypoint flag, got %q", got)
+	}
+	if got := nodeBin.CmdOverride(); got != "tsx /data/app/src/serve-node.ts" {
+		t.Errorf("node CmdOverride = %q", got)
 	}
 	if got := goBin.MountArg(); got != "-v /data/app:/data/app" {
 		t.Errorf("MountArg = %q", got)
