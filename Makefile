@@ -87,10 +87,10 @@ publish:
 	$(MAKE) release-check
 	set -e; for triple in $(PLATFORMS); do \
 		echo "== npm publish @kampodra/$$triple@$(VERSION)"; \
-		npm publish ./npm/platforms/$$triple --tag $(NPM_TAG); \
+		npm publish ./npm/platforms/$$triple --tag $(NPM_TAG) --access public; \
 	done
 	echo "== npm publish kampodra@$(VERSION)"
-	npm publish ./npm --tag $(NPM_TAG)
+	npm publish ./npm --tag $(NPM_TAG) --access public
 
 clean:
 	rm -rf dist
