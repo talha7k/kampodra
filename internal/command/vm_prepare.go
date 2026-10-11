@@ -175,6 +175,7 @@ func namingFromProject(pj project.Config, bin *project.ManifestBinary, statics [
 		}
 	}
 	for _, s := range statics {
+		n.StaticReleases = true
 		if bin != nil && s.Dir == bin.Dir {
 			continue // the pinned block already rendered this dir's mount
 		}

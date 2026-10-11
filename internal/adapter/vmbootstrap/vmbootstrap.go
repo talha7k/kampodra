@@ -50,6 +50,7 @@ type Naming struct {
 	BinaryCmdOverride    string // "" | "<exec> <dir>/<entry>"
 	BinaryDir            string // the artifact's VM dir (mount/chown/symlink target; "" = undeclared)
 	BinaryDepsPath       string // node: the in-image node_modules the mount symlinks at ("" = none)
+	StaticReleases       bool   // a static block is declared: provision <dir>/releases (the release+symlink layout)
 	// Static-kind blocks (SPA dist trees): every declared one renders its
 	// mount + env passthrough — they carry no exec override (the image's
 	// entrypoint serves the mounted dist per-request). Rendered in

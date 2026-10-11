@@ -79,7 +79,20 @@ func (r *deployRun) primaryImage() error {
 	// it only re-points the primary; sidecars are :latest-rolling by
 	// contract (an old sidecar is never needed).
 	if r.mode == "deploy" {
-		return r.streamSidecars()
+		if err := r.streamSidecars(); err != nil {
+			return err
+		}
+	}
+
+	// --- mount sync (BEFORE the switch) ----------------------------------
+	// Every declared artifact mirrors from the just-streamed image BEFORE
+	// the container restarts, so ONE restart picks up both the new image
+	// AND the synced mounts. A post-restart directory swap would be
+	// invisible: the fresh bind pins the pre-swap inode (2026-10-11).
+	if r.opts.binary == "" {
+		if err := r.syncAllMountsFromImage(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

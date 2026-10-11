@@ -78,6 +78,7 @@ type deployRun struct {
 	// source tree (node).
 	localArtifact    string
 	localArtifactDir string
+	staticTarball    string // the packed dist tarball (static mode)
 }
 
 func (r *deployRun) say(format string, args ...any) {
@@ -349,20 +350,6 @@ func (r *deployRun) preflight() error {
 // ledger append and the verdict.
 func (r *deployRun) epilogue() error {
 	pj := r.target.Project
-	// Image deploys mirror EVERY declared artifact into its mount (the
-	// app unit's command override execs the mounted copy on every
-	// respawn) — the backend binary AND the frontend dist alike.
-	if r.opts.binary == "" {
-		for _, bin := range declaredBinaries(r.target.Binary) {
-			r.bin = bin
-			synced := r.step("sync mounted artifact from the image (" + bin.Dir + ")")
-			err := r.syncMountFromImage()
-			synced(err)
-			if err != nil {
-				return err
-			}
-		}
-	}
 	r.say("cleanup (dangling + sha tags beyond the newest %d — tolerant, never fatal)…", deployCleanupKeepN)
 	r.vmTolerant("podman image prune -f >/dev/null 2>&1 || true")
 	images := runtime.ParseImages(r.vmTolerant(fmt.Sprintf("podman images --format '{{.Tag}}|{{.CreatedAt}}|{{.Size}}' %s 2>/dev/null", pj.ImagePrefix)))

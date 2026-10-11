@@ -90,7 +90,7 @@ func TestNamingFromProjectStaticBlock(t *testing.T) {
 	if len(n.StaticMounts) != 1 || n.StaticMounts[0] != "-v /data/web:/data/web" {
 		t.Errorf("StaticMounts = %v, want the web mount", n.StaticMounts)
 	}
-	if len(n.StaticEnvs) != 1 || n.StaticEnvs[0] != "-e WEB_DIST_DIR=/data/web" {
+	if len(n.StaticEnvs) != 1 || n.StaticEnvs[0] != "-e WEB_DIST_DIR=/data/web/current" {
 		t.Errorf("StaticEnvs = %v, want the env passthrough", n.StaticEnvs)
 	}
 }
@@ -112,7 +112,7 @@ func TestNamingFromProjectPinnedStaticNoDoubleMount(t *testing.T) {
 	if len(n.StaticMounts) != 0 {
 		t.Errorf("StaticMounts = %v — the pinned mount must not duplicate", n.StaticMounts)
 	}
-	if len(n.StaticEnvs) != 1 || n.StaticEnvs[0] != "-e WEB_DIST_DIR=/data/web" {
+	if len(n.StaticEnvs) != 1 || n.StaticEnvs[0] != "-e WEB_DIST_DIR=/data/web/current" {
 		t.Errorf("StaticEnvs = %v, want exactly the one env", n.StaticEnvs)
 	}
 }
