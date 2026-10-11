@@ -88,7 +88,7 @@ func TestDeployStaticHappyPathNoRestart(t *testing.T) {
 	// The gate precedes the markers (identity advances only on success).
 	gate := indexOf(inv, "http://127.0.0.1:8080/build-id.txt")
 	marker := indexOf(inv, "printf '%s' "+pipelineVer+" > "+staticCurrent+".sha")
-	flip := indexOf(inv, "ln -sfn releases/"+pipelineVer+" "+staticCurrent+".new")
+	flip := indexOf(inv, "ln -sfn releases/"+pipelineVer+" "+staticCurrent)
 	if flip < 0 || gate < 0 || marker < 0 {
 		t.Fatalf("sequence incomplete: flip=%d gate=%d marker=%d", flip, gate, marker)
 	}
