@@ -64,7 +64,7 @@ func TestDeployStaticHappyPathNoRestart(t *testing.T) {
 	mustContain(t, inv, "tar -xzf "+staging+".tgz -C "+staging)
 	mustContain(t, inv, "printf '%s' "+pipelineVer+" > "+staging+"/build-id.txt")
 	mustContain(t, inv, "mv "+staging+" "+staticReleases+"/"+pipelineVer)
-	mustContain(t, inv, "ln -sfn releases/"+pipelineVer+" "+staticCurrent+".new && mv -f "+staticCurrent+".new "+staticCurrent)
+	mustContain(t, inv, "ln -sfn releases/"+pipelineVer+" "+staticCurrent)
 	// NO RESTART: the app serves the mount per-request — this is the whole
 	// point of the static kind (a restart would be needless downtime).
 	if strings.Contains(inv, "rc-service "+deployContainer+" restart") {
@@ -129,7 +129,7 @@ func TestDeployStaticGateFailureAutoRestoresNoRestart(t *testing.T) {
 	// release, NO restart, markers untouched (the failed push never
 	// advanced them).
 	mustContain(t, inv, "test -d "+staticReleases+"/old0001")
-	mustContain(t, inv, "ln -sfn releases/old0001 "+staticCurrent+".new && mv -f "+staticCurrent+".new "+staticCurrent)
+	mustContain(t, inv, "ln -sfn releases/old0001 "+staticCurrent)
 	if strings.Contains(inv, "rc-service "+deployContainer+" restart") {
 		t.Errorf("the static restore must not restart the container:\n%s", inv)
 	}
@@ -159,7 +159,7 @@ func TestDeployStaticRollbackNoRestart(t *testing.T) {
 	inv := invocations(t, stubDir)
 
 	// The flip-back: current -> releases/ccc3333 (atomic, no restart).
-	mustContain(t, inv, "ln -sfn releases/ccc3333 "+staticCurrent+".new && mv -f "+staticCurrent+".new "+staticCurrent)
+	mustContain(t, inv, "ln -sfn releases/ccc3333 "+staticCurrent)
 	mustContain(t, inv, "http://127.0.0.1:8080/build-id.txt")
 	// The stamp names what is NOW serving (the restored sha).
 	mustContain(t, inv, "printf '%s' ccc3333 > "+pipelineStamp)
@@ -198,7 +198,7 @@ func TestDeployImageSyncsBothMounts(t *testing.T) {
 	mustContain(t, inv, "podman cp kamdeploy-mount-sync:/app/apps/web/dist/. "+staging)
 	mustContain(t, inv, "chmod -R a-s,u+rwX,go+rX "+staging)
 	mustContain(t, inv, "mv "+staging+" "+staticReleases+"/"+pipelineVer)
-	mustContain(t, inv, "ln -sfn releases/"+pipelineVer+" "+staticCurrent+".new && mv -f "+staticCurrent+".new "+staticCurrent)
+	mustContain(t, inv, "ln -sfn releases/"+pipelineVer+" "+staticCurrent)
 	// Both marker chains advanced.
 	mustContain(t, inv, "printf '%s' "+pipelineVer+" > /data/app/esellar-api-go.sha")
 	mustContain(t, inv, "printf '%s' "+pipelineVer+" > "+staticCurrent+".sha")

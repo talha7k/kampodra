@@ -61,14 +61,17 @@ func (r *deployRun) readlinkCurrent() string {
 	return strings.TrimPrefix(out, "releases/")
 }
 
-// staticFlip points current at releases/<release> atomically: the new
-// symlink is created beside it, then rename(2) replaces the old one in
-// one kernel step (rename does NOT follow symlinks on either side —
-// busybox mv -f is sufficient).
+// staticFlip points current at releases/<release>. BUSYBOX REALITY
+// (2026-10-11 live fire): `mv -f new current` FOLLOWS the destination
+// symlink into the directory it points at — the new symlink lands
+// INSIDE the old release and the flip silently never happens. `ln -sfn`
+// replaces the symlink in place (unlink + create); the microseconds
+// window is absorbed by the app's shell fallback (an in-flight request
+// gets the previous shell — never a 404, never a partial tree).
 func (r *deployRun) staticFlip(release string) error {
 	cur := r.staticCurrent()
-	if _, err := r.vm(fmt.Sprintf("ln -sfn releases/%s %s.new && mv -f %s.new %s", release, cur, cur, cur)); err != nil {
-		return fmt.Errorf("atomic flip of %s -> releases/%s failed: %w", cur, release, err)
+	if _, err := r.vm(fmt.Sprintf("ln -sfn releases/%s %s", release, cur)); err != nil {
+		return fmt.Errorf("flip of %s -> releases/%s failed: %w", cur, release, err)
 	}
 	return nil
 }
