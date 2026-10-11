@@ -317,11 +317,17 @@ func (r *deployRun) cleanupStaging() {
 	if r.bin == nil {
 		return
 	}
-	if r.bin.IsDirShape() {
+	switch {
+	case r.bin.Kind == project.BinaryKindStatic:
+		r.vmTolerant("rm -rf " + r.staticReleases() + "/.staging-*")
+		if r.staticTarball != "" {
+			_ = os.Remove(r.staticTarball)
+		}
+	case r.bin.IsDirShape():
 		r.vmTolerant("rm -rf " + r.bin.Dir + ".staging")
-		return
+	default:
+		r.vmTolerant("rm -f " + filepath.Join(r.bin.Dir, "."+r.bin.Entry+".new"))
 	}
-	r.vmTolerant("rm -f " + filepath.Join(r.bin.Dir, "."+r.bin.Entry+".new"))
 }
 
 // restorePreviousArtifact swaps <run>.prev back — the safety net behind
@@ -402,18 +408,41 @@ func (r *deployRun) resolveBinaryRollbackSha() error {
 	return nil
 }
 
-// syncMountFromImage refreshes the mounted artifact FROM the image after
-// every image-mode deploy. Without it the unit's exec override would
-// serve the last fast-pushed artifact after an image deploy — the
-// mounted copy and the image would disagree. Fail-closed: a deploy
-// whose identity cannot be mirrored into the mount is not a deploy.
-func (r *deployRun) syncMountFromImage() error {
-	bin := r.bin
+// syncAllMountsFromImage mirrors EVERY declared artifact from the image
+// into its mount (pre-switch — see primaryImage). Fail-closed: a deploy
+// whose identity cannot be mirrored into the mounts is not a deploy.
+func (r *deployRun) syncAllMountsFromImage() error {
+	blocks := declaredBinaries(r.target.Binary)
+	if len(blocks) == 0 {
+		return nil
+	}
 	pj := r.target.Project
 	ctr := "kamdeploy-mount-sync"
 	defer r.vmTolerant("podman rm -f " + ctr + " >/dev/null 2>&1 || true")
 	if _, err := r.vm(fmt.Sprintf("podman create --name %s %s:%s >/dev/null", ctr, pj.ImagePrefix, r.ver)); err != nil {
 		return fmt.Errorf("could not stage the image for the mount sync: %w", err)
+	}
+	for _, bin := range blocks {
+		r.bin = bin
+		synced := r.step("sync mounted artifact from the image (" + bin.Dir + ")")
+		err := r.syncMountFromImageWith(ctr)
+		synced(err)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// syncMountFromImage refreshes the mounted artifact FROM the image after
+// every image-mode deploy. Without it the unit's exec override would
+// serve the last fast-pushed artifact after an image deploy — the
+// mounted copy and the image would disagree. Fail-closed: a deploy
+// whose identity cannot be mirrored into the mount is not a deploy.
+func (r *deployRun) syncMountFromImageWith(ctr string) error {
+	bin := r.bin
+	if bin.Kind == project.BinaryKindStatic {
+		return r.syncStaticFromImage(ctr)
 	}
 	if bin.IsDirShape() {
 		staging := bin.Dir + ".staging"

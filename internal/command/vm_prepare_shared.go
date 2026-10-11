@@ -70,6 +70,15 @@ func (p *vmProvisioner) managedState(sysctlSnippet string) error {
 				return p.die("node_modules symlink failed", err)
 			}
 		}
+		// The static kind's release layout: pushes land as
+		// releases/<sha>/ and the atomic flip moves the `current`
+		// symlink — all INSIDE the mounted inode (a directory rename at
+		// the mount root is invisible to the container).
+		if n.StaticReleases {
+			if err := p.run("mkdir -p " + n.BinaryDir + "/releases"); err != nil {
+				return p.die("static releases dir create failed", err)
+			}
+		}
 	}
 	p.say("writing /etc/containers/registries.conf (insecure %s; search docker.io)…", n.Registry)
 	if err := p.run("mkdir -p /etc/containers"); err != nil {

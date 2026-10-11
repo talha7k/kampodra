@@ -145,7 +145,7 @@ func TestBinaryStaticKindSurfaces(t *testing.T) {
 	if got := staticBin.MountArg(); got != "-v /data/web:/data/web" {
 		t.Errorf("static MountArg = %q", got)
 	}
-	if got := staticBin.StaticEnvArg(); got != "-e WEB_DIST_DIR=/data/web" {
+	if got := staticBin.StaticEnvArg(); got != "-e WEB_DIST_DIR=/data/web/current" {
 		t.Errorf("static StaticEnvArg = %q", got)
 	}
 	if got := (ManifestBinary{Kind: BinaryKindStatic, Dir: "/data/web"}).StaticEnvArg(); got != "" {

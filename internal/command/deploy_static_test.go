@@ -1,21 +1,30 @@
 // The static artifact kind (frontend SPA fast-push): local build → tar the
-// dist → staging swap of the mount dir → NO restart → the freshness gate
-// (/build-id.txt must serve the pushed sha) → the same marker chain and
-// .prev rollback. The exec-kind backend block coexists in the same
-// manifest; the image deploy syncs BOTH mounts.
+// dist → stage a RELEASE inside the mount (releases/<sha>) → ATOMIC FLIP
+// of the `current` symlink → NO restart → the freshness gate
+// (/build-id.txt must serve the pushed sha) → the marker chain + flip-back
+// rollback. Renames INSIDE the mounted inode are container-visible; a
+// rename AT the mount root is not (the bind pins the inode — 2026-10-11
+// live fire). The exec-kind backend block coexists in the same manifest;
+// the image deploy syncs BOTH mounts.
 
 package command_test
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
 
 const (
-	staticRunPath = "/data/web"
-	staticStaging = staticRunPath + ".staging"
-	staticBuildID = staticRunPath + ".staging/build-id.txt"
+	staticRunPath   = "/data/web"
+	staticReleases  = staticRunPath + "/releases"
+	staticStagingID = ".staging-%d" // os.Getpid() at push time
+	staticCurrent   = staticRunPath + "/current"
 )
+
+// staticStaging renders the per-run staging dir (the pid varies).
+func staticStagingAt(pid int) string { return staticReleases + "/" + fmt.Sprintf(staticStagingID, pid) }
 
 // binaryStaticManifest: the backend (go) AND the frontend (static) blocks
 // side by side — the shape the fast path must serve from one manifest.
@@ -45,16 +54,17 @@ func TestDeployStaticHappyPathNoRestart(t *testing.T) {
 			t.Errorf("static mode must not touch the image path (%q):\n%s", forbidden, inv)
 		}
 	}
-	// The upload lands in the staging sibling as a tarball, the build-id
-	// is stamped into staging BEFORE the swap (atomic with the tree).
-	mustContain(t, inv, "umask 077; cat > "+staticStaging+"/app.tgz")
-	mustContain(t, inv, "rm -rf "+staticStaging+" && mkdir -p "+staticStaging)
-	mustContain(t, inv, "tar -xzf "+staticStaging+"/app.tgz -C "+staticStaging)
-	mustContain(t, inv, "printf '%s' "+pipelineVer+" > "+staticBuildID)
-	// The atomic swap: lock, previous kept, staging into place.
+	// The release stages INSIDE the mount (releases/), the build-id is
+	// stamped into the release BEFORE the flip, and the flip is the
+	// atomic step (rename over the current symlink).
+	staging := staticStagingAt(os.Getpid())
 	mustContain(t, inv, "mkdir "+staticRunPath+"/.kamdeploy.lock")
-	mustContain(t, inv, "mv "+staticRunPath+" "+staticRunPath+".prev")
-	mustContain(t, inv, "mv "+staticStaging+" "+staticRunPath+" && true")
+	mustContain(t, inv, "mkdir -p "+staticReleases+" && rm -rf "+staticReleases+"/.staging-*")
+	mustContain(t, inv, "umask 077; cat > "+staging+".tgz")
+	mustContain(t, inv, "tar -xzf "+staging+".tgz -C "+staging)
+	mustContain(t, inv, "printf '%s' "+pipelineVer+" > "+staging+"/build-id.txt")
+	mustContain(t, inv, "mv "+staging+" "+staticReleases+"/"+pipelineVer)
+	mustContain(t, inv, "ln -sfn releases/"+pipelineVer+" "+staticCurrent+".new && mv -f "+staticCurrent+".new "+staticCurrent)
 	// NO RESTART: the app serves the mount per-request — this is the whole
 	// point of the static kind (a restart would be needless downtime).
 	if strings.Contains(inv, "rc-service "+deployContainer+" restart") {
@@ -72,18 +82,18 @@ func TestDeployStaticHappyPathNoRestart(t *testing.T) {
 	}
 	// The SAME identity bookkeeping as every other mode: markers, stamp,
 	// ledger.
-	mustContain(t, inv, "mv "+staticRunPath+".sha "+staticRunPath+".prev.sha")
-	mustContain(t, inv, "printf '%s' "+pipelineVer+" > "+staticRunPath+".sha")
+	mustContain(t, inv, "mv "+staticCurrent+".sha "+staticCurrent+".prev.sha")
+	mustContain(t, inv, "printf '%s' "+pipelineVer+" > "+staticCurrent+".sha")
 	mustContain(t, inv, "echo "+pipelineVer+" > "+pipelineStamp)
 	// The gate precedes the markers (identity advances only on success).
 	gate := indexOf(inv, "http://127.0.0.1:8080/build-id.txt")
-	marker := indexOf(inv, "printf '%s' "+pipelineVer+" > "+staticRunPath+".sha")
-	swap := indexOf(inv, "mv "+staticStaging+" "+staticRunPath)
-	if swap < 0 || gate < 0 || marker < 0 {
-		t.Fatalf("sequence incomplete: swap=%d gate=%d marker=%d", swap, gate, marker)
+	marker := indexOf(inv, "printf '%s' "+pipelineVer+" > "+staticCurrent+".sha")
+	flip := indexOf(inv, "ln -sfn releases/"+pipelineVer+" "+staticCurrent+".new")
+	if flip < 0 || gate < 0 || marker < 0 {
+		t.Fatalf("sequence incomplete: flip=%d gate=%d marker=%d", flip, gate, marker)
 	}
-	if swap > gate || gate > marker {
-		t.Errorf("order violated: swap=%d gate=%d marker=%d", swap, gate, marker)
+	if flip > gate || gate > marker {
+		t.Errorf("order violated: flip=%d gate=%d marker=%d", flip, gate, marker)
 	}
 
 	lines := ledgerLines(readLedgerFile(t, deps.Home))
@@ -101,10 +111,11 @@ func TestDeployStaticGateFailureAutoRestoresNoRestart(t *testing.T) {
 	writeBinaryManifest(t, reporoot, binaryStaticManifest)
 	deps.Dir = reporoot
 	writeTree(t, reporoot, "apps/web/index.html", "<html>app</html>\n")
-	// The mount serves old0001; the gate fails ONCE (the first build-id
-	// FETCH — the failonce needle names the fetch, not the stamp), the
-	// auto-restore brings .prev back and the re-verify passes.
-	writeFixture(t, stubDir, "stamp", "old0001\n")
+	// The readlink fixture names the previously-served release; the
+	// buildid fixture serves old0001, so the gate fails ONCE (failonce
+	// on the first fetch), the flip-back restores it, and the re-verify
+	// passes.
+	writeFixture(t, stubDir, "currentlink", "releases/old0001\n")
 	writeFixture(t, stubDir, "buildid", "old0001\n")
 	writeFixture(t, stubDir, "failonce", "http://127.0.0.1:8080/build-id.txt")
 
@@ -114,18 +125,19 @@ func TestDeployStaticGateFailureAutoRestoresNoRestart(t *testing.T) {
 	inv := invocations(t, stubDir)
 	out := stdout.String()
 
-	// The restore sequence: .prev back into place, NO restart, markers
-	// untouched (the failed push never advanced them).
-	mustContain(t, inv, "test -e "+staticRunPath+".prev")
-	mustContain(t, inv, "rm -rf "+staticRunPath+" && mv "+staticRunPath+".prev "+staticRunPath)
+	// The restore sequence: symlink flipped BACK to the previous
+	// release, NO restart, markers untouched (the failed push never
+	// advanced them).
+	mustContain(t, inv, "test -d "+staticReleases+"/old0001")
+	mustContain(t, inv, "ln -sfn releases/old0001 "+staticCurrent+".new && mv -f "+staticCurrent+".new "+staticCurrent)
 	if strings.Contains(inv, "rc-service "+deployContainer+" restart") {
 		t.Errorf("the static restore must not restart the container:\n%s", inv)
 	}
-	if strings.Contains(inv, "mv "+staticRunPath+".sha "+staticRunPath+".prev.sha") {
+	if strings.Contains(inv, "mv "+staticCurrent+".sha "+staticCurrent+".prev.sha") {
 		t.Error("the failed push must not rotate the marker chain")
 	}
-	mustContain(t, out, "auto-restoring the previous artifact")
-	mustContain(t, out, "previous artifact restored")
+	mustContain(t, out, "flipping back to the previous release")
+	mustContain(t, out, "previous release restored")
 	lines := ledgerLines(readLedgerFile(t, deps.Home))
 	if last := lines[len(lines)-1]; !strings.Contains(last, `"result":"failed"`) {
 		t.Errorf("failed push must record a failed ledger line: %s", last)
@@ -146,12 +158,13 @@ func TestDeployStaticRollbackNoRestart(t *testing.T) {
 	}
 	inv := invocations(t, stubDir)
 
-	mustContain(t, inv, "rm -rf "+staticRunPath+" && mv "+staticRunPath+".prev "+staticRunPath)
+	// The flip-back: current -> releases/ccc3333 (atomic, no restart).
+	mustContain(t, inv, "ln -sfn releases/ccc3333 "+staticCurrent+".new && mv -f "+staticCurrent+".new "+staticCurrent)
 	mustContain(t, inv, "http://127.0.0.1:8080/build-id.txt")
 	// The stamp names what is NOW serving (the restored sha).
 	mustContain(t, inv, "printf '%s' ccc3333 > "+pipelineStamp)
-	// The marker chain re-aligns with the restored artifact.
-	mustContain(t, inv, "mv "+staticRunPath+".prev.sha "+staticRunPath+".sha")
+	// The marker chain re-aligns with the restored release.
+	mustContain(t, inv, "mv "+staticCurrent+".prev.sha "+staticCurrent+".sha")
 	// No restart, no image machinery.
 	if strings.Contains(inv, "rc-service "+deployContainer+" restart") {
 		t.Errorf("a static rollback must not restart the container:\n%s", inv)
@@ -178,15 +191,17 @@ func TestDeployImageSyncsBothMounts(t *testing.T) {
 	}
 	inv := invocations(t, stubDir)
 
-	// Two sync containers (one per block), each cp'ing its imagePath (the
-	// dist is a tree — the /. form copies its contents).
+	// One sync container; each block cp's its imagePath (the dist is a
+	// tree — the /. form copies its contents) into its own layout.
 	mustContain(t, inv, "podman cp kamdeploy-mount-sync:/usr/local/bin/esellar-api-go /data/app/.esellar-api-go.new")
-	mustContain(t, inv, "podman cp kamdeploy-mount-sync:/app/apps/web/dist/. "+staticStaging)
-	mustContain(t, inv, "chmod -R a-s,u+rwX,go+rX "+staticStaging)
-	mustContain(t, inv, "mv "+staticStaging+" "+staticRunPath+" && true")
+	staging := staticReleases + "/.staging-sync"
+	mustContain(t, inv, "podman cp kamdeploy-mount-sync:/app/apps/web/dist/. "+staging)
+	mustContain(t, inv, "chmod -R a-s,u+rwX,go+rX "+staging)
+	mustContain(t, inv, "mv "+staging+" "+staticReleases+"/"+pipelineVer)
+	mustContain(t, inv, "ln -sfn releases/"+pipelineVer+" "+staticCurrent+".new && mv -f "+staticCurrent+".new "+staticCurrent)
 	// Both marker chains advanced.
 	mustContain(t, inv, "printf '%s' "+pipelineVer+" > /data/app/esellar-api-go.sha")
-	mustContain(t, inv, "printf '%s' "+pipelineVer+" > "+staticRunPath+".sha")
+	mustContain(t, inv, "printf '%s' "+pipelineVer+" > "+staticCurrent+".sha")
 	// No restart from the sync itself, and both cp legs ride the image ref.
 	if strings.Contains(stdout.String(), "WARNING: 2 \"binary\" blocks") {
 		t.Errorf("multi-block repos must not warn/skip the sync:\n%s", stdout.String())

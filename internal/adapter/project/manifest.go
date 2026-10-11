@@ -129,12 +129,14 @@ func (b ManifestBinary) IsDirShape() bool {
 	return b.Kind == BinaryKindNode || b.Kind == BinaryKindStatic
 }
 
-// StaticEnvArg renders the static kind's env passthrough (-e NAME=Dir):
-// how the app inside the container learns the mount's path. "" for every
+// StaticEnvArg renders the static kind's env passthrough
+// (-e NAME=<dir>/current): the app reads the dist through the CURRENT
+// symlink, not the mount root — the symlink is what flips atomically
+// (the mount root itself is inode-pinned by the bind). "" for every
 // other kind and for a static block that declares no env.
 func (b ManifestBinary) StaticEnvArg() string {
 	if b.Kind == BinaryKindStatic && b.Env != "" {
-		return "-e " + b.Env + "=" + b.Dir
+		return "-e " + b.Env + "=" + b.Dir + "/current"
 	}
 	return ""
 }

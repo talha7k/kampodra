@@ -93,6 +93,7 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 	fixture("failonce", "")
 	fixture("prevsha", "ccc3333\n")
 	fixture("depssha", "")
+	fixture("currentlink", "releases/ccc3333\n")
 	fixture("buildid", pipelineVer+"\n")
 	stampFixture := fixture("reporoot", reporoot)
 
@@ -131,6 +132,7 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 		"if [ -n \"$failon\" ] && [[ \"$cmd\" == *\"$failon\"* ]]; then exit 1; fi\n" +
 		"case \"$cmd\" in\n" +
 		"  *\"cat > \"*) cat > '" + filepath.Join(stubDir, "stdin-capture") + "'; exit 0 ;;\n" +
+		"  *\"readlink \"*\"current\"*) cat '" + filepath.Join(stubDir, "currentlink") + "' 2>/dev/null; exit $? ;;\n" +
 		"  *\".prev.sha\"*) cat '" + filepath.Join(stubDir, "prevsha") + "' 2>/dev/null; exit $? ;;\n" +
 		"  *\".deps-sha\"*) cat '" + filepath.Join(stubDir, "depssha") + "' 2>/dev/null; exit $? ;;\n" +
 		"  *\"podman images --format\"*) cat '" + filepath.Join(stubDir, "images") + "'; exit 0 ;;\n" +

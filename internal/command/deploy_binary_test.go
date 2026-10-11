@@ -356,16 +356,16 @@ func TestDeployImageSyncsMountFromImage(t *testing.T) {
 	mustContain(t, inv, "printf '%s' "+pipelineVer+" > "+binaryRunPath+".sha")
 	mustContain(t, inv, "podman rm -f kamdeploy-mount-sync")
 
-	// ORDER: the sync runs after the switch (restart) but before the
-	// stamp — the stamped sha and the mounted artifact are one identity.
+	// ORDER: the sync runs BEFORE the switch — one restart picks up the
+	// new image AND the synced mount (a post-restart rename would be
+	// invisible: the fresh bind pins the pre-swap inode).
 	restart := indexOf(inv, "rc-service "+deployContainer+" restart")
 	sync := indexOf(inv, "podman create --name kamdeploy-mount-sync")
-	stamp := indexOf(inv, "echo "+pipelineVer+" > "+pipelineStamp)
-	if restart < 0 || sync < 0 || stamp < 0 {
-		t.Fatalf("sequence incomplete: restart=%d sync=%d stamp=%d", restart, sync, stamp)
+	if restart < 0 || sync < 0 {
+		t.Fatalf("sequence incomplete: restart=%d sync=%d", restart, sync)
 	}
-	if restart > sync || sync > stamp {
-		t.Errorf("order violated: restart=%d sync=%d stamp=%d", restart, sync, stamp)
+	if restart < sync {
+		t.Errorf("order violated: the sync must precede the restart (restart=%d sync=%d)", restart, sync)
 	}
 }
 

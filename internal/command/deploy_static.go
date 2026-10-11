@@ -1,19 +1,34 @@
 // The static artifact kind: the frontend SPA fast-push. A local build
-// command produces the dist, the dist crosses as a tarball, the mount dir
-// swaps atomically — and NOTHING restarts (the app serves the mount
-// per-request, so the next request already sees the new SPA). The
-// freshness signal is /build-id.txt: it must serve the pushed sha, which
-// is exactly the signal the app's BuildVersionWatcher consumes.
+// command produces the dist; the dist crosses as a tarball and lands as
+// a RELEASE under the mount (releases/<sha>/), and the app reads it
+// through the `current` symlink — flipped ATOMICALLY (rename(2) over
+// the symlink, busybox-safe). Nothing restarts: the app resolves
+// WEB_DIST_DIR per-request, so the next request already sees the new
+// SPA.
+//
+// WHY a symlink flip and not a directory swap: the unit's bind mount
+// pins the MOUNTED DIR'S INODE — renaming the host directory is
+// invisible inside the container (2026-10-11 live fire: the swap "took"
+// on the host and the app served the old tree forever). Renames INSIDE
+// the mounted dir are visible; the symlink lives inside it.
+//
+// Layout under bin.Dir (the stable bind):
+//
+//	releases/<sha>/   — one dist per push (the seed release ships with
+//	                    the first image deploy / vm-prepare pre-seed)
+//	current           — symlink -> releases/<served sha> (the flip target)
+//	current.sha       — the served sha (advanced only on success)
+//	current.prev.sha  — the sha current pointed at before the flip
+//	.kamdeploy.lock/  — the concurrency lock
 //
 // Safety rails, in order of the failure they answer to:
 //
 //	wrong manifest/selector  → dies at the banner (ChooseBinaryBlock)
 //	build failure            → nothing on the VM is touched
-//	upload/swap failure      → staging sits BESIDE the run path; the
-//	                           running dist never sees a partial tree
-//	freshness-gate failure   → the previous dist (.prev) is auto-
-//	                           restored (no restart — the next request
-//	                           serves it) and re-verified
+//	upload/flip failure      → staging sits under releases/; the served
+//	                           symlink never points at a partial tree
+//	freshness-gate failure   → the symlink flips BACK to the previous
+//	                           release and is re-verified (no restart)
 //	lost marker              → static rollback refuses with the exact path
 
 package command
@@ -34,22 +49,48 @@ import (
 // sha (the app's BuildVersionWatcher reads the same signal).
 const staticBuildIDPath = "/build-id.txt"
 
-// staticSwitch is the static kind's forward push: build → push (dir swap
-// with the build-id stamped into staging) → freshness gate → markers. No
+// staticCurrent / staticReleases name the layout inside the stable mount.
+func (r *deployRun) staticCurrent() string  { return filepath.Join(r.bin.Dir, "current") }
+func (r *deployRun) staticReleases() string { return filepath.Join(r.bin.Dir, "releases") }
+
+// readlinkCurrent returns the symlink's release name (e.g. "95d1bd848")
+// — the currently SERVED release, and the auto-restore's flip-back
+// target. Empty = no current yet (first push).
+func (r *deployRun) readlinkCurrent() string {
+	out := strings.TrimSpace(r.vmTolerant("readlink " + r.staticCurrent() + " 2>/dev/null"))
+	return strings.TrimPrefix(out, "releases/")
+}
+
+// staticFlip points current at releases/<release> atomically: the new
+// symlink is created beside it, then rename(2) replaces the old one in
+// one kernel step (rename does NOT follow symlinks on either side —
+// busybox mv -f is sufficient).
+func (r *deployRun) staticFlip(release string) error {
+	cur := r.staticCurrent()
+	if _, err := r.vm(fmt.Sprintf("ln -sfn releases/%s %s.new && mv -f %s.new %s", release, cur, cur, cur)); err != nil {
+		return fmt.Errorf("atomic flip of %s -> releases/%s failed: %w", cur, release, err)
+	}
+	return nil
+}
+
+// staticSwitch is the static kind's forward push: build → stage the
+// release inside the mount → atomic flip → freshness gate → markers. No
 // restart, no health gate, no smoke — the app and the edge are untouched
 // by an asset swap.
 func (r *deployRun) staticSwitch() error {
 	bin := r.bin
-	pj := r.target.Project
 
 	if err := r.buildArtifact(); err != nil {
 		return err
 	}
-	// The pre-swap served sha — the auto-restore's verification target.
-	prevSha := strings.TrimSpace(r.vmTolerant("cat " + pj.DeployedShaFile + " 2>/dev/null"))
+	prevRelease := r.readlinkCurrent()
 
-	pushed := r.step(fmt.Sprintf("push %s artifact → %s (atomic swap, no restart)", bin.Kind, bin.Dir))
-	err := r.pushArtifact()
+	pushed := r.step(fmt.Sprintf("push %s artifact → %s (release + atomic flip, no restart)", bin.Kind, bin.Dir))
+	if err := r.packStaticTarball(); err != nil {
+		pushed(err)
+		return err
+	}
+	err := r.pushStaticArtifact(prevRelease)
 	pushed(err)
 	if err != nil {
 		r.cleanupStaging()
@@ -57,18 +98,79 @@ func (r *deployRun) staticSwitch() error {
 	}
 
 	if err := r.staticFreshnessGate(r.ver); err != nil {
-		r.say("✗ freshness gate failed — auto-restoring the previous artifact (%s.prev)", bin.Dir)
-		if restoreErr := r.restorePreviousArtifact(); restoreErr != nil {
+		r.say("✗ freshness gate failed — flipping back to the previous release (%s)", prevRelease)
+		if restoreErr := r.staticRestore(prevRelease); restoreErr != nil {
 			return fmt.Errorf("%w — AND the auto-restore failed: %v — INSPECT THE VM", err, restoreErr)
 		}
-		if verr := r.staticFreshnessGate(prevSha); verr != nil && prevSha != "" {
+		if verr := r.staticFreshnessGate(prevRelease); verr != nil && prevRelease != "" {
 			return fmt.Errorf("%w — auto-restore did not recover either (%v) — INSPECT THE VM", err, verr)
 		}
-		r.say("✓ previous artifact restored (serving %s)", prevSha)
+		r.say("✓ previous release restored (serving %s)", prevRelease)
 		return err
 	}
 	// Success: NOW the identity bookkeeping advances.
-	r.writeMarkers(r.runPath())
+	r.writeMarkers(r.staticCurrent())
+	return nil
+}
+
+// pushStaticArtifact stages the dist INSIDE the mount (releases/), then
+// flips current atomically. Every step operates on paths under the
+// mounted inode — visible to the app immediately.
+func (r *deployRun) pushStaticArtifact(prevRelease string) error {
+	bin := r.bin
+	rel := r.staticReleases()
+	lock := bin.Dir + "/.kamdeploy.lock"
+	stagingID := fmt.Sprintf(".staging-%d", os.Getpid())
+	staging := rel + "/" + stagingID
+	if _, err := r.vm(fmt.Sprintf("mkdir %s 2>/dev/null || { echo 'another binary deploy holds %s (stale? rm it)' >&2; exit 1; }", lock, lock)); err != nil {
+		return fmt.Errorf("could not acquire the binary deploy lock: %w", err)
+	}
+	defer r.vmTolerant("rmdir " + lock)
+	if _, err := r.vm(fmt.Sprintf("mkdir -p %[1]s && rm -rf %[1]s/.staging-*", rel)); err != nil {
+		return fmt.Errorf("releases dir create failed: %w", err)
+	}
+
+	f, err := os.Open(r.staticTarball)
+	if err != nil {
+		return fmt.Errorf("cannot read the packed dist: %w", err)
+	}
+	defer f.Close()
+	if _, err := r.d.Runner.RunWithStdin(r.ctx, r.target.HostSpec, "umask 077; cat > "+rel+"/"+stagingID+".tgz", f); err != nil {
+		return fmt.Errorf("dist upload failed: %w", err)
+	}
+	if _, err := r.vm(fmt.Sprintf("mkdir -p %[1]s && tar -xzf %[1]s.tgz -C %[1]s && rm -f %[1]s.tgz && chmod -R a-s,u+rwX,go+rX %[1]s", staging)); err != nil {
+		return fmt.Errorf("dist extract failed: %w", err)
+	}
+	// The build-id rides in the dist (VITE_BUILD_ID) — but stamp it
+	// authoritatively at the release root too, so the gate verifies what
+	// THIS deploy pushed even if the build script's resolver drifted.
+	if _, err := r.vm(fmt.Sprintf("printf '%%s' %s > %s/build-id.txt", r.ver, staging)); err != nil {
+		r.say("WARNING: could not stamp build-id.txt into the release")
+	}
+	if _, err := r.vm(fmt.Sprintf("rm -rf %[1]s/%[2]s && mv %[1]s/%[3]s %[1]s/%[2]s", rel, r.ver, stagingID)); err != nil {
+		return fmt.Errorf("release promote failed: %w", err)
+	}
+	if err := r.staticFlip(r.ver); err != nil {
+		return err
+	}
+	// Prune: keep the served release and the flip-back target.
+	r.vmTolerant(fmt.Sprintf("find %[1]s -mindepth 1 -maxdepth 1 -type d ! -name '%[2]s' ! -name '%[3]s' ! -name '.staging*' -exec rm -rf {} +", rel, r.ver, prevRelease))
+	return nil
+}
+
+// packStaticTarball packs the built dist (deps-free — a dist carries no
+// node_modules) into a unique local staging tarball.
+func (r *deployRun) packStaticTarball() error {
+	tmpTar, err := stagingPath("kamdeploy-" + filepath.Base(r.bin.Dir) + ".tgz")
+	if err != nil {
+		return err
+	}
+	tar := exec.CommandContext(r.ctx, "tar", "-czf", tmpTar, "-C", r.localArtifactDir, ".")
+	tar.Stdout, tar.Stderr = os.Stdout, os.Stderr
+	if err := tar.Run(); err != nil {
+		return fmt.Errorf("tar of the dist failed: %w", err)
+	}
+	r.staticTarball = tmpTar
 	return nil
 }
 
@@ -130,18 +232,35 @@ func (r *deployRun) staticFreshnessGate(sha string) error {
 	return fmt.Errorf("%s still does not serve %s — the SPA mount did not take (is the unit's -v mount live? a freshly vm-prepared VM needs one image deploy/restart before the first static push)", staticBuildIDPath, sha)
 }
 
-// staticRollback restores the recorded previous dist. Its identity comes
-// from the <run>.prev.sha marker (NOT git HEAD, NOT the image stamp) —
-// only the last static deploy is undoable. No restart: the restored tree
-// is served on the next request, re-verified through the same gate.
+// staticRestore flips current back to a previous release — the static
+// kind's auto-restore. No restart, no marker moves: the failed push
+// never advanced the chain.
+func (r *deployRun) staticRestore(prevRelease string) error {
+	if prevRelease == "" {
+		return fmt.Errorf("no previous release recorded — the FIRST static push cannot be auto-restored (inspect the VM)")
+	}
+	if r.vmTolerantErr(fmt.Sprintf("test -d %s/releases/%s", r.bin.Dir, prevRelease)) != nil {
+		return fmt.Errorf("previous release %s/releases/%s is gone — cannot auto-restore (inspect the VM)", r.bin.Dir, prevRelease)
+	}
+	if err := r.staticFlip(prevRelease); err != nil {
+		return err
+	}
+	return nil
+}
+
+// staticRollback restores the recorded previous release. Its identity
+// comes from the current.prev.sha marker (NOT git HEAD, NOT the image
+// stamp) — only the last static deploy is undoable. No restart: the
+// restored tree is served on the next request, re-verified through the
+// same gate.
 func (r *deployRun) staticRollback() error {
 	pj := r.target.Project
-	prevSha := strings.TrimSpace(r.vmTolerant("cat " + r.runPath() + ".prev.sha 2>/dev/null"))
+	prevSha := strings.TrimSpace(r.vmTolerant("cat " + r.staticCurrent() + ".prev.sha 2>/dev/null"))
 	if prevSha == "" {
-		return fmt.Errorf("no %s.prev.sha — only the last static deploy can be rolled back (image rollback: kampodra deploy --rollback)", r.runPath())
+		return fmt.Errorf("no %s.prev.sha — only the last static deploy can be rolled back (image rollback: kampodra deploy --rollback)", r.staticCurrent())
 	}
-	restored := r.step("restore previous static artifact from " + r.runPath() + ".prev")
-	err := r.restorePreviousArtifact()
+	restored := r.step("flip back to the previous release (releases/" + prevSha + ")")
+	err := r.staticRestore(prevSha)
 	restored(err)
 	if err != nil {
 		return err
@@ -153,8 +272,45 @@ func (r *deployRun) staticRollback() error {
 	if _, err := r.vm(fmt.Sprintf("printf '%%s' %s > %s", prevSha, pj.DeployedShaFile)); err != nil {
 		r.say("WARNING: could not rewrite %s — a bare image rollback will target the wrong sha", pj.DeployedShaFile)
 	}
-	// The marker chain re-aligns with the restored artifact.
-	r.vmTolerant(fmt.Sprintf("{ [ -e %[1]s.prev.sha ] && mv %[1]s.prev.sha %[1]s.sha || true; }", r.runPath()))
+	// The marker chain re-aligns with the restored release.
+	r.vmTolerant(fmt.Sprintf("{ [ -e %[1]s.prev.sha ] && mv %[1]s.prev.sha %[1]s.sha || true; }", r.staticCurrent()))
+	return nil
+}
+
+// syncStaticFromImage mirrors the image's dist into the release layout
+// (a new release + flip) — the image-side half of the static parity
+// contract. The image IS the dependency snapshot (it was built from this
+// same clean tree); its build-id stamps into the release so the next
+// code push's gate has a coherent baseline.
+func (r *deployRun) syncStaticFromImage(ctr string) error {
+	bin := r.bin
+	rel := r.staticReleases()
+	lock := bin.Dir + "/.kamdeploy.lock"
+	stagingID := ".staging-sync"
+	staging := rel + "/" + stagingID
+	if _, err := r.vm(fmt.Sprintf("mkdir %s 2>/dev/null || { echo 'another binary deploy holds %s (stale? rm it)' >&2; exit 1; }", lock, lock)); err != nil {
+		return fmt.Errorf("could not acquire the binary deploy lock: %w", err)
+	}
+	defer r.vmTolerant("rmdir " + lock)
+	if _, err := r.vm(fmt.Sprintf("mkdir -p %[1]s && rm -rf %[1]s/.staging-* && mkdir -p %[2]s", rel, staging)); err != nil {
+		return fmt.Errorf("sync staging create failed: %w", err)
+	}
+	if _, err := r.vm(fmt.Sprintf("podman cp %s:%s/. %s", ctr, bin.ImagePath, staging)); err != nil {
+		return fmt.Errorf("podman cp of the image dist failed: %w", err)
+	}
+	if _, err := r.vm(fmt.Sprintf("chmod -R a-s,u+rwX,go+rX %s && printf '%%s' %s > %s/build-id.txt", staging, r.ver, staging)); err != nil {
+		return fmt.Errorf("sync stamp failed: %w", err)
+	}
+	if _, err := r.vm(fmt.Sprintf("rm -rf %[1]s/%[2]s && mv %[1]s/%[3]s %[1]s/%[2]s", rel, r.ver, stagingID)); err != nil {
+		return fmt.Errorf("sync release promote failed: %w", err)
+	}
+	prevRelease := r.readlinkCurrent()
+	if err := r.staticFlip(r.ver); err != nil {
+		return err
+	}
+	r.writeMarkers(r.staticCurrent())
+	r.vmTolerant(fmt.Sprintf("find %[1]s -mindepth 1 -maxdepth 1 -type d ! -name '%[2]s' ! -name '%[3]s' ! -name '.staging*' -exec rm -rf {} +", rel, r.ver, prevRelease))
+	r.say("static release synced from the image (releases/%s served via the flipped symlink)", r.ver)
 	return nil
 }
 
