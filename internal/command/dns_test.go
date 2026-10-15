@@ -473,7 +473,17 @@ func setupDNSGCP(t *testing.T, opts map[string]string) *dnsHarness {
 		"case \"$1 $2\" in\n" +
 		"  \"dns managed-zones\") cat '" + zonesFixture + "' ;;\n" +
 		"  \"dns record-sets\")\n" +
-		"    if [[ \"$3\" == \"transaction\" ]]; then exit 0; fi\n" +
+		"    if [[ \"$3\" == \"transaction\" ]]; then\n" +
+		// Real gcloud refuses `transaction start` when the file already
+		// exists — it owns the file's creation. Model that so the suite
+		// catches pre-created temp files (live-fire bug 2026-10-16).
+		"      if [[ \"$3 $4\" == \"transaction start\" ]]; then\n" +
+		"        f=\"\"\n" +
+		"        for a in \"$@\"; do case \"$a\" in --transaction-file=*) f=\"${a#--transaction-file=}\";; esac; done\n" +
+		"        if [[ -n \"$f\" && -e \"$f\" ]]; then echo \"Transaction already exists at [$f]\" >&2; exit 1; fi\n" +
+		"      fi\n" +
+		"      exit 0\n" +
+		"    fi\n" +
 		"    cat '" + recordsFixture + "'\n" +
 		"    exit 0 ;;\n" +
 		"esac\n" +
