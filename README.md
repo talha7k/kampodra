@@ -17,7 +17,7 @@ backups, DNS, tenant migrations, and deployment history.
 - **Tenant migrations** — `migrate` runs the app's own migration script over every db file on the VM: root first, tenants bounded-parallel, stop-first guard
 - **Metrics** — one-shot CPU/memory/disk/container snapshot over SSH
 - **Backups** — list/download/verify object-storage backups; `restore-plan` prints the recovery sequence and never executes it
-- **DNS** — OCI DNS record management through the `oci` CLI's own auth
+- **DNS** — DNS record management through the provider CLI's own auth (oci | gcp)
 - **Profiles** — per-instance config in `~/.kampodra/config.json` (0700/0600), multi-host ready; auto-detects OpenRC vs systemd
 - **Repo manifest** — a committed `kampodra.json` per project; `config print` renders the fully resolved effective config with per-field provenance
 - **Machine-checked command surface** — a surface smoke test guards the command set

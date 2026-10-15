@@ -37,7 +37,7 @@ internal/adapter/*  every boundary to the outside world
   | `init`       | service supervision: OpenRC vs systemd detection, service actions      |
   | `probe`      | the public edge: app health endpoint + served build id via kamal-proxy |
   | `osfacts`    | remote OS facts over ssh: `df -P`, disk-guard verdicts, metrics snapshot |
-  | `cloud`      | the `oci` CLI: DNS records, object-storage backups                     |
+   | `cloud`      | cloud provider CLIs (oci, gcp) behind provider.go/dnsops.go: DNS records, object-storage backups, blue/green, image import |
   | `migrate`    | tenant-db migration composition: probe, plan (root first), per-file cmd |
   | `project`    | the deployed project's shape (naming) + the `kampodra.json` manifest   |
   | `state`      | local state: `config.json` profiles + the `deployments.jsonl` ledger   |

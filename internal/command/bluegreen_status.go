@@ -17,7 +17,7 @@ func runBluegreenStatus(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	pair, err := resolveBGPair(d, target, "")
+	pair, err := resolveBGPair(d, target, "", surfaceBluegreen)
 	if err != nil {
 		return err
 	}

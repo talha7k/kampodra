@@ -56,7 +56,7 @@ the first debugging stop. Every command supports `--help` (usage + examples).
 | `KAMPODRA_MIGRATE_SCRIPT` | Repo-relative migrate script path override for `migrate` |
 | `KAMPODRA_REPO_ROOT` | Fallback VM repo checkout for `migrate` (`--repo-root` beats it) |
 | `OCI_PROFILE` | OCI config profile override when the profile's `cloud` block sets none (else native resolution) |
-| `OCI_COMPARTMENT` | REQUIRED by `dns` — no default; name or `ocid1.` ocid |
+| `OCI_COMPARTMENT` | REQUIRED by the oci legs of `dns`/`bluegreen`/`image-import` — no default; name or `ocid1.` ocid |
 | `MIGRATE_JOBS` | Fallback parallelism for `migrate` (else 4; accepted range 1–64) |
 
 Each `kampodra.json` field also has a `KAMPODRA_*` env override in the ladder:
@@ -368,14 +368,19 @@ Example: `kampodra metrics --host root@203.0.113.10 --disk-threshold 85`
 
 ## dns
 
-OCI DNS records via the `oci` CLI's own auth ONLY — no auth flags unless
-the profile's `cloud` block overrides (else native resolution); never
-credential material. A compartment is REQUIRED (block or `OCI_COMPARTMENT`
-env), no default (a plain name resolves through `iam compartment list`; an `ocid1.`
-value is used as-is). Zone resolution: `--zone` (ocid → name fetched; name →
+DNS records via the provider CLI's own auth ONLY (oci | gcp) — no auth
+flags unless the profile's `cloud` block overrides (oci:
+`profile`/`compartment`/`instancePrincipal`; gcp: `provider: "gcp"` +
+`project`/`account`, else gcloud's active config); never credential
+material. An OCI compartment is REQUIRED for oci only (block or
+`OCI_COMPARTMENT` env), no default (a plain name resolves through
+`iam compartment list`; an `ocid1.`
+value is used as-is); gcp scopes via the block's `project`. Zone
+resolution: `--zone` (ocid → name fetched; name →
 as-is, trailing dot trimmed) else the compartment must hold EXACTLY one zone —
 several → fail listing them (**exit 1**), zero → error. Record types are
-pinned to `A | AAAA | CNAME`; all validation runs locally before any oci call.
+pinned to `A | AAAA | CNAME`; all validation runs locally before any
+provider call.
 
 | Flag (persistent) | Type | Default |
 |---|---|---|
@@ -501,11 +506,14 @@ staged object deleted unless kept; prints the image OCID.
 - **Rollback is a FLAG, not a subcommand**: `kampodra deploy --rollback [<sha7>]`.
   Bare `--rollback` resolves from the VM's deployed-sha stamp and DIES without
   one — it never falls back to git HEAD.
-- **Cloud auth is provider-native**: `backup`/`dns` take no auth flags.
-  The instance profile's `cloud` block (`profile`/`compartment`/
-  `instancePrincipal`) overrides; `OCI_PROFILE`/`OCI_COMPARTMENT` env are
-  the escape hatch; with neither set the oci CLI resolves its default
-  itself. `--profile` always means the kampodra INSTANCE profile.
+- **Cloud auth is provider-native**: `backup`/`dns` (multi-provider: oci |
+  gcp) take no auth flags. The instance profile's `cloud` block (oci:
+  `profile`/`compartment`/`instancePrincipal`; gcp: `provider: "gcp"` +
+  `project`/`account`) overrides; `OCI_PROFILE`/`OCI_COMPARTMENT` env are
+  the oci escape hatch; with neither set the provider CLI resolves its
+  default itself. `bluegreen`/`image-import` are OCI-only today — a `gcp`
+  profile fails closed naming the surface.
+  `--profile` always means the kampodra INSTANCE profile.
 - **`migrate` runs the app's own script**: path from the `migrateScript`
   config (default `scripts/migrate-db.ts`) inside the VM repo checkout,
   executed with `pnpm exec tsx`; `--repo-root`/`KAMPODRA_REPO_ROOT` is

@@ -23,14 +23,18 @@ const backupHelp = `Usage:
   kampodra backup verify <local.db|.tgz> [--host <user@ip>] [--ssh-key <path>] [--profile <name>]
   kampodra backup restore-plan <object> [--bucket <name>]
 
-Auth is the oci CLI's own — kampodra passes no auth flags unless the
-instance profile's "cloud" block overrides it (profile, compartment,
-namespace, instancePrincipal); OCI_PROFILE / OCI_COMPARTMENT / OCI_NAMESPACE
-env are the escape hatch. kampodra never accepts, stores, or logs credential
-material. The tenancy namespace resolves --namespace > cloud block /
-OCI_NAMESPACE > oci os ns get and is passed explicitly (the CLI's internal
-namespace resolution fails on laptop configs); gcp ignores the namespace
-entirely — GCS scopes by bucket+project. Bucket: --bucket (default
+Auth is the provider CLI's own — kampodra passes no auth flags unless the
+instance profile's "cloud" block overrides it:
+  oci: {"profile": "…", "compartment": "…", "namespace": "…",
+        "instancePrincipal": true} — OCI_PROFILE / OCI_COMPARTMENT /
+        OCI_NAMESPACE env are the escape hatch.
+  gcp: {"provider": "gcp", "project": "…", "account": "…"} — an empty
+        project/account = gcloud's active config.
+kampodra never accepts, stores, or logs credential material. The OCI
+tenancy namespace resolves --namespace > cloud block / OCI_NAMESPACE >
+oci os ns get and is passed explicitly (the CLI's internal namespace
+resolution fails on laptop configs); gcp ignores the namespace entirely —
+GCS scopes by bucket+project. Bucket: --bucket (default
 from the project config; KAMPODRA_BUCKET overrides). LIST-denied by policy
 is not fatal for download/verify — GET works with just the object name;
 ` + "`list`" + ` prints the exact policy shape when denied. verify uploads each .db
@@ -51,7 +55,7 @@ Examples:
 func newBackupCommand(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "backup",
-		Short: "OCI Object Storage backups: list | download | verify | restore-plan (restore-plan never executes)",
+		Short: "object-storage backups via the provider CLI's own auth: list | download | verify | restore-plan (restore-plan never executes)",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			fmt.Fprint(c.OutOrStdout(), backupHelp)

@@ -78,12 +78,39 @@ func (p bgPair) colorName(color string) string {
 	return p.instancePrefix + "-" + color
 }
 
+// Surfaces that resolve through resolveBGPair but whose gcp legs haven't
+// landed (slices 3/5): CheckProvider passes a gcp profile, but their legs
+// still call the oci CLI directly — gcp would exec the wrong CLI. The
+// refusal below fails closed BEFORE any exec, naming the surface + remedy.
+const (
+	surfaceBluegreen   = "bluegreen"
+	surfaceImageImport = "image-import"
+)
+
+// gcpOCIOnlyRefusal is the interim fail-closed gate for those surfaces:
+// nil for every provider whose CLI the legs actually exec, the
+// surface-specific refusal for gcp.
+func gcpOCIOnlyRefusal(auth cloud.CloudAuth, surface string) error {
+	if auth.Provider != "gcp" {
+		return nil
+	}
+	if surface == surfaceImageImport {
+		return fmt.Errorf("image-import is OCI-only today — gcloud compute images import requires the Cloud Build API; run it directly or use an oci profile")
+	}
+	return fmt.Errorf("bluegreen is OCI-only today — the gcp leg hasn't landed; run it with an oci profile")
+}
+
 // resolveBGPair resolves the OCI compartment (flag override > cloud block
 // > OCI_COMPARTMENT env, name or ocid) and the pair naming from the target.
 // A missing compartment is a usage error naming both configuration sites.
-func resolveBGPair(d Deps, target Target, compartmentOverride string) (bgPair, error) {
+// surface (surfaceBluegreen | surfaceImageImport) drives the interim gcp
+// refusal — it fires before ResolveCompartment, the first exec.
+func resolveBGPair(d Deps, target Target, compartmentOverride, surface string) (bgPair, error) {
 	auth := cloudAuthFor(d, target)
 	if err := cloud.CheckProvider(auth); err != nil {
+		return bgPair{}, err
+	}
+	if err := gcpOCIOnlyRefusal(auth, surface); err != nil {
 		return bgPair{}, err
 	}
 	name := compartmentOverride

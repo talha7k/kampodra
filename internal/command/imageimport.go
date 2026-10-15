@@ -122,7 +122,7 @@ func runImageImport(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	pair, err := resolveBGPair(d, target, flagString(c, "compartment"))
+	pair, err := resolveBGPair(d, target, flagString(c, "compartment"), surfaceImageImport)
 	if err != nil {
 		return err
 	}
