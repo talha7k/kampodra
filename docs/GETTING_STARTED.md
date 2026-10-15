@@ -175,15 +175,19 @@ Additional shape-specific caveats:
 - **`vm-prepare` writes a generic OpenRC unit** — `NODE_ENV=production`,
   `PORT=<port>` plus your resolved project naming. On an unusual project
   shape, review the generated unit before relying on it.
-- **`backup`/`dns` are multi-provider** (oci | gcp behind the neutral
-  dispatch in `internal/adapter/cloud`, one `RunCloud` seam);
-  **`bluegreen`/`image-import` are OCI today** (a `gcp` profile fails
-  closed naming the surface) — everything else is cloud-agnostic: `deploy`,
-  `vm-prepare`, `vm-wipe`, `status`, `metrics`, `migrate`, `env`, `ssh`,
-  `config`, and `backup verify` work over any SSH-reachable Linux VM.
-  Blue-green in particular resolves pairs + reserved IP from live OCI
-  state with no manual-IP fallback, and `bluegreen provision` pins the
-  `VM.Standard.A1.Flex` shape.
+- **`backup`/`dns`/`bluegreen` are multi-provider** (oci | gcp behind the
+  neutral dispatch in `internal/adapter/cloud`, one `RunCloud` seam);
+  **`image-import` is OCI-only by design** (a `gcp` profile fails closed
+  naming it — `gcloud compute images import` requires enabling the Cloud
+  Build API, a billing-bearing project-level mutation kampodra will not
+  trigger implicitly; the manual escape is `gcloud compute images import
+  <name> --source-file=<qcow2> --os=<os>`) — everything else is
+  cloud-agnostic: `deploy`, `vm-prepare`, `vm-wipe`, `status`, `metrics`,
+  `migrate`, `env`, `ssh`, `config`, and `backup verify` work over any
+  SSH-reachable Linux VM. Blue-green in particular resolves pairs +
+  reserved IP from live provider state with no manual-IP fallback
+  (`bluegreen provision` pins `VM.Standard.A1.Flex` on oci,
+  `e2-standard-2` on gcp).
 
 ## Troubleshooting
 
