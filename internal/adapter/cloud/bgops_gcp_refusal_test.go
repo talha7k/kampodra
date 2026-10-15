@@ -8,11 +8,12 @@ import (
 	"testing"
 )
 
-// The neutral bg ops' fail-closed gates, pinned before any gcp leg exists
-// (slice 4 lands those): a gcp profile refuses with the command surface's
-// message and an unknown provider refuses via CheckProvider — both BEFORE
-// any exec. The logging oci shim on PATH must stay empty: a refusal that
-// execs is a leak (same protocol as backupops_gcp_test.go).
+// The neutral bg ops' provider gates. Since slice 4 a gcp profile
+// DISPATCHES to the gcloud legs (bgops_gcp.go): these pins hold the
+// dispatch contract — no bluegreen refusal, zero oci execs (the wrong-CLI
+// exec is the failure slice A closed), and gcloud execs for the read
+// legs. An unknown provider still fails closed via CheckProvider, before
+// any exec, forever (same protocol as backupops_gcp_test.go).
 
 func setupBGOpsShim(t *testing.T) string {
 	t.Helper()
@@ -24,6 +25,26 @@ func setupBGOpsShim(t *testing.T) string {
 	}
 	t.Setenv("PATH", dir+":/usr/bin:/bin")
 	return log
+}
+
+// setupBGDispatchShims puts BOTH provider CLIs on PATH as logging shims —
+// the gcp dispatch must exec gcloud and never oci.
+func setupBGDispatchShims(t *testing.T) (gcpLog, ociLog string) {
+	t.Helper()
+	dir := t.TempDir()
+	gcpLog = filepath.Join(dir, "gcloud-calls.log")
+	ociLog = filepath.Join(dir, "oci-calls.log")
+	for _, s := range []struct{ name, log string }{
+		{"gcloud", gcpLog},
+		{"oci", ociLog},
+	} {
+		shim := "#!/bin/bash\nprintf '%s\\n' \"$*\" >> '" + s.log + "'\nexit 0\n"
+		if err := os.WriteFile(filepath.Join(dir, s.name), []byte(shim), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+":/usr/bin:/bin")
+	return gcpLog, ociLog
 }
 
 func bgOpShimCalls(t *testing.T, log string) []string {
@@ -41,10 +62,9 @@ func bgOpShimCalls(t *testing.T, log string) []string {
 	return out
 }
 
-// bgOpsThatMustRefuse maps every neutral bg op to a minimal invocation.
-// Both fail-closed cases — gcp (until slice 4 lands its legs) and unknown
-// provider (forever) — must fire before the op's leg execs anything.
-func bgOpsThatMustRefuse() map[string]func(context.Context, CloudAuth) error {
+// bgOpsAll maps every neutral bg op to a minimal invocation — the shared
+// driver for the gcp-dispatch and unknown-provider pins.
+func bgOpsAll() map[string]func(context.Context, CloudAuth) error {
 	comp := "ocid1.compartment.test"
 	return map[string]func(context.Context, CloudAuth) error{
 		"BGResolveScope": func(ctx context.Context, a CloudAuth) error {
@@ -104,22 +124,27 @@ func bgOpsThatMustRefuse() map[string]func(context.Context, CloudAuth) error {
 	}
 }
 
-func TestBGOpsGCPProfilesFailClosed(t *testing.T) {
-	log := setupBGOpsShim(t)
-	for name, op := range bgOpsThatMustRefuse() {
-		err := op(context.Background(), CloudAuth{Provider: "gcp"})
-		if err == nil || !strings.Contains(err.Error(), "bluegreen is OCI-only today") {
-			t.Errorf("%s(gcp) = %v, want the bluegreen OCI-only refusal", name, err)
+// A gcp profile dispatches to gcloud: no op raises the bluegreen refusal,
+// not one call lands on the oci CLI, and the read legs exec gcloud.
+func TestBGOpsGCPDispatchesToGCloud(t *testing.T) {
+	gcpLog, ociLog := setupBGDispatchShims(t)
+	for name, op := range bgOpsAll() {
+		if err := op(context.Background(), CloudAuth{Provider: "gcp"}); err != nil &&
+			strings.Contains(err.Error(), "bluegreen is OCI-only today") {
+			t.Errorf("%s(gcp) = %v — the slice-A refusal must be gone (slice 4 dispatches)", name, err)
 		}
 	}
-	if calls := bgOpShimCalls(t, log); len(calls) != 0 {
-		t.Errorf("the refusals must not exec oci: %v", calls)
+	if calls := bgOpShimCalls(t, ociLog); len(calls) != 0 {
+		t.Errorf("a gcp profile must never exec oci: %v", calls)
+	}
+	if calls := bgOpShimCalls(t, gcpLog); len(calls) == 0 {
+		t.Error("the gcp dispatch must exec gcloud (the read legs), got zero calls")
 	}
 }
 
 func TestBGOpsUnknownProviderFailsClosed(t *testing.T) {
 	log := setupBGOpsShim(t)
-	for name, op := range bgOpsThatMustRefuse() {
+	for name, op := range bgOpsAll() {
 		err := op(context.Background(), CloudAuth{Provider: "aws"})
 		if err == nil || !strings.Contains(err.Error(), "unsupported cloud provider") {
 			t.Errorf("%s(aws) = %v, want the CheckProvider refusal", name, err)
