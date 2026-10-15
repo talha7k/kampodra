@@ -147,7 +147,7 @@ func dnsUpdateRRSetGCP(ctx context.Context, auth CloudAuth, zone, domain, rtype 
 		return fmt.Errorf("transaction dir: %w", err)
 	}
 	txn := filepath.Join(dir, "transaction.yaml")
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	run := func(stage string, extra ...string) error {
 		args := append([]string{"dns", "record-sets", "transaction", stage,
