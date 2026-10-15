@@ -79,7 +79,11 @@ value and the winning source of every field.
 
 Run `kampodra --version` for the installed version. Includes the OCI
 reserved-IP blue/green pair (`bluegreen status | init | provision | flip
-| rollback`) and golden-image import (`image-import`).
+| rollback`) and golden-image import (`image-import`). `image-import` is
+OCI-only by design — `gcloud compute images import` needs the Cloud Build
+API, a billing-bearing project-level enablement kampodra will not trigger
+implicitly; the manual escape is `gcloud compute images import <name>
+--source-file=<qcow2> --os=<os>`.
 
 ## License
 

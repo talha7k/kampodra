@@ -6,6 +6,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"regexp"
@@ -78,13 +79,13 @@ func (p bgPair) colorName(color string) string {
 	return p.instancePrefix + "-" + color
 }
 
-// Surfaces that resolve through resolveBGPair but whose gcp legs haven't
-// landed: CheckProvider passes a gcp profile, but image-import's legs
-// still call the oci CLI directly — gcp would exec the wrong CLI. The
-// refusal below fails closed BEFORE any exec, naming the surface +
-// remedy. (bluegreen dispatched for real since slice 4 — the bg ops it
-// fronts, cloud.BG*, switch on auth.Provider — so only image-import
-// remains guarded here.)
+// Surfaces that resolve through resolveBGPair whose gcp path is
+// OCI-only-by-design: image-import refuses on gcp with the ONE contract
+// text (cloud.ImageImportGCPRefusal — the Cloud Build trust-shape; the
+// neutral image ops behind the surface refuse too, so this entry guard is
+// defense in depth) and fails closed BEFORE any exec. (bluegreen
+// dispatched for real since slice 4 — the bg ops it fronts, cloud.BG*,
+// switch on auth.Provider — so only image-import remains guarded here.)
 const surfaceImageImport = "image-import"
 
 // Surface tag for the bluegreen subcommands: their gcp legs landed in
@@ -95,12 +96,12 @@ const surfaceBluegreen = "bluegreen"
 // gcpOCIOnlyRefusal is the fail-closed gate for the still-OCI-only
 // surfaces: nil for every provider whose CLI the legs actually exec, and
 // nil for gcp on surfaces that dispatch — the surface-specific refusal
-// otherwise.
+// (the ONE contract const, shared with the ops' gcp defaults) otherwise.
 func gcpOCIOnlyRefusal(auth cloud.CloudAuth, surface string) error {
 	if auth.Provider != "gcp" || surface != surfaceImageImport {
 		return nil
 	}
-	return fmt.Errorf("image-import is OCI-only today — gcloud compute images import requires the Cloud Build API; run it directly or use an oci profile")
+	return errors.New(cloud.ImageImportGCPRefusal)
 }
 
 // resolveBGPair resolves the OCI compartment (flag override > cloud block

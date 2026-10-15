@@ -104,11 +104,6 @@ func bgImportStage(d Deps, c *cobra.Command, pair bgPair) (importStage, error) {
 	return st, nil
 }
 
-const (
-	importPollTries = 120
-	importPollSleep = 15 * time.Second
-)
-
 func runImageImport(d Deps, c *cobra.Command) error {
 	ctx := c.Context()
 	// Fail closed on --os BEFORE any network/ssh work (the compartment
@@ -145,12 +140,12 @@ func runImageImport(d Deps, c *cobra.Command) error {
 	imageName = strings.Replace(imageName, namePrefix+"-"+namePrefix+"-", namePrefix+"-", 1)
 
 	fmt.Fprintf(d.Stdout, "[import] uploading %s -> os://%s/%s\n", filepath.Base(image), bucket, objectName)
-	if _, err := cloud.RunOCI(ctx, cloud.OSObjectPutArgs(auth, bucket, image, objectName)); err != nil {
+	if err := cloud.ImageStage(ctx, auth, bucket, image, objectName); err != nil {
 		return fmt.Errorf("object upload failed (bucket exists? oci os bucket create -bn %s): %w", bucket, err)
 	}
 
 	fmt.Fprintf(d.Stdout, "[import] importing as custom image '%s' (self-supported: PARAVIRTUALIZED)…\n", imageName)
-	importOut, err := cloud.RunOCI(ctx, cloud.ImageImportArgs(auth, pair.compOCID, bucket, namespace, objectName, imageName, stage.osName, stage.osVersion))
+	importOut, err := cloud.ImageImport(ctx, auth, pair.compOCID, bucket, namespace, objectName, imageName, stage.osName, stage.osVersion)
 	if err != nil {
 		return fmt.Errorf("import call failed: %w", err)
 	}
@@ -160,27 +155,12 @@ func runImageImport(d Deps, c *cobra.Command) error {
 	}
 
 	fmt.Fprintf(d.Stdout, "[import] polling import -> AVAILABLE (up to 30m)…\n")
-	state := ""
-	for i := 0; i < importPollTries; i++ {
-		getOut, err := cloud.RunOCI(ctx, cloud.ImageGetArgs(auth, imageOCID))
-		if err != nil {
-			return err
-		}
-		state = cloud.ImageState(getOut)
-		switch state {
-		case "AVAILABLE":
-			goto polled
-		case "PENDING_IMPORT", "IMPORTING", "UPLOADING":
-			time.Sleep(importPollSleep)
-		default:
-			return fmt.Errorf("import reached terminal state: %s (console -> Compute -> Custom images for the error)", orUnknownState(state))
-		}
+	if err := cloud.ImageWaitReady(ctx, auth, imageOCID); err != nil {
+		return err
 	}
-	return fmt.Errorf("import did not become AVAILABLE in 30m (state: %s)", orUnknownState(state))
-polled:
 
 	firmware := ""
-	fwOut, err := cloud.RunOCI(ctx, cloud.ImageGetArgs(auth, imageOCID))
+	fwOut, err := cloud.ImageGet(ctx, auth, imageOCID)
 	if err == nil {
 		firmware = cloud.ImageFirmware(fwOut)
 	}
@@ -193,7 +173,7 @@ polled:
 
 	if !keepObject {
 		fmt.Fprintln(d.Stdout, "[import] deleting the staged object (image data now lives in the custom image)…")
-		if _, err := cloud.RunOCI(ctx, cloud.OSObjectDeleteArgs(auth, bucket, objectName)); err != nil {
+		if err := cloud.ImageDeleteStage(ctx, auth, bucket, objectName); err != nil {
 			fmt.Fprintln(d.Stdout, "[import] WARN: staged object delete failed (cleanup manually)")
 		}
 	}
@@ -201,18 +181,11 @@ polled:
 	fmt.Fprintln(d.Stdout, "[import] IMPORTED:")
 	fmt.Fprintf(d.Stdout, "  image OCID: %s\n", imageOCID)
 	fmt.Fprintf(d.Stdout, "  display   : %s\n", imageName)
-	fmt.Fprintf(d.Stdout, "  firmware  : %s\n", orUnknownState(firmware))
+	fmt.Fprintf(d.Stdout, "  firmware  : %s\n", cloud.OrUnknownState(firmware))
 	if firmware == "UEFI_64" {
 		fmt.Fprintf(d.Stdout, "  A1-ready. 'kampodra bluegreen provision <blue|green>' picks this image (newest %s*).\n", namePrefix)
 	} else {
-		fmt.Fprintf(d.Stdout, "  A1 launch will REJECT this image (firmware %s) — see the WARN above.\n", orUnknownState(firmware))
+		fmt.Fprintf(d.Stdout, "  A1 launch will REJECT this image (firmware %s) — see the WARN above.\n", cloud.OrUnknownState(firmware))
 	}
 	return nil
-}
-
-func orUnknownState(s string) string {
-	if s == "" {
-		return "UNKNOWN"
-	}
-	return s
 }

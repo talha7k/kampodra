@@ -748,6 +748,11 @@ self-supported (generic OS metadata, PARAVIRTUALIZED). OCI pins imports
 to firmware=BIOS — A1/Ampere is UEFI-only and rejects those at launch,
 so a non-UEFI result warns loudly (x86 launches fine; the A1 route is
 capture-from-instance). Cloud auth rides the profile `cloud` block / env.
+The command is OCI-only by design: a `gcp` profile fails closed, because
+`gcloud compute images import` requires enabling the Cloud Build API (a
+billing-bearing, project-level mutation kampodra never triggers
+implicitly) — the sanctioned escape is running it yourself:
+`gcloud compute images import <name> --source-file=<qcow2> --os=<os>`.
 
 ```
 kampodra image-import --image <qcow2> [--bucket <name>] [--name-prefix <p>] [--compartment <name>] [--keep-object]
