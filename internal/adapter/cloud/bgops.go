@@ -3,8 +3,8 @@
 // families: a CheckProvider gate, a provider switch, and a fail-closed
 // default. The per-provider legs live in bgops_oci.go (byte-identical to
 // the pre-gcp flow — the PATH-shim argv pins in command/bluegreen_test.go
-// prove it). The gcp legs land in slice 4, so every gcp case fails closed
-// for now with the same refusal the command surface's interim gate raises.
+// prove it) and bgops_gcp.go (SDK-verified gcloud argv, pinned in
+// bgops_gcp_test.go).
 package cloud
 
 import (
@@ -12,23 +12,17 @@ import (
 	"fmt"
 )
 
-// bgGCPRefusal is the interim fail-closed every bg op's gcp case hits
-// until the gcp legs land (slice 4). The command surface's
-// gcpOCIOnlyRefusal already refuses gcp profiles at resolveBGPair, so
-// this is defense-in-depth at the op seam: same message, zero argv.
-func bgGCPRefusal() error {
-	return fmt.Errorf("bluegreen is OCI-only today — the gcp leg hasn't landed; run it with an oci profile")
-}
-
-// BGResolveScope resolves the pair's scope — the compartment NAME or ocid —
-// to its OCID (ocids pass through untouched, the shared ResolveCompartment
-// seam).
+// BGResolveScope resolves the pair's scope — the compartment NAME or ocid
+// — to its OCID (ocids pass through untouched, the shared
+// ResolveCompartment seam). gcp has no scope to resolve: the cloud
+// block's project (or gcloud's active config) rides natively on every
+// call, so the empty scope = native.
 func BGResolveScope(ctx context.Context, auth CloudAuth, name string) (string, error) {
 	if err := CheckProvider(auth); err != nil {
 		return "", err
 	}
 	if auth.Provider == "gcp" {
-		return "", bgGCPRefusal()
+		return "", nil
 	}
 	return bgResolveScopeOCI(ctx, auth, name)
 }
@@ -41,7 +35,7 @@ func BGColorInstance(ctx context.Context, auth CloudAuth, compOCID, displayName 
 		return BGInstance{}, err
 	}
 	if auth.Provider == "gcp" {
-		return BGInstance{}, bgGCPRefusal()
+		return bgColorInstanceGCP(ctx, auth, displayName)
 	}
 	return bgColorInstanceOCI(ctx, auth, compOCID, displayName)
 }
@@ -54,7 +48,7 @@ func BGPrimaryVnic(ctx context.Context, auth CloudAuth, compOCID, instanceOCID s
 		return "", "", false, err
 	}
 	if auth.Provider == "gcp" {
-		return "", "", false, bgGCPRefusal()
+		return bgPrimaryVnicGCP(ctx, auth, instanceOCID)
 	}
 	return bgPrimaryVnicOCI(ctx, auth, compOCID, instanceOCID)
 }
@@ -67,7 +61,7 @@ func BGAnchorIP(ctx context.Context, auth CloudAuth, vnicID string) (string, err
 		return "", err
 	}
 	if auth.Provider == "gcp" {
-		return "", bgGCPRefusal()
+		return bgAnchorIPGCP(ctx, auth)
 	}
 	return bgAnchorIPOCI(ctx, auth, vnicID)
 }
@@ -79,7 +73,7 @@ func BGReservedIPList(ctx context.Context, auth CloudAuth, compOCID string) (Res
 		return ReservedIP{}, false, err
 	}
 	if auth.Provider == "gcp" {
-		return ReservedIP{}, false, bgGCPRefusal()
+		return bgReservedIPListGCP(ctx, auth)
 	}
 	return bgReservedIPListOCI(ctx, auth, compOCID)
 }
@@ -91,7 +85,7 @@ func BGReservedIPCreate(ctx context.Context, auth CloudAuth, compOCID, displayNa
 		return "", err
 	}
 	if auth.Provider == "gcp" {
-		return "", bgGCPRefusal()
+		return bgReservedIPCreateGCP(ctx, auth)
 	}
 	return bgReservedIPCreateOCI(ctx, auth, compOCID, displayName)
 }
@@ -104,7 +98,7 @@ func BGReservedIPAssign(ctx context.Context, auth CloudAuth, ripOCID, privateIPI
 		return err
 	}
 	if auth.Provider == "gcp" {
-		return bgGCPRefusal()
+		return bgReservedIPAssignGCP(ctx, auth, ripOCID, privateIPID)
 	}
 	return bgReservedIPAssignOCI(ctx, auth, ripOCID, privateIPID, waitState)
 }
@@ -117,30 +111,36 @@ func BGReservedIPRelease(ctx context.Context, auth CloudAuth, ripOCID string) er
 		return err
 	}
 	if auth.Provider == "gcp" {
-		return bgGCPRefusal()
+		return bgReservedIPReleaseGCP(ctx, auth)
 	}
 	return bgReservedIPReleaseOCI(ctx, auth, ripOCID)
 }
 
 // BGPrivateIPCreate mints the flip target's anchor secondary private IP
-// and returns its OCID (flip-target creation site ONLY by contract).
+// and returns its OCID (flip-target creation site ONLY by contract). On
+// gcp it is a deliberate no-op returning the reserved-address handle:
+// the anchor IS the reserved external IP, there is no secondary private
+// IP to mint.
 func BGPrivateIPCreate(ctx context.Context, auth CloudAuth, vnicID, displayName string) (string, error) {
 	if err := CheckProvider(auth); err != nil {
 		return "", err
 	}
 	if auth.Provider == "gcp" {
-		return "", bgGCPRefusal()
+		return gcpReservedIPName, nil
 	}
 	return bgPrivateIPCreateOCI(ctx, auth, vnicID, displayName)
 }
 
 // BGSubnetCIDR reads one subnet's CIDR block (the anchor /prefix source).
+// On gcp it fails closed: the CIDR feeds only the OCI anchor /prefix
+// math, and that path is unreachable here (the flip's ocid-shape gate
+// refuses gcp handles first) — fail-closed text, never dead argv.
 func BGSubnetCIDR(ctx context.Context, auth CloudAuth, subnetID string) (string, error) {
 	if err := CheckProvider(auth); err != nil {
 		return "", err
 	}
 	if auth.Provider == "gcp" {
-		return "", bgGCPRefusal()
+		return "", fmt.Errorf("subnet CIDR is not applicable for provider gcp — the reserved external IP carries no guest-side /prefix (the anchor /prefix math is OCI-only)")
 	}
 	return bgSubnetCIDROI(ctx, auth, subnetID)
 }
@@ -152,7 +152,7 @@ func BGPrivateIPAddress(ctx context.Context, auth CloudAuth, privateIPID string)
 		return "", err
 	}
 	if auth.Provider == "gcp" {
-		return "", bgGCPRefusal()
+		return bgPrivateIPAddressGCP(ctx, auth)
 	}
 	return bgPrivateIPAddressOCI(ctx, auth, privateIPID)
 }
@@ -164,7 +164,7 @@ func BGInstanceLaunch(ctx context.Context, auth CloudAuth, compOCID, ad, subnetI
 		return "", err
 	}
 	if auth.Provider == "gcp" {
-		return "", bgGCPRefusal()
+		return bgInstanceLaunchGCP(ctx, auth, ad, subnetID, imageID, displayName, sshKeyFile)
 	}
 	return bgInstanceLaunchOCI(ctx, auth, compOCID, ad, subnetID, imageID, displayName, sshKeyFile)
 }
@@ -176,7 +176,7 @@ func BGInstanceRecord(ctx context.Context, auth CloudAuth, instanceOCID string) 
 		return InstanceRecord{}, err
 	}
 	if auth.Provider == "gcp" {
-		return InstanceRecord{}, bgGCPRefusal()
+		return bgInstanceRecordGCP(ctx, auth, instanceOCID)
 	}
 	return bgInstanceRecordOCI(ctx, auth, instanceOCID)
 }
@@ -188,7 +188,7 @@ func BGGoldenImage(ctx context.Context, auth CloudAuth, compOCID, prefix string)
 		return "", "", err
 	}
 	if auth.Provider == "gcp" {
-		return "", "", bgGCPRefusal()
+		return bgGoldenImageGCP(ctx, auth, prefix)
 	}
 	return bgGoldenImageOCI(ctx, auth, compOCID, prefix)
 }

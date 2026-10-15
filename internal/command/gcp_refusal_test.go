@@ -7,12 +7,14 @@ import (
 	"testing"
 )
 
-// Interim fail-closed guards (slices 3/5 land the real gcp legs): bluegreen
-// and image-import still exec the oci CLI directly, but CheckProvider
-// passes a gcp profile — without the guard it would exec the wrong CLI.
-// These tests pin the refusal BEFORE any exec, in the dns_test.go
+// Interim fail-closed guards (slice 5 lands the image-import gcp leg):
+// image-import still execs the oci CLI directly, but CheckProvider passes
+// a gcp profile — without the guard it would exec the wrong CLI. The
+// image-import refusal is pinned in the dns_test.go
 // TestDNSGCPCompartmentIsRefused style: a {"provider":"gcp"} profile fails
-// closed with the message, zero CLI execs of either CLI.
+// closed with the message, zero CLI execs of either CLI. bluegreen
+// DISPATCHES since slice 4 — its gcp pin lives in bluegreen_gcp_test.go
+// (gcloud shim harness, no oci exec, no refusal).
 
 // addGCLOUDShim puts a logging gcloud on PATH (the bg/import harnesses only
 // shim oci): any gcloud exec during a refusal is proof of a leak.
@@ -39,36 +41,6 @@ func gcpShimCalls(t *testing.T, logPath string) []string {
 		}
 	}
 	return out
-}
-
-// Every bluegreen subcommand resolves its pair through the same point —
-// a gcp profile must be refused with the message on each, zero CLI execs.
-func TestBluegreenGCPProfileFailsClosed(t *testing.T) {
-	h := setupBG(t, map[string]string{}, map[string]string{})
-	gcpLog := filepath.Join(t.TempDir(), "gcloud-calls.log")
-	addGCLOUDShim(t, gcpLog)
-	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp"}}`)
-	for _, sub := range [][]string{
-		{"status"},
-		{"init"},
-		{"provision", "green"},
-		{"flip", "--to", "green"},
-		{"rollback"},
-	} {
-		args := append(append([]string{}, sub...), "--profile", "gcp-prof")
-		if code := h.run(t, args...); code != 1 {
-			t.Errorf("bluegreen %v: exit = %d, want 1 (stderr: %s)", sub, code, h.stderr.String())
-		}
-		if !strings.Contains(h.stderr.String(), "bluegreen is OCI-only today — the gcp leg hasn't landed; run it with an oci profile") {
-			t.Errorf("bluegreen %v: stderr = %q", sub, h.stderr.String())
-		}
-	}
-	if calls := gcpShimCalls(t, gcpLog); len(calls) != 0 {
-		t.Errorf("the refusal must not exec gcloud: %v", calls)
-	}
-	if calls := h.ociCalls(t); len(calls) != 0 {
-		t.Errorf("the refusal must not exec oci: %v", calls)
-	}
 }
 
 func TestImageImportGCPProfileFailsClosed(t *testing.T) {
