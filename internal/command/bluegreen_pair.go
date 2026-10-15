@@ -121,7 +121,11 @@ func resolveBGPair(d Deps, target Target, compartmentOverride, surface string) (
 	if name == "" {
 		name = auth.Compartment
 	}
-	if name == "" {
+	// Compartment is an OCI scope: oci needs a name here (the scope
+	// resolution is account-specific and has no default); gcp scopes
+	// natively via the cloud block's project — an empty project riding
+	// gcloud's active config is NOT an error (mirror dnsNeedProvider).
+	if name == "" && auth.Provider != "gcp" {
 		return bgPair{}, fmt.Errorf("no OCI compartment configured — set the instance profile's \"cloud\" block ({\"compartment\": \"<name or ocid>\"}) in ~/.kampodra/config.json, or export OCI_COMPARTMENT=<compartment name or ocid> — compartments are account-specific")
 	}
 	ocid, err := cloud.BGResolveScope(context.Background(), auth, name)

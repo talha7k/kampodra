@@ -63,13 +63,13 @@ func bgGCPAddrList() string {
 	return `[{"name":"kampodra-active","address":"203.0.113.50","status":"IN_USE","users":["` + bgGCPHolderPath + `"]}]`
 }
 
-// writeBGCPProfile writes the gcp profile with a cloud-block compartment
-// (the neutral scope field — BGResolveScope ignores it on gcp, the
-// project rides identity flags).
+// writeBGCPProfile writes the gcp profile WITHOUT a compartment — the
+// real-world gcp shape (the project rides the cloud block / gcloud's
+// active config; a compartment would mask the OCI-only scope gate).
 func writeBGCPProfile(t *testing.T, h *bgGCPHarness) {
 	t.Helper()
 	writeDNSProfile(t, h.deps.Home, "gcp-prof",
-		`{"host": "root@198.51.100.7", "cloud": {"provider": "gcp", "project": "p1", "compartment": "test-compartment"}}`)
+		`{"host": "root@198.51.100.7", "cloud": {"provider": "gcp", "project": "p1"}}`)
 }
 
 func setupBGCP(t *testing.T, fixtures map[string]string) *bgGCPHarness {
