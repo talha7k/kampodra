@@ -1,5 +1,13 @@
 # kampodra — build, test, and release.
 #
+# `make bump VERSION=x.y.z[-pre.N]` is the release-prep entrypoint (DRY=1
+# plans without touching anything). It edits the TWO hand-edited version
+# homes — npm/package.json and the cmd/kampodra/main.go source pin (drift
+# there is only caught by the pin test at publish time) — then stamps,
+# commits "release <version>", and tags v<version>. The four platform
+# packages + the root optionalDependencies pins are NOT hand-edited:
+# cross-compile stamps them from npm/package.json.
+#
 # `make publish` is the documented release flow; it NEVER auto-runs and is
 # never wired into CI. It requires: a clean tree on a tagged commit
 # (git tag v<version> == npm/package.json version), and npm auth for the
@@ -13,7 +21,7 @@ VERSION   := $(shell node -p "require('./npm/package.json').version")
 NPM_TAG   := $(if $(findstring -,$(VERSION)),beta,latest)
 PLATFORMS := darwin-arm64 darwin-x64 linux-x64 linux-arm64
 
-.PHONY: all test vet lint build cross-compile version-check npm-test publish clean
+.PHONY: all test vet lint build bump cross-compile version-check npm-test publish clean
 
 all: test build
 
@@ -30,7 +38,31 @@ build:
 	$(GO) build ./cmd/kampodra
 
 npm-test:
-	node --test npm/test/shim.test.mjs
+	node --test npm/test/
+
+# bump: release prep — validate (semver, forward-only, clean tree) and edit
+# npm/package.json + the main.go pin via npm/bump.mjs, then stamp
+# (cross-compile), verify the shipped binary + the pin test, and
+# commit/tag. DRY=1 runs every validation and prints the plan, touching
+# nothing. VERSION must come from the command line: the file default is the
+# CURRENT package.json version, which would silently validate against
+# itself (and fail forward-only, confusingly) instead of erroring on a
+# missing argument.
+bump:
+	@test "$(origin VERSION)" = "command line" || { echo "usage: make bump VERSION=x.y.z[-pre.N] [DRY=1]"; exit 1; }
+ifeq ($(DRY),1)
+	node npm/bump.mjs $(VERSION) --dry-run
+else
+	node npm/bump.mjs $(VERSION)
+	$(MAKE) cross-compile
+	$(MAKE) release-check
+	$(GO) test ./internal/command/ -run TestNpmPackageVersionMatchesBinary -count=1
+	git add npm/package.json cmd/kampodra/main.go npm/platforms/darwin-arm64/package.json npm/platforms/darwin-x64/package.json npm/platforms/linux-arm64/package.json npm/platforms/linux-x64/package.json
+	git commit -m "release $(VERSION)"
+	git tag v$(VERSION)
+	@echo "== bump $(VERSION) done: committed + tagged v$(VERSION)"
+	@echo "== next: git push origin main v$(VERSION) && make publish"
+endif
 
 # cross-compile: every release target, staged into the npm platform
 # packages' bin/ (what `npm publish` ships). GOOS/GOARCH are set EXPLICITLY
