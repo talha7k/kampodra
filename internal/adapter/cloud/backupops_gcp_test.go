@@ -122,7 +122,8 @@ func TestGCPBackupListEmptyPrefixWildcardAndBareEmptyArray(t *testing.T) {
 		t.Fatalf("empty-prefix argv drift: %v", calls)
 	}
 	// gcloud emits bare [] for an empty listing — zero objects, no error.
-	shim = setupBackupGCPShim(t, `[]`, `[]`)
+	// (handle discarded — the fixture swap is the point, not the shim ref)
+	setupBackupGCPShim(t, `[]`, `[]`)
 	objs, err := BackupList(context.Background(), CloudAuth{Provider: "gcp"}, "my-bkt", "db/", "")
 	if err != nil || len(objs) != 0 {
 		t.Errorf("bare [] = %d objects, %v", len(objs), err)
