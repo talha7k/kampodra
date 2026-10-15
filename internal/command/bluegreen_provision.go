@@ -8,7 +8,6 @@ package command
 import (
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -33,26 +32,17 @@ func runBluegreenInit(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	rpOut, err := cloud.RunOCI(ctx, cloud.ReservedIPListArgs(pair.auth, pair.compOCID))
+	rip, ok, err := cloud.BGReservedIPList(ctx, pair.auth, pair.compOCID)
 	if err != nil {
 		return err
 	}
-	if rip, ok := cloud.ParseReservedIPRow(rpOut); ok {
+	if ok {
 		fmt.Fprintf(d.Stdout, "reserved IP already exists: %s — nothing to do\n", rip.Address)
 		return nil
 	}
-	out, err := cloud.RunOCI(ctx, cloud.ReservedIPCreateArgs(pair.auth, pair.compOCID, "kampodra-active"))
+	addr, err := cloud.BGReservedIPCreate(ctx, pair.auth, pair.compOCID, "kampodra-active")
 	if err != nil {
 		return err
-	}
-	var created struct {
-		Data struct {
-			IPAddress string `json:"ip-address"`
-		} `json:"data"`
-	}
-	addr := strings.TrimSpace(out)
-	if err := json.Unmarshal([]byte(out), &created); err == nil && created.Data.IPAddress != "" {
-		addr = created.Data.IPAddress
 	}
 	fmt.Fprintf(d.Stdout, "created DORMANT reserved IP: %s (unassigned — no instance attached)\n", addr)
 	fmt.Fprintln(d.Stdout, "Point DNS at this address when the pair goes active.")
@@ -94,17 +84,9 @@ func runBluegreenProvision(d Deps, c *cobra.Command, color string) error {
 	}
 
 	fmt.Fprintf(d.Stdout, "launching %s: ad=%s mode=%s\n", pair.colorName(color), tmpl.AD, mode)
-	launchOut, err := cloud.RunOCI(ctx, cloud.InstanceLaunchArgs(pair.auth, pair.compOCID, tmpl.AD, subnet, image, pair.colorName(color), sshKeyFile))
+	iid, err := cloud.BGInstanceLaunch(ctx, pair.auth, pair.compOCID, tmpl.AD, subnet, image, pair.colorName(color), sshKeyFile)
 	if err != nil {
-		return fmt.Errorf("instance launch failed: %w", err)
-	}
-	iid := strings.TrimSpace(launchOut)
-	if !cloud.IsOCID(iid, "instance") {
-		if parsed, ok := cloud.ParseLaunchID(launchOut); ok {
-			iid = parsed
-		} else {
-			return fmt.Errorf("unexpected launch response: %s", launchOut)
-		}
+		return err
 	}
 	fmt.Fprintf(d.Stdout, "LAUNCHED %s: %s\n", pair.colorName(color), iid)
 	if mode == "native" {
@@ -147,11 +129,10 @@ func bgProvisionTemplate(ctx context.Context, pair bgPair, color string) (cloud.
 	if tmpl.OCID == "" {
 		return cloud.BGInstance{}, "", fmt.Errorf("%s not RUNNING — need its AD/subnet as the pair template", pair.colorName(other))
 	}
-	tmplAtt, err := cloud.RunOCI(ctx, cloud.VnicAttachmentsArgs(pair.auth, pair.compOCID, tmpl.OCID))
+	_, subnet, ok, err := cloud.BGPrimaryVnic(ctx, pair.auth, pair.compOCID, tmpl.OCID)
 	if err != nil {
 		return cloud.BGInstance{}, "", err
 	}
-	_, subnet, ok := cloud.FirstVnic(tmplAtt)
 	if !ok || !cloud.IsOCID(subnet, "subnet") {
 		return cloud.BGInstance{}, "", fmt.Errorf("could not resolve %s's subnet id", pair.colorName(other))
 	}
@@ -173,28 +154,22 @@ func bgProvisionImage(ctx context.Context, d Deps, c *cobra.Command, pair bgPair
 	if err != nil {
 		return "", "", "", err
 	}
-	imgOut, err := cloud.RunOCI(ctx, cloud.ImageListArgs(pair.auth, pair.compOCID))
+	golden, firmware, err := cloud.BGGoldenImage(ctx, pair.auth, pair.compOCID, prefix)
 	if err != nil {
 		return "", "", "", err
 	}
-	if newest, ok := cloud.NewestPrefixedImage(imgOut, prefix); ok {
-		fwOut, err := cloud.RunOCI(ctx, cloud.ImageGetArgs(pair.auth, newest))
-		if err != nil {
-			return "", "", "", err
+	if golden != "" {
+		if firmware == "UEFI_64" {
+			return golden, mode, "", nil
 		}
-		if fw := cloud.ImageFirmware(fwOut); fw == "UEFI_64" {
-			return newest, mode, "", nil
-		} else {
-			fmt.Fprintf(d.Stdout, "note: newest %s* custom image is firmware=%s — A1 rejects BIOS-pinned imports, using the platform-image + injection route\n",
-				prefix, orUnknown(fw))
-		}
+		fmt.Fprintf(d.Stdout, "note: newest %s* custom image is firmware=%s — A1 rejects BIOS-pinned imports, using the platform-image + injection route\n",
+			prefix, orUnknown(firmware))
 	}
-	trec, err := cloud.RunOCI(ctx, cloud.InstanceGetArgs(pair.auth, tmpl.OCID))
+	rec, err := cloud.BGInstanceRecord(ctx, pair.auth, tmpl.OCID)
 	if err != nil {
 		return "", "", "", err
 	}
-	rec, err := cloud.ParseInstanceRecord(trec)
-	if err != nil || !cloud.IsOCID(rec.ImageID, "image") {
+	if !cloud.IsOCID(rec.ImageID, "image") {
 		return "", "", "", fmt.Errorf("template instance has no resolvable image-id — cannot launch or inject")
 	}
 	sshKeyFile = flagString(c, "platform-key")
@@ -241,11 +216,7 @@ func bgInjectParams(d Deps, c *cobra.Command) (qcow2, platformUser string, err e
 func bgWaitRunning(d Deps, ctx context.Context, pair bgPair, iid string) error {
 	_ = d
 	for i := 0; i < 120; i++ {
-		out, err := cloud.RunOCI(ctx, cloud.InstanceGetArgs(pair.auth, iid))
-		if err != nil {
-			return err
-		}
-		rec, err := cloud.ParseInstanceRecord(out)
+		rec, err := cloud.BGInstanceRecord(ctx, pair.auth, iid)
 		if err != nil {
 			return err
 		}
