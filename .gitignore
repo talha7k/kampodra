@@ -11,3 +11,5 @@ coverage.out
 /kampodra
 /paritygen
 /npm/platforms/*/bin/
+# agent worktrees (git-worktree checkouts live here, never in history)
+/.worktrees/

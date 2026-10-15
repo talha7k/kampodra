@@ -175,8 +175,14 @@ Additional shape-specific caveats:
 - **`vm-prepare` writes a generic OpenRC unit** — `NODE_ENV=production`,
   `PORT=<port>` plus your resolved project naming. On an unusual project
   shape, review the generated unit before relying on it.
-- **`backup`/`dns` are OCI today** (auth via the `oci` CLI; the adapter is
-  isolated in `internal/adapter/cloud`) — everything else is cloud-agnostic.
+- **`backup`/`dns`/`bluegreen`/`image-import` are OCI today** (auth via the
+  `oci` CLI; the adapter is isolated in `internal/adapter/cloud`, one
+  `RunOCI` seam) — everything else is cloud-agnostic: `deploy`,
+  `vm-prepare`, `vm-wipe`, `status`, `metrics`, `migrate`, `env`, `ssh`,
+  `config`, and `backup verify` work over any SSH-reachable Linux VM.
+  Blue-green in particular resolves pairs + reserved IP from live OCI
+  state with no manual-IP fallback, and `bluegreen provision` pins the
+  `VM.Standard.A1.Flex` shape.
 
 ## Troubleshooting
 
