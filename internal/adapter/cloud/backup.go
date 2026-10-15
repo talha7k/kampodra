@@ -107,11 +107,14 @@ func ExpectedDigest(headJSON string) string {
 	return ""
 }
 
-// BackupObject is one parsed `os object list` row.
+// BackupObject is one parsed backup listing row — the neutral shape both
+// providers map onto. Digest carries the ExpectedDigest form ("sha256:<hex>"
+// / "md5:<base64>"; "" = verification skipped).
 type BackupObject struct {
 	Name        string
 	Size        int64
 	TimeCreated string // "-" when the API returned none
+	Digest      string
 }
 
 // ParseObjectList ports the jq row extraction

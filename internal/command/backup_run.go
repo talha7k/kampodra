@@ -25,7 +25,7 @@ func runBackupList(d Deps, c *cobra.Command) error {
 	if err := cloud.CheckProvider(auth); err != nil {
 		return err
 	}
-	namespace, err := resolveOSNamespace(c.Context(), auth, flagString(c, "namespace"))
+	namespace, err := cloud.ResolveBackupNamespace(c.Context(), auth, flagString(c, "namespace"))
 	if err != nil {
 		return err
 	}
@@ -42,7 +42,7 @@ func runBackupList(d Deps, c *cobra.Command) error {
 		fmt.Fprintf(d.Stdout, "[backup] objects in bucket %s%s\n", bucket, suffix)
 	}
 
-	out, err := cloud.RunOCI(c.Context(), cloud.ObjectListArgs(bucket, prefix, namespace, auth.Profile, auth.InstancePrincipal))
+	objs, err := cloud.BackupList(c.Context(), auth, bucket, prefix, namespace)
 	if err != nil {
 		msg := err.Error()
 		if cloud.IsAuthDenied(msg) {
@@ -50,10 +50,6 @@ func runBackupList(d Deps, c *cobra.Command) error {
 			return &exitError{code: 1}
 		}
 		return fmt.Errorf("object list failed: %s", msg)
-	}
-	objs, err := cloud.ParseObjectList(out)
-	if err != nil {
-		return err
 	}
 	if len(objs) == 0 {
 		if prefix != "" {
@@ -80,7 +76,7 @@ func runBackupDownload(d Deps, c *cobra.Command, obj string) error {
 	if err := cloud.CheckProvider(auth); err != nil {
 		return err
 	}
-	namespace, err := resolveOSNamespace(c.Context(), auth, flagString(c, "namespace"))
+	namespace, err := cloud.ResolveBackupNamespace(c.Context(), auth, flagString(c, "namespace"))
 	if err != nil {
 		return err
 	}
@@ -90,16 +86,17 @@ func runBackupDownload(d Deps, c *cobra.Command, obj string) error {
 		out = filepath.Base(obj)
 	}
 
-	headJSON, _ := cloud.RunOCI(c.Context(), cloud.ObjectHeadArgs(bucket, obj, namespace, auth.Profile, auth.InstancePrincipal))
-	expected := cloud.ExpectedDigest(headJSON)
+	head, _ := cloud.BackupHead(c.Context(), auth, bucket, obj, namespace)
+	expected := head.Digest
 
-	// 0600 FROM CREATION: pre-create the file 0600, oci get truncates into it.
+	// 0600 FROM CREATION: pre-create the file 0600, the download truncates
+	// into it.
 	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("cannot write %s", out)
 	}
 	f.Close()
-	if _, err := cloud.RunOCI(c.Context(), cloud.ObjectGetArgs(bucket, obj, out, namespace, auth.Profile, auth.InstancePrincipal)); err != nil {
+	if err := cloud.BackupDownload(c.Context(), auth, bucket, obj, out, namespace); err != nil {
 		return fmt.Errorf("object get failed for %s (bucket %s): %w", obj, bucket, err)
 	}
 	if err := os.Chmod(out, 0o600); err != nil {

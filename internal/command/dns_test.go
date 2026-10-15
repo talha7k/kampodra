@@ -363,6 +363,10 @@ func TestDNSNoCredentialMaterialStaticGate(t *testing.T) {
 		filepath.Join("..", "adapter", "cloud", "dnsops.go"),
 		filepath.Join("..", "adapter", "cloud", "dnsops_oci.go"),
 		filepath.Join("..", "adapter", "cloud", "dnsops_gcp.go"),
+		// The backup family's neutral ops — same auth rule, same gate.
+		filepath.Join("..", "adapter", "cloud", "backupops.go"),
+		filepath.Join("..", "adapter", "cloud", "backupops_oci.go"),
+		filepath.Join("..", "adapter", "cloud", "backupops_gcp.go"),
 	}
 	combined := ""
 	for _, src := range sources {
