@@ -49,8 +49,19 @@ func gcpStorageLsArgs(bucket, pattern string) []string {
 	return []string{"storage", "ls", "--json", "gs://" + bucket + "/" + pattern}
 }
 
-// gcpStorageObject is one `gcloud storage ls --json` row (the GCS JSON API
-// object resource: size is a string, md5Hash is base64 MD5).
+// gcpStorageLsRow is one `gcloud storage ls --json` entry: the listing
+// ENVELOPE (url + type) wraps the actual object resource under metadata —
+// reading these fields flat zero-values every row (live-fire 2026-10-16:
+// one real object rendered as a phantom ""/0 row). Rows that are not
+// cloud_objects (prefix markers) or carry no metadata are skipped.
+type gcpStorageLsRow struct {
+	Type     string            `json:"type"`
+	Metadata *gcpStorageObject `json:"metadata"`
+}
+
+// gcpStorageObject is the GCS JSON API object resource: size is a string,
+// md5Hash is base64 MD5, name is bucket-relative (a gs://bucket/ form is
+// tolerated and stripped).
 type gcpStorageObject struct {
 	Name        string      `json:"name"`
 	Size        json.Number `json:"size"`
@@ -66,26 +77,30 @@ type gcpStorageObject struct {
 // existing digest semantics: "md5:<base64>", the exact shape ExpectedDigest
 // emits for opc-content-md5 and HashFile("md5") reproduces.
 func parseGCPStorageObjects(lsJSON, bucket string) ([]BackupObject, error) {
-	var rows []gcpStorageObject
+	var rows []gcpStorageLsRow
 	if err := json.Unmarshal([]byte(lsJSON), &rows); err != nil {
 		return nil, fmt.Errorf("object list: %w", err)
 	}
 	urlPrefix := "gs://" + bucket + "/"
 	objs := make([]BackupObject, 0, len(rows))
 	for _, r := range rows {
-		size, _ := r.Size.Int64()
-		updated := r.TimeCreated
+		if r.Metadata == nil || (r.Type != "" && r.Type != "cloud_object") {
+			continue
+		}
+		m := r.Metadata
+		size, _ := m.Size.Int64()
+		updated := m.TimeCreated
 		if updated == "" {
-			updated = r.Updated
+			updated = m.Updated
 		}
 		if updated == "" {
 			updated = "-"
 		}
 		objs = append(objs, BackupObject{
-			Name:        strings.TrimPrefix(r.Name, urlPrefix),
+			Name:        strings.TrimPrefix(m.Name, urlPrefix),
 			Size:        size,
 			TimeCreated: updated,
-			Digest:      gcpMD5Digest(r.MD5Hash),
+			Digest:      gcpMD5Digest(m.MD5Hash),
 		})
 	}
 	return objs, nil

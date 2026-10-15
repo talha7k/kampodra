@@ -72,8 +72,8 @@ func TestBackupGCPListRendersTable(t *testing.T) {
 	h := setupBackupGCP(t)
 	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp", "project": "p1"}}`)
 	os.WriteFile(filepath.Join(h.fixtures, "list.json"), []byte(`[
-		{"name":"db/tenants/acme/20261008T050000Z.db","size":"1048576","timeCreated":"2026-10-08T05:00:05.000Z"},
-		{"name":"gs://my-bkt/db/tenants/beta/latest.db","size":"42","updated":"2026-10-09T10:00:00.000Z"}
+		{"url":"gs://my-bkt/db/tenants/acme/20261008T050000Z.db#1","type":"cloud_object","metadata":{"bucket":"my-bkt","name":"db/tenants/acme/20261008T050000Z.db","size":"1048576","timeCreated":"2026-10-08T05:00:05.000Z"}},
+		{"url":"gs://my-bkt/db/tenants/beta/latest.db#2","type":"cloud_object","metadata":{"bucket":"my-bkt","name":"db/tenants/beta/latest.db","size":"42","updated":"2026-10-09T10:00:00.000Z"}}
 	]`), 0o600)
 
 	if code := h.run(t, "list", "--bucket", "my-bkt", "--prefix", "db/tenants/", "--profile", "gcp-prof"); code != 0 {
@@ -112,7 +112,7 @@ func TestBackupGCPDownloadVerifiedByMD5(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(h.fixtures, "head.json"), []byte(
-		`[{"name":"db/x.db","size":"39","md5Hash":"`+md5Hash+`","timeCreated":"2026-10-08T05:00:05.000Z"}]`), 0o600)
+		`[{"url":"gs://my-bkt/db/x.db#1","type":"cloud_object","metadata":{"bucket":"my-bkt","name":"db/x.db","size":"39","md5Hash":"`+md5Hash+`","timeCreated":"2026-10-08T05:00:05.000Z"}}]`), 0o600)
 	out := filepath.Join(t.TempDir(), "restore.db")
 
 	if code := h.run(t, "download", "db/x.db", "--out", out, "--bucket", "my-bkt", "--profile", "gcp-prof"); code != 0 {
