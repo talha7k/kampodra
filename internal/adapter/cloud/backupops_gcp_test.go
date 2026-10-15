@@ -19,9 +19,10 @@ import (
 const gcpBackupBody = "kampodra gcp backup fixture payload\n"
 
 const gcpBackupListFixture = `[
-	{"name":"db/tenants/acme/20261008T050000Z.db","size":"1048576","timeCreated":"2026-10-08T05:00:05.000Z","md5Hash":"CY9rzUYh03PK3k6DJie09g=="},
-	{"name":"gs://my-bkt/db/tenants/beta/latest.db","size":"42","updated":"2026-10-09T10:00:00.000Z"},
-	{"name":"db/tenants/gamma/none.db","size":"7"}
+	{"url":"gs://my-bkt/db/tenants/acme/20261008T050000Z.db#1792108145797427","type":"cloud_object","metadata":{"bucket":"my-bkt","name":"db/tenants/acme/20261008T050000Z.db","size":"1048576","timeCreated":"2026-10-08T05:00:05.000Z","md5Hash":"CY9rzUYh03PK3k6DJie09g=="}},
+	{"url":"gs://my-bkt/db/tenants/beta/latest.db#1792108145797428","type":"cloud_object","metadata":{"bucket":"my-bkt","name":"gs://my-bkt/db/tenants/beta/latest.db","size":"42","updated":"2026-10-09T10:00:00.000Z"}},
+	{"url":"gs://my-bkt/db/tenants/gamma/none.db#1792108145797429","type":"cloud_object","metadata":{"bucket":"my-bkt","name":"db/tenants/gamma/none.db","size":"7"}},
+	{"url":"gs://my-bkt/db","type":"cloud_prefix"}
 ]`
 
 type backupGCPShim struct {
@@ -144,7 +145,7 @@ func TestGCPBackupHeadMD5Parity(t *testing.T) {
 		t.Fatal(err)
 	}
 	shim := setupBackupGCPShim(t, `[]`,
-		`[{"name":"db/x.db","size":"39","md5Hash":"`+want+`","timeCreated":"2026-10-08T05:00:05.000Z"}]`)
+		`[{"url":"gs://my-bkt/db/x.db#1","type":"cloud_object","metadata":{"bucket":"my-bkt","name":"db/x.db","size":"39","md5Hash":"`+want+`","timeCreated":"2026-10-08T05:00:05.000Z"}}]`)
 	obj, err := BackupHead(context.Background(), CloudAuth{Provider: "gcp", Project: "p1"}, "my-bkt", "db/x.db", "test-ns")
 	if err != nil {
 		t.Fatalf("BackupHead: %v", err)
@@ -164,7 +165,7 @@ func TestGCPBackupHeadMD5Parity(t *testing.T) {
 // Composite objects carry no md5Hash — digest-skips, preserving today's
 // "no digest metadata" semantic. A failed head does the same.
 func TestGCPBackupHeadCompositeAndFailureDigestSkip(t *testing.T) {
-	setupBackupGCPShim(t, `[]`, `[{"name":"db/comp","size":"7","md5Hash":""}]`)
+	setupBackupGCPShim(t, `[]`, `[{"url":"gs://my-bkt/db/comp#2","type":"cloud_object","metadata":{"bucket":"my-bkt","name":"db/comp","size":"7","md5Hash":""}}]`)
 	obj, err := BackupHead(context.Background(), CloudAuth{Provider: "gcp"}, "my-bkt", "db/comp", "")
 	if err != nil || obj.Digest != "" {
 		t.Errorf("composite head = %+v, %v — empty md5Hash must digest-skip", obj, err)
@@ -175,7 +176,7 @@ func TestGCPBackupHeadCompositeAndFailureDigestSkip(t *testing.T) {
 		t.Errorf("absent head = %+v, %v — must digest-skip", obj, err)
 	}
 	// The name tolerates a gs://bucket/ prefix here too.
-	setupBackupGCPShim(t, `[]`, `[{"name":"gs://my-bkt/db/prefixed.db","size":"1","md5Hash":"CY9rzUYh03PK3k6DJie09g=="}]`)
+	setupBackupGCPShim(t, `[]`, `[{"url":"gs://my-bkt/db/prefixed.db#3","type":"cloud_object","metadata":{"bucket":"my-bkt","name":"gs://my-bkt/db/prefixed.db","size":"1","md5Hash":"CY9rzUYh03PK3k6DJie09g=="}}]`)
 	if obj, err := BackupHead(context.Background(), CloudAuth{Provider: "gcp"}, "my-bkt", "db/prefixed.db", ""); err != nil || obj.Name != "db/prefixed.db" || obj.Digest != "md5:CY9rzUYh03PK3k6DJie09g==" {
 		t.Errorf("prefixed head = %+v, %v", obj, err)
 	}
