@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"os"
 	"strconv"
 	"strings"
@@ -136,13 +137,17 @@ func dnsUpdateRRSetGCP(ctx context.Context, auth CloudAuth, zone, domain, rtype 
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp("", "kampodra-dns-txn-*.yaml")
+	// gcloud's `transaction start` OWNS the file's creation and refuses
+	// if it already exists (live-fire 2026-10-16: os.CreateTemp here made
+	// every start fail with "Transaction already exists"). Mint a unique
+	// empty DIR instead — the file inside never pre-exists, and cleanup
+	// removes the whole thing: no litter either way.
+	dir, err := os.MkdirTemp("", "kampodra-dns-txn-")
 	if err != nil {
-		return fmt.Errorf("transaction file: %w", err)
+		return fmt.Errorf("transaction dir: %w", err)
 	}
-	txn := f.Name()
-	defer os.Remove(txn) // no litter: the file never outlives the call
-	f.Close()
+	txn := filepath.Join(dir, "transaction.yaml")
+	defer os.RemoveAll(dir)
 
 	run := func(stage string, extra ...string) error {
 		args := append([]string{"dns", "record-sets", "transaction", stage,
