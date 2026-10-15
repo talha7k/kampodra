@@ -350,13 +350,19 @@ func TestDNSRequiresCompartment(t *testing.T) {
 // and the dns surface supports the sanctioned auth modes (config-file
 // --profile + instance principal) across its files.
 func TestDNSNoCredentialMaterialStaticGate(t *testing.T) {
-	forbidden := `(?i)--auth[-_]token|api[-_]key|private[-_]key|password|security[-_]token-file\s*=|OCI_API_KEY`
+	// Forbidden forever (never read, stored, or passed): token flags, key
+	// files, impersonation env, client secrets — for BOTH providers.
+	forbidden := `(?i)--auth[-_]token|api[-_]key|private[-_]key|password|security[-_]token-file\s*=|OCI_API_KEY|--access-token|GOOGLE_APPLICATION_CREDENTIALS|client[-_]secret|key[-_]file`
 	sources := []string{
 		filepath.Join("..", "command", "dns.go"),
 		filepath.Join("..", "adapter", "cloud", "dns.go"),
 		// AuthArgs — the --auth instance_principal arg builder — lives in the
 		// cloud adapter's shared file; the gate covers it too.
 		filepath.Join("..", "adapter", "cloud", "backup.go"),
+		filepath.Join("..", "adapter", "cloud", "provider.go"),
+		filepath.Join("..", "adapter", "cloud", "dnsops.go"),
+		filepath.Join("..", "adapter", "cloud", "dnsops_oci.go"),
+		filepath.Join("..", "adapter", "cloud", "dnsops_gcp.go"),
 	}
 	combined := ""
 	for _, src := range sources {
@@ -376,13 +382,14 @@ func TestDNSNoCredentialMaterialStaticGate(t *testing.T) {
 		t.Error("the dns surface does not support --profile (config-file auth)")
 	}
 	// The command carries NO cloud flags: auth comes from the instance
-	// profile's `cloud` block or the provider env, and the oci CLI
-	// resolves natively otherwise.
+	// profile's `cloud` block or the provider env, and the provider CLI
+	// resolves natively otherwise (gcp scope rides the block's project,
+	// never a command flag).
 	cmdSrc, err := os.ReadFile(filepath.Join("..", "command", "dns.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, banned := range []string{"--instance-principal", "--oci-profile"} {
+	for _, banned := range []string{"--instance-principal", "--oci-profile", "--project", "--account", "--provider"} {
 		if strings.Contains(string(cmdSrc), banned) {
 			t.Errorf("the dns command must not expose %s", banned)
 		}
@@ -424,5 +431,225 @@ func writeDNSProfile(t *testing.T, home, name, profileJSON string) {
 	}
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// --- gcp: the gcloud twin of the oci shim harness --------------------------
+
+const dnsGCPAppRecords = `[
+	{"name":"app.example.com.","type":"A","ttl":300,"rrdatas":["203.0.113.9","203.0.113.10"]},
+	{"name":"www.example.com.","type":"CNAME","ttl":3600,"rrdatas":["edge.example.com."]},
+	{"name":"example.com.","type":"NS","ttl":86400,"rrdatas":["ns-cloud-b1.googledomains.com."]}
+]`
+
+// setupDNSGCP is setupDNS's gcloud twin: a temp-dir shim dispatching on
+// "$1 $2", fixture files, and an invocation log. Fixtures mirror gcloud's
+// native shapes: bare arrays, dnsName with trailing dot, rrdatas arrays.
+func setupDNSGCP(t *testing.T, opts map[string]string) *dnsHarness {
+	t.Helper()
+	home := t.TempDir()
+	stub := t.TempDir()
+	gcpLog := filepath.Join(stub, "gcloud-calls.log")
+	zonesFixture := filepath.Join(stub, "zones.json")
+	recordsFixture := filepath.Join(stub, "records.json")
+
+	zonesData := opts["zones"]
+	if zonesData == "" {
+		zonesData = `[{"name":"example-com","dnsName":"example.com."}]`
+	}
+	os.WriteFile(zonesFixture, []byte(zonesData), 0o600)
+	recordsData := opts["records"]
+	if recordsData == "" {
+		recordsData = `[]` // gcloud emits bare [] for empty lists
+	}
+	os.WriteFile(recordsFixture, []byte(recordsData), 0o600)
+
+	gcloudShim := "#!/bin/bash\n" +
+		"printf '%s\\n' \"$*\" >> '" + gcpLog + "'\n" +
+		"case \"$1 $2\" in\n" +
+		"  \"dns managed-zones\") cat '" + zonesFixture + "' ;;\n" +
+		"  \"dns record-sets\")\n" +
+		"    if [[ \"$3\" == \"transaction\" ]]; then exit 0; fi\n" +
+		"    cat '" + recordsFixture + "'\n" +
+		"    exit 0 ;;\n" +
+		"esac\n" +
+		"exit 0\n"
+	os.WriteFile(filepath.Join(stub, "gcloud"), []byte(gcloudShim), 0o755)
+
+	t.Setenv("PATH", stub+":/usr/bin:/bin")
+	// No OCI env may leak into a gcp run: OCI_COMPARTMENT would trip the
+	// OCI-only compartment fail-close.
+	t.Setenv("OCI_COMPARTMENT", "")
+	for _, k := range []string{"KAMPODRA_PROFILE", "OCI_PROFILE"} {
+		t.Setenv(k, "")
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	return &dnsHarness{
+		deps: command.Deps{
+			Home:   home,
+			Env:    systemLookup,
+			Stdout: stdout,
+			Stderr: stderr,
+			Stdin:  strings.NewReader(""),
+		},
+		stub:   stub,
+		stdout: stdout,
+		stderr: stderr,
+		ociLog: gcpLog,
+	}
+}
+
+// gcpCalls reads the shim invocation log — the same reader serves both CLIs.
+func (h *dnsHarness) gcpCalls(t *testing.T) []string {
+	return h.ociCalls(t)
+}
+
+func TestDNSGCPRecordsExpandRRDatas(t *testing.T) {
+	h := setupDNSGCP(t, map[string]string{"records": dnsGCPAppRecords})
+	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp", "project": "p1"}}`)
+	if code := h.run(t, "records", "--profile", "gcp-prof"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	out := h.stdout.String()
+	// Every rrdatas[] entry expands to one row; trailing dots normalize.
+	for _, want := range []string{
+		"[dns] DNS records — zone example.com",
+		"gcloud active config",
+		"app.example.com\tA\t300\t203.0.113.9",
+		"app.example.com\tA\t300\t203.0.113.10",
+		"www.example.com\tCNAME\t3600\tedge.example.com",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("records output missing %q:\n%s", want, out)
+		}
+	}
+	// One argv shape per op, the identity flag appended exactly once —
+	// never an --account (the block names none).
+	for _, call := range h.gcpCalls(t) {
+		if !strings.Contains(call, "--project=p1") || strings.Contains(call, "--account") {
+			t.Errorf("identity flags wrong: %s", call)
+		}
+	}
+	if joined := strings.Join(h.gcpCalls(t), "\n"); !strings.Contains(joined,
+		"dns record-sets list --zone=example-com --format=json(name,type,ttl,rrdatas) --project=p1") {
+		t.Errorf("record list argv drift:\n%s", joined)
+	}
+}
+
+// A dnsName hint (gcloud's list form, trailing dot included) resolves to
+// the zone slug gcloud's --zone actually takes.
+func TestDNSGCPZoneResolveByDNSName(t *testing.T) {
+	h := setupDNSGCP(t, map[string]string{})
+	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp"}}`)
+	if code := h.run(t, "records", "--zone", "example.com.", "--profile", "gcp-prof"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	// Native block (no project): NO identity flags — gcloud's active config.
+	for _, call := range h.gcpCalls(t) {
+		if strings.Contains(call, "--project") || strings.Contains(call, "--account") {
+			t.Errorf("native resolution must pass no identity flags: %s", call)
+		}
+	}
+	if joined := strings.Join(h.gcpCalls(t), "\n"); !strings.Contains(joined, "--zone=example-com ") {
+		t.Errorf("dnsName hint must resolve to the slug:\n%s", joined)
+	}
+}
+
+func TestDNSGCPAddIdempotent(t *testing.T) {
+	h := setupDNSGCP(t, map[string]string{"records": dnsGCPAppRecords})
+	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp"}}`)
+	if code := h.run(t, "add", "--name", "app", "--type", "A", "--value", "203.0.113.9", "--profile", "gcp-prof"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), "already present") || !strings.Contains(h.stdout.String(), "nothing to do") {
+		t.Errorf("stdout = %q", h.stdout.String())
+	}
+	if joined := strings.Join(h.gcpCalls(t), "\n"); strings.Contains(joined, "transaction") {
+		t.Errorf("idempotent add must not stage a transaction:\n%s", joined)
+	}
+}
+
+func TestDNSGCPAddMergesAndExecutesTransaction(t *testing.T) {
+	h := setupDNSGCP(t, map[string]string{"records": dnsGCPAppRecords})
+	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp"}}`)
+	if code := h.run(t, "add", "--name", "app", "--type", "A", "--value", "203.0.113.11", "--profile", "gcp-prof"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), "added: app.example.com A 203.0.113.11 (ttl 300)") {
+		t.Errorf("stdout = %q", h.stdout.String())
+	}
+	joined := strings.Join(h.gcpCalls(t), "\n")
+	// remove stages the EXACT current rrset; add stages the merge.
+	if !strings.Contains(joined, "transaction start") ||
+		!strings.Contains(joined, "transaction remove") || !strings.Contains(joined, "203.0.113.9 203.0.113.10") ||
+		!strings.Contains(joined, "transaction add") || !strings.Contains(joined, "203.0.113.9 203.0.113.10 203.0.113.11") ||
+		!strings.Contains(joined, "transaction execute") {
+		t.Errorf("transaction sequence incomplete:\n%s", joined)
+	}
+}
+
+func TestDNSGCPRmFiltersAndExecutesTransaction(t *testing.T) {
+	h := setupDNSGCP(t, map[string]string{"records": dnsGCPAppRecords})
+	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp"}}`)
+	if code := h.run(t, "rm", "--name", "app", "--type", "A", "--value", "203.0.113.9", "--profile", "gcp-prof"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), "removed: app.example.com A 203.0.113.9") {
+		t.Errorf("stdout = %q", h.stdout.String())
+	}
+	joined := strings.Join(h.gcpCalls(t), "\n")
+	if !strings.Contains(joined, "transaction add") || !strings.Contains(joined, "203.0.113.10") {
+		t.Errorf("rm must keep the surviving rdata:\n%s", joined)
+	}
+	if strings.Contains(joined, "203.0.113.9 203.0.113.10 203.0.113.10") {
+		t.Errorf("rm must not duplicate the surviving rdata:\n%s", joined)
+	}
+}
+
+func TestDNSGCPRmNoMatchFails(t *testing.T) {
+	h := setupDNSGCP(t, map[string]string{"records": dnsGCPAppRecords})
+	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp"}}`)
+	if code := h.run(t, "rm", "--name", "app", "--type", "A", "--value", "203.0.113.99", "--profile", "gcp-prof"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(h.stderr.String(), "no matching record") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+	if joined := strings.Join(h.gcpCalls(t), "\n"); strings.Contains(joined, "transaction") {
+		t.Errorf("a refused rm must not stage a transaction:\n%s", joined)
+	}
+}
+
+func TestDNSGCPMissingGCLOUDFailsClosed(t *testing.T) {
+	h := setupDNSGCP(t, map[string]string{})
+	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp"}}`)
+	t.Setenv("PATH", "/usr/bin:/bin") // no gcloud
+	if code := h.run(t, "records", "--profile", "gcp-prof"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	for _, want := range []string{"gcloud CLI not found", "gcloud init"} {
+		if !strings.Contains(h.stderr.String(), want) {
+			t.Errorf("stderr missing %q:\n%s", want, h.stderr.String())
+		}
+	}
+	if calls := h.gcpCalls(t); len(calls) != 0 {
+		t.Errorf("no CLI means no calls: %v", calls)
+	}
+}
+
+// A compartment under gcp is a config error: the neutral scope op fails
+// closed BEFORE any gcloud call.
+func TestDNSGCPCompartmentIsRefused(t *testing.T) {
+	h := setupDNSGCP(t, map[string]string{})
+	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp"}}`)
+	t.Setenv("OCI_COMPARTMENT", "some-comp")
+	if code := h.run(t, "records", "--profile", "gcp-prof"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(h.stderr.String(), "OCI-only") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+	if calls := h.gcpCalls(t); len(calls) != 0 {
+		t.Errorf("the refusal must not exec gcloud: %v", calls)
 	}
 }

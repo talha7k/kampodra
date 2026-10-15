@@ -191,10 +191,13 @@ func resolveOSNamespace(ctx context.Context, auth cloud.CloudAuth, explicit stri
 }
 
 // profileLabel renders the auth identity for human output: the configured
-// profile name, or a marker for the empty (oci-CLI-native) case.
+// profile name, or a marker for the empty (provider-CLI-native) case.
 func profileLabel(auth cloud.CloudAuth) string {
 	if auth.Profile != "" {
 		return auth.Profile
+	}
+	if auth.Provider == "gcp" {
+		return "gcloud active config"
 	}
 	if auth.InstancePrincipal {
 		return "instance-principal"
