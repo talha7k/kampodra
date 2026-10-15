@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -13,22 +14,28 @@ import (
 )
 
 // dnsHelp is the shell dns.sh usage heredoc, kampodra-fied. AUTH RULE
-// (hard): the oci CLI's own auth ONLY — its config file (--profile) or
-// instance principal. kampodra NEVER accepts, stores, or logs credential
-// material. Types are pinned to A | AAAA | CNAME; ttl range 60..172800.
+// (hard): the provider CLI's own auth ONLY — oci's config file / instance
+// principal, gcloud's active config. kampodra NEVER accepts, stores, or
+// logs credential material — identity names only, forever. Types are
+// pinned to A | AAAA | CNAME; ttl range 60..172800.
 const dnsHelp = `Usage:
   kampodra dns records [--zone <id-or-name>]                  # list records: domain / type / ttl / value
   kampodra dns add --name <label> --type A|AAAA|CNAME --value <target> [--ttl 300]
   kampodra dns rm --name <label> --type <A|AAAA|CNAME> --value <target>
   (all: optional --zone <id-or-name>)
 
-Auth is the oci CLI's own — kampodra passes no auth flags unless the
-instance profile's "cloud" block overrides it ({"profile": "…",
-"instancePrincipal": true, "compartment": "…"}); OCI_PROFILE /
-OCI_COMPARTMENT env are the escape hatch. kampodra never accepts, stores,
-or logs credential material. Types are pinned to A | AAAA | CNAME. ` + "`add`" + ` merges into the existing
-RRSet (round-robin records survive); ` + "`rm`" + ` filters it; both are
-idempotence-aware.
+Auth is the provider CLI's own — kampodra passes no auth flags unless the
+instance profile's "cloud" block overrides it:
+  oci: {"profile": "…", "instancePrincipal": true, "compartment": "…"} —
+       OCI_PROFILE / OCI_COMPARTMENT env are the escape hatch.
+  gcp: {"provider": "gcp", "project": "…", "account": "…"} — an empty
+       project/account = gcloud's active config; CLOUDSDK_CORE_PROJECT /
+       CLOUDSDK_CORE_ACCOUNT / CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT
+       are gcloud's own env escape hatch (kampodra never reads them).
+Identity names only: access-token flags, key files, credential env vars,
+and client secrets are never accepted, stored, or logged. Types are pinned
+to A | AAAA | CNAME. ` + "`add`" + ` merges into the existing RRSet (round-robin
+records survive); ` + "`rm`" + ` filters it; both are idempotence-aware.
 
 Examples:
   kampodra dns records
@@ -41,7 +48,7 @@ Examples:
 func newDNSCommand(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dns",
-		Short: "OCI DNS records (oci auth only — never credential material): records | add | rm",
+		Short: "DNS records via the provider CLI's own auth (never credential material): records | add | rm",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			fmt.Fprint(c.OutOrStdout(), dnsHelp)
@@ -52,7 +59,7 @@ func newDNSCommand(d Deps) *cobra.Command {
 		fmt.Fprint(c.OutOrStdout(), dnsHelp)
 	})
 	pf := cmd.PersistentFlags()
-	pf.String("profile", "", "kampodra instance profile — carries the cloud block (OCI config profile override + compartment)")
+	pf.String("profile", "", "kampodra instance profile — carries the cloud block (provider CLI auth overrides: profile/compartment/project/account)")
 	pf.String("zone", "", "zone id or name (default: the compartment's ONLY zone — several require this flag)")
 	pf.String("name", "", "record name: a DNS label (app) or an fqdn inside the zone")
 	pf.String("type", "", "record type: A, AAAA, or CNAME")
@@ -89,17 +96,34 @@ func newDNSCommand(d Deps) *cobra.Command {
 }
 
 // dnsContext bundles the resolved provider inputs (the shell's need_provider
-// + resolve_zone sequence).
+// + resolve_zone sequence). The compartment's resolved ocid rides back on
+// auth.Compartment — the neutral ops read it from there.
 type dnsContext struct {
-	auth        cloud.CloudAuth
-	compartment string
-	zoneName    string
-	zoneID      string
+	auth     cloud.CloudAuth
+	zoneName string
+	zoneID   string
 }
 
-func dnsNeedProvider(d Deps) error {
-	if _, err := exec.LookPath("oci"); err != nil {
-		return fmt.Errorf("oci CLI not found — install oci-cli (https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm), then: oci setup config")
+// dnsCheckCLI is the pre-flight guard: the provider's own CLI must be on
+// PATH — the fail-closed remedy is the install hint, never a credential
+// workaround.
+func dnsCheckCLI(auth cloud.CloudAuth) error {
+	cli := cloud.CLIName(auth.Provider)
+	if _, err := exec.LookPath(cli); err != nil {
+		return fmt.Errorf("%s CLI not found — %s", cli, cloud.InstallHint(auth.Provider))
+	}
+	return nil
+}
+
+// dnsNeedProvider gates on the provider CLI and (OCI only) a compartment —
+// gcp scopes natively via the cloud block's project, so an empty project
+// resolving through gcloud's active config is NOT an error.
+func dnsNeedProvider(d Deps, auth cloud.CloudAuth) error {
+	if err := dnsCheckCLI(auth); err != nil {
+		return err
+	}
+	if auth.Provider == "gcp" {
+		return nil
 	}
 	if v, ok := d.Env("OCI_COMPARTMENT"); !ok || v == "" {
 		return fmt.Errorf("set OCI_COMPARTMENT=<compartment name or ocid> — no default: compartments are account-specific")
@@ -107,48 +131,24 @@ func dnsNeedProvider(d Deps) error {
 	return nil
 }
 
-// dnsResolveZone ports resolve_zone: explicit --zone wins (ocid → get the
-// name; name → as-is); otherwise the compartment must hold exactly one
-// zone — never guess between several.
+// dnsResolveZone resolves the --zone hint through the neutral op (ocid →
+// get the name; name → as-is; empty → the exactly-one-zone rule — never a
+// guess between several).
 func dnsResolveZone(d Deps, c *cobra.Command, dc *dnsContext) error {
-	zoneArg := flagString(c, "zone")
-	ctx := c.Context()
-	if zoneArg != "" {
-		if strings.HasPrefix(zoneArg, "ocid1.dns-zone") {
-			out, err := cloud.RunOCI(ctx, cloud.DNSZoneGetArgs(zoneArg, dc.compartment, dc.auth.Profile, dc.auth.InstancePrincipal))
-			if err != nil {
-				return fmt.Errorf("zone not found: %s", zoneArg)
+	zone, err := cloud.DNSResolveZone(c.Context(), dc.auth, flagString(c, "zone"))
+	if err != nil {
+		var mz *cloud.ManyZonesError
+		if errors.As(err, &mz) {
+			// the candidates must reach the operator, never a guess
+			fmt.Fprintf(d.Stderr, "[dns] FAIL: multiple zones in %s — pass --zone with one of:\n", mz.Scope)
+			for _, name := range mz.Names {
+				fmt.Fprintf(d.Stderr, "  %s\n", name)
 			}
-			zones, err := cloud.ParseZones(out)
-			if err != nil || len(zones) == 0 {
-				return fmt.Errorf("zone not found: %s", zoneArg)
-			}
-			dc.zoneName, dc.zoneID = zones[0].Name, zoneArg
-			return nil
+			return &exitError{code: 1}
 		}
-		dc.zoneName = strings.TrimSuffix(zoneArg, ".")
-		dc.zoneID = zoneArg
-		return nil
-	}
-	out, err := cloud.RunOCI(ctx, cloud.DNSZoneListArgs(dc.compartment, dc.auth.Profile, dc.auth.InstancePrincipal))
-	if err != nil {
-		return fmt.Errorf("zone list failed (profile: %s, compartment: %s): %w", dc.auth.Profile, dc.compartment, err)
-	}
-	zones, err := cloud.ParseZones(out)
-	if err != nil {
 		return err
 	}
-	if len(zones) == 0 {
-		return fmt.Errorf("no DNS zones in compartment '%s' — create one in the OCI console first (or pass --zone <id-or-name>)", dc.compartment)
-	}
-	if len(zones) > 1 {
-		fmt.Fprintf(d.Stderr, "[dns] FAIL: multiple zones in %s — pass --zone with one of:\n", dc.compartment)
-		for _, z := range zones {
-			fmt.Fprintf(d.Stderr, "  %s\n", z.Name)
-		}
-		return &exitError{code: 1}
-	}
-	dc.zoneName, dc.zoneID = zones[0].Name, zones[0].ID
+	dc.zoneName, dc.zoneID = zone.Name, zone.ID
 	return nil
 }
 
@@ -157,23 +157,27 @@ func dnsResolveCompartment(d Deps, ctx context.Context, target Target, dc *dnsCo
 	if err := cloud.CheckProvider(dc.auth); err != nil {
 		return err
 	}
+	if dc.auth.Provider == "gcp" {
+		// gcp has no compartments: scope is the block's project (the legs
+		// read it directly); carrying one is a config error the neutral op
+		// refuses.
+		if dc.auth.Compartment != "" {
+			_, err := cloud.DNSResolveScope(ctx, dc.auth, dc.auth.Compartment)
+			return err
+		}
+		return nil
+	}
 	if dc.auth.Compartment == "" {
 		return fmt.Errorf("no OCI compartment configured — set the instance profile's \"cloud\" block ({\"compartment\": \"<name or ocid>\"}) in ~/.kampodra/config.json, or export OCI_COMPARTMENT=<compartment name or ocid> — compartments are account-specific")
 	}
-	compartmentEnv := dc.auth.Compartment
-	dc.compartment = compartmentEnv
-
-	// A name (not an ocid) resolves through iam compartment list.
-	if !strings.HasPrefix(compartmentEnv, "ocid1.") {
-		out, err := cloud.RunOCI(ctx, cloud.DNSCompartmentListArgs(dc.auth))
+	// A name (not an ocid) resolves through the neutral scope op; the ocid
+	// rides back on auth.Compartment for the ops downstream.
+	if !strings.HasPrefix(dc.auth.Compartment, "ocid1.") {
+		ocid, err := cloud.DNSResolveScope(ctx, dc.auth, dc.auth.Compartment)
 		if err != nil {
-			return err
+			return fmt.Errorf("compartment '%s' not found (auth profile: %s)", dc.auth.Compartment, profileLabel(dc.auth))
 		}
-		ocid, err := cloud.CompartmentOCID(out, compartmentEnv)
-		if err != nil {
-			return fmt.Errorf("compartment '%s' not found (auth profile: %s)", compartmentEnv, profileLabel(dc.auth))
-		}
-		dc.compartment = ocid
+		dc.auth.Compartment = ocid
 	}
 	return nil
 }
@@ -209,14 +213,15 @@ func dnsValidateArgs(c *cobra.Command, needValue bool) (name, rtype, value, ttl 
 
 // dnsPrepare chains validation -> provider check -> compartment -> zone ->
 // domain guard (the add/rm prelude). All validation is local; no provider
-// call happens on a validation failure.
+// call happens on a validation failure. Auth resolves BEFORE the pre-flight
+// guard — which provider's CLI to demand is itself provider-derived.
 func dnsPrepare(d Deps, c *cobra.Command, ctx context.Context, target Target, needValue bool) (dc *dnsContext, name, rtype, value, ttl string, err error) {
 	name, rtype, value, ttl, err = dnsValidateArgs(c, needValue)
 	if err != nil {
 		return nil, "", "", "", "", err
 	}
-	dc = &dnsContext{}
-	if err = dnsNeedProvider(d); err != nil {
+	dc = &dnsContext{auth: cloudAuthFor(d, target)}
+	if err = dnsNeedProvider(d, dc.auth); err != nil {
 		return nil, "", "", "", "", err
 	}
 	if err = dnsResolveCompartment(d, ctx, target, dc); err != nil {
@@ -236,9 +241,9 @@ func runDNSRecords(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	dc := &dnsContext{}
-	if _, err := exec.LookPath("oci"); err != nil {
-		return fmt.Errorf("oci CLI not found — install oci-cli (https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm), then: oci setup config")
+	dc := &dnsContext{auth: cloudAuthFor(d, target)}
+	if err := dnsNeedProvider(d, dc.auth); err != nil {
+		return err
 	}
 	if err := dnsResolveCompartment(d, c.Context(), target, dc); err != nil {
 		return err
@@ -247,11 +252,7 @@ func runDNSRecords(d Deps, c *cobra.Command) error {
 		return err
 	}
 	fmt.Fprintf(d.Stdout, "[dns] DNS records — zone %s (%s), auth profile: %s —\n", dc.zoneName, dc.zoneID, profileLabel(dc.auth))
-	out, err := cloud.RunOCI(c.Context(), cloud.DNSRecordsArgs(dc.compartment, dc.zoneID, dc.auth.Profile, dc.auth.InstancePrincipal))
-	if err != nil {
-		return err
-	}
-	records, err := cloud.ParseRecords(out)
+	records, err := cloud.DNSListRecords(c.Context(), dc.auth, dc.zoneID)
 	if err != nil {
 		return err
 	}
@@ -270,12 +271,8 @@ func runDNSAdd(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	if err != nil {
-		return err
-	}
 	domain := cloud.ResolveDomain(name, dc.zoneName)
-	rrsetOut, _ := cloud.RunOCI(c.Context(), cloud.DNSRRSetGetArgs(dc.compartment, dc.zoneID, domain, rtype, dc.auth.Profile, dc.auth.InstancePrincipal))
-	items, err := cloud.ParseRRSet(rrsetOut)
+	items, err := cloud.DNSGetRRSet(c.Context(), dc.auth, dc.zoneID, domain, rtype)
 	if err != nil {
 		return err
 	}
@@ -285,11 +282,7 @@ func runDNSAdd(d Deps, c *cobra.Command) error {
 	}
 	ttlN, _ := strconv.Atoi(ttl)
 	merged := cloud.MergeRecord(items, domain, rtype, ttlN, value)
-	itemsJSON, err := cloud.MarshalItems(merged)
-	if err != nil {
-		return err
-	}
-	if _, err := cloud.RunOCI(c.Context(), cloud.DNSRRSetUpdateArgs(dc.compartment, dc.zoneID, domain, rtype, itemsJSON, dc.auth.Profile, dc.auth.InstancePrincipal)); err != nil {
+	if err := cloud.DNSUpdateRRSet(c.Context(), dc.auth, dc.zoneID, domain, rtype, merged); err != nil {
 		return fmt.Errorf("RRSet update failed for %s %s (zone %s): %w", domain, rtype, dc.zoneName, err)
 	}
 	fmt.Fprintf(d.Stdout, "[dns] added: %s %s %s (ttl %s)\n", domain, rtype, value, ttl)
@@ -305,12 +298,8 @@ func runDNSRm(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	if err != nil {
-		return err
-	}
 	domain := cloud.ResolveDomain(name, dc.zoneName)
-	rrsetOut, _ := cloud.RunOCI(c.Context(), cloud.DNSRRSetGetArgs(dc.compartment, dc.zoneID, domain, rtype, dc.auth.Profile, dc.auth.InstancePrincipal))
-	items, err := cloud.ParseRRSet(rrsetOut)
+	items, err := cloud.DNSGetRRSet(c.Context(), dc.auth, dc.zoneID, domain, rtype)
 	if err != nil {
 		return err
 	}
@@ -321,11 +310,8 @@ func runDNSRm(d Deps, c *cobra.Command) error {
 	if len(remaining) == len(items) {
 		return fmt.Errorf("no matching record: %s %s %s (see: kampodra dns records)", domain, rtype, value)
 	}
-	itemsJSON, err := cloud.MarshalItems(remaining) // an emptied RRSet is legal: --items '[]' removes it entirely
-	if err != nil {
-		return err
-	}
-	if _, err := cloud.RunOCI(c.Context(), cloud.DNSRRSetUpdateArgs(dc.compartment, dc.zoneID, domain, rtype, itemsJSON, dc.auth.Profile, dc.auth.InstancePrincipal)); err != nil {
+	// an emptied RRSet is legal: the OCI leg marshals [] itself
+	if err := cloud.DNSUpdateRRSet(c.Context(), dc.auth, dc.zoneID, domain, rtype, remaining); err != nil {
 		return fmt.Errorf("RRSet update failed for %s %s (zone %s): %w", domain, rtype, dc.zoneName, err)
 	}
 	fmt.Fprintf(d.Stdout, "[dns] removed: %s %s %s\n", domain, rtype, value)
