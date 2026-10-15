@@ -29,7 +29,8 @@ namespace, instancePrincipal); OCI_PROFILE / OCI_COMPARTMENT / OCI_NAMESPACE
 env are the escape hatch. kampodra never accepts, stores, or logs credential
 material. The tenancy namespace resolves --namespace > cloud block /
 OCI_NAMESPACE > oci os ns get and is passed explicitly (the CLI's internal
-namespace resolution fails on laptop configs). Bucket: --bucket (default
+namespace resolution fails on laptop configs); gcp ignores the namespace
+entirely — GCS scopes by bucket+project. Bucket: --bucket (default
 from the project config; KAMPODRA_BUCKET overrides). LIST-denied by policy
 is not fatal for download/verify — GET works with just the object name;
 ` + "`list`" + ` prints the exact policy shape when denied. verify uploads each .db
@@ -62,7 +63,7 @@ func newBackupCommand(d Deps) *cobra.Command {
 	})
 	pf := cmd.PersistentFlags()
 	pf.String("bucket", "", "object-storage bucket (default: project config bucket; KAMPODRA_BUCKET overrides)")
-	pf.String("namespace", "", "tenancy object-storage namespace (default: resolved via oci os ns get; OCI_NAMESPACE / the profile cloud block \"namespace\" override)")
+	pf.String("namespace", "", "tenancy object-storage namespace — ignored for gcp (default: resolved via oci os ns get; OCI_NAMESPACE / the profile cloud block \"namespace\" override)")
 	pf.String("prefix", "", "object name prefix for list")
 	pf.String("out", "", "download destination (default: the object's basename)")
 	pf.String("profile", "", "kampodra INSTANCE profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
@@ -163,31 +164,13 @@ func cloudAuthFor(d Deps, target Target) cloud.CloudAuth {
 	return auth
 }
 
-// resolveOSNamespace resolves the tenancy object-storage namespace for the
-// `os object` calls, in preference order: an explicit --namespace flag, the
-// cloud block / OCI_NAMESPACE (carried on auth), else `oci os ns get` — the
-// same call the oci CLI itself wraps for its internal resolution. The ns get
-// leg is load-bearing on the operator laptop: the CLI's internal namespace
-// resolution fails under user-principal configs ("Unable to retrieve
-// namespace internally", 2026-10-10 live fire) while instance-principal VMs
-// resolved fine — `os ns get` works in both worlds. Shared by the backup
-// family and image-import.
+// resolveOSNamespace routes the tenancy namespace ladder through the
+// neutral adapter op: the OCI leg owns the `os ns get` laptop fix, gcp
+// resolves to "" (no namespace concept) with no CLI call. Kept as the
+// command-level name because image-import shares the ladder until its own
+// provider swap lands (the backup family calls the adapter op directly).
 func resolveOSNamespace(ctx context.Context, auth cloud.CloudAuth, explicit string) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
-	if auth.Namespace != "" {
-		return auth.Namespace, nil
-	}
-	nsOut, err := cloud.RunOCI(ctx, cloud.OSNamespaceArgs(auth))
-	if err != nil {
-		return "", fmt.Errorf("could not resolve the tenancy object-storage namespace (pass it explicitly: --namespace <ns>, the profile cloud block \"namespace\", or OCI_NAMESPACE): %w", err)
-	}
-	ns := cloud.OSNamespace(nsOut)
-	if ns == "" {
-		return "", fmt.Errorf("could not resolve the tenancy object-storage namespace — pass it explicitly: --namespace <ns>, the profile cloud block \"namespace\", or OCI_NAMESPACE")
-	}
-	return ns, nil
+	return cloud.ResolveBackupNamespace(ctx, auth, explicit)
 }
 
 // profileLabel renders the auth identity for human output: the configured
