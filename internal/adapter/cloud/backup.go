@@ -1,47 +1,27 @@
-// Backup family of the oci CLI surface (the backup.sh port): object LIST /
-// HEAD / GET argument builders, digest-extraction and integrity hashing,
-// list parsing, and auth-denied detection.
-//
-// AUTH RULE (hard, same as the dns family): the oci CLI's own auth ONLY —
-// its config file (--profile) or instance principal. kampodra NEVER
-// accepts, stores, or logs credential material.
+// Backup family builders/parsers (neutral): the ops layer (backupops.go)
+// dispatches to *_oci/_gcp legs; oci auth via the oci CLI's own config only
+// (--profile / instance principal — AuthArgs/withProfile live with the exec
+// seam in provider.go). kampodra NEVER accepts, stores, or logs credential
+// material. The gcp leg (GCS) scopes by bucket+project: no namespace, no
+// profile flags — gcloud's own config IS the auth.
 package cloud
 
 import (
-	"context"
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 )
 
-// AuthArgs ports AUTH_ARGS: instance principal appends --auth
-// instance_principal; config-file auth adds nothing.
-func AuthArgs(instancePrincipal bool) []string {
-	if instancePrincipal {
-		return []string{"--auth", "instance_principal"}
-	}
-	return nil
-}
-
-// CloudAuth / SupportedProviders / CheckProvider / ParseCloudAuth live in
-// provider.go — the provider gate is shared by every family here.
-
-func withProfile(args []string, profile string, instancePrincipal bool) []string {
-	if profile != "" {
-		// Explicit override only: an empty profile lets the oci CLI resolve
-		// natively (its config's default/DEFAULT/first-profile precedence).
-		args = append(args, "--profile", profile)
-	}
-	return append(args, AuthArgs(instancePrincipal)...)
-}
+// CloudAuth / CheckProvider / ParseCloudAuth and the exec/auth seam
+// (RunOCI / withProfile / AuthArgs / RunCloud) live in provider.go — the
+// provider gate and the ONE exec choke point are shared by every family
+// here.
 
 // withNamespace appends the resolved tenancy namespace. Empty stays
 // flag-free: the caller explicitly chose CLI-native resolution.
@@ -200,27 +180,4 @@ func HashFile(path, alg string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported hash algorithm: %s", alg)
 	}
-}
-
-// RunOCI execs the oci CLI (LookPath'd like every other external seam) and
-// returns stdout; stderr rides the error so callers can classify failures.
-func RunOCI(ctx context.Context, args []string) (string, error) {
-	bin, err := exec.LookPath("oci")
-	if err != nil {
-		return "", fmt.Errorf("oci CLI not found — install oci-cli (https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm), then: oci setup config")
-	}
-	cmd := exec.CommandContext(ctx, bin, args...)
-	out, err := cmd.Output()
-	if err != nil {
-		msg := ""
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			msg = strings.TrimSpace(string(exitErr.Stderr))
-		}
-		if msg != "" {
-			return string(out), fmt.Errorf("oci %s: %s", args[0], msg)
-		}
-		return string(out), fmt.Errorf("oci %s: %w", args[0], err)
-	}
-	return string(out), nil
 }

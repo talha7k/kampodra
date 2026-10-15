@@ -183,8 +183,9 @@ func jsonEscapeStr(s string) string {
 // Profile is one flat per-instance config entry — no inheritance (owner
 // decision): host/sshKey/proxyHost/group + the cached init verdict.
 // Project is the raw "project" block; Cloud is the raw "cloud" block (the
-// provider-CLI auth overrides — profile/compartment/instancePrincipal; its
-// shape belongs to the cloud adapter). Both pass through state untouched.
+// provider-CLI auth overrides — provider/profile/compartment/namespace/
+// instancePrincipal/project/account; its shape belongs to the cloud
+// adapter). Both pass through state untouched.
 type Profile struct {
 	Host      string          `json:"host"`
 	SSHKey    string          `json:"sshKey"`

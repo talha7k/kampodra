@@ -118,8 +118,8 @@ tag flip. If you interrupted a `--rolling` deploy, finish it first with
 
 - **`env`** — `env list | push | pull | fingerprint | diff` manage the remote env file; values are never printed, only fingerprints (key + length + first 2 chars). `env from-schema` generates the file from a committed `.env.schema` via varlock.
 - **`metrics`** — one-shot load/memory/disk/container snapshot over SSH; `--watch <sec> --count <n>` re-snapshots.
-- **`backup`** — `list | download | verify | restore-plan` against an OCI Object Storage bucket; `restore-plan` prints the recovery sequence and never executes it.
-- **`dns`** — OCI DNS `records | add | rm` through the `oci` CLI's own auth; requires `OCI_COMPARTMENT`.
+- **`backup`** — `list | download | verify | restore-plan` against an object-storage bucket (oci or gcp); `restore-plan` prints the recovery sequence and never executes it.
+- **`dns`** — DNS `records | add | rm` via the provider CLI's own auth (oci | gcp); the OCI compartment is required for oci only (cloud block or `OCI_COMPARTMENT`).
 - **`migrate`** — tenant db migrations over SSH (`--repo-root` required); refuses to run while the app service is up unless `--allow-running`.
 
 Full command reference: [cli.md](cli.md).
@@ -175,9 +175,10 @@ Additional shape-specific caveats:
 - **`vm-prepare` writes a generic OpenRC unit** — `NODE_ENV=production`,
   `PORT=<port>` plus your resolved project naming. On an unusual project
   shape, review the generated unit before relying on it.
-- **`backup`/`dns`/`bluegreen`/`image-import` are OCI today** (auth via the
-  `oci` CLI; the adapter is isolated in `internal/adapter/cloud`, one
-  `RunOCI` seam) — everything else is cloud-agnostic: `deploy`,
+- **`backup`/`dns` are multi-provider** (oci | gcp behind the neutral
+  dispatch in `internal/adapter/cloud`, one `RunCloud` seam);
+  **`bluegreen`/`image-import` are OCI today** (a `gcp` profile fails
+  closed naming the surface) — everything else is cloud-agnostic: `deploy`,
   `vm-prepare`, `vm-wipe`, `status`, `metrics`, `migrate`, `env`, `ssh`,
   `config`, and `backup verify` work over any SSH-reachable Linux VM.
   Blue-green in particular resolves pairs + reserved IP from live OCI
@@ -218,14 +219,15 @@ through `--profile` > `KAMPODRA_PROFILE` > `defaultProfile`. Setting
 the quickest way to work profile-free; `KAMPODRA_PROFILE` switches the
 default for a session.
 
-**Backup bucket / OCI.** The backup bucket resolves `--bucket` >
+**Backup bucket / cloud auth.** The backup bucket resolves `--bucket` >
 `KAMPODRA_BUCKET` > project config. The `dns` and `backup` families
-authenticate through the `oci` CLI only, and kampodra passes no auth flags
-unless the instance profile's `cloud` block overrides it
-(`{"profile": "…", "compartment": "…", "instancePrincipal": true}` in
+authenticate through the provider CLI's own auth only, and kampodra passes
+no auth flags unless the instance profile's `cloud` block overrides it
+(`oci`: `{"profile": "…", "compartment": "…", "instancePrincipal": true}`;
+`gcp`: `{"provider": "gcp", "project": "…", "account": "…"}` in
 `~/.kampodra/config.json`); `OCI_PROFILE` / `OCI_COMPARTMENT` env are the
-escape hatch. A `dns` compartment is still **required** — from the block or
-the env, no default.
+oci escape hatch. A `dns` compartment is **required for oci only** — from
+the block or the env, no default.
 
 **Anything else.** Every command supports `--help`; bare `kampodra` prints
 the command index. `kampodra config print` is the debugging tool for any

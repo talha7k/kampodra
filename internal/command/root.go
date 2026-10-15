@@ -45,7 +45,7 @@ INFRA
   status         live health + deployment count + VM disk/image/service state + metrics (--verbose); --all-profiles renders every profile
 
 DNS
-  dns            OCI DNS records, oci auth only (never credential material): records | add | rm
+  dns            DNS records via the provider CLI's own auth (never credential material): records | add | rm
 
 ENV
   env            remote app env file (0600): list | push | pull | fingerprint | diff | from-schema — values NEVER printed, fingerprints only
@@ -61,7 +61,7 @@ METRICS
   metrics        one-shot VM snapshot over SSH: load, memory, disk, containers, top procs; --disk-threshold gates
 
 BACKUP
-  backup         OCI Object Storage backups: list | download | verify | restore-plan (restore-plan never executes)
+  backup         object-storage backups via the provider CLI's own auth: list | download | verify | restore-plan (restore-plan never executes)
 
 Every command supports --help with usage + examples.
 `

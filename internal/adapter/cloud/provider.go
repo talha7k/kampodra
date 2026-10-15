@@ -25,12 +25,12 @@ import (
 // (its default profile / active config, its env, its own precedence).
 type CloudAuth struct {
 	Provider          string `json:"provider"`
-	Profile           string `json:"profile"`
-	Compartment       string `json:"compartment"`
-	Namespace         string `json:"namespace"`
-	InstancePrincipal bool   `json:"instancePrincipal"`
-	Project           string `json:"project"` // gcp-only; empty = gcloud's active config
-	Account           string `json:"account"` // gcp-only; empty = gcloud's active config
+	Profile           string `json:"profile"`           // oci-leg only
+	Compartment       string `json:"compartment"`       // oci-leg only
+	Namespace         string `json:"namespace"`         // oci-leg only
+	InstancePrincipal bool   `json:"instancePrincipal"` // oci-leg only
+	Project           string `json:"project"`           // gcp-only; empty = gcloud's active config
+	Account           string `json:"account"`           // gcp-only; empty = gcloud's active config
 }
 
 // SupportedProviders lists the cloud providers kampodra speaks. The
@@ -94,6 +94,51 @@ func withGCPAuth(args []string, auth CloudAuth) []string {
 		args = append(args, "--account="+auth.Account)
 	}
 	return args
+}
+
+// AuthArgs ports the oci CLI's AUTH_ARGS: instance principal appends --auth
+// instance_principal; config-file auth adds nothing. (oci-leg only.)
+func AuthArgs(instancePrincipal bool) []string {
+	if instancePrincipal {
+		return []string{"--auth", "instance_principal"}
+	}
+	return nil
+}
+
+// withProfile appends the oci CLI's config-profile overrides: the cloud
+// block's explicit --profile only when set (an empty profile lets the oci
+// CLI resolve natively — its config's default/DEFAULT/first-profile
+// precedence), then the instance-principal auth args. (oci-leg only.)
+func withProfile(args []string, profile string, instancePrincipal bool) []string {
+	if profile != "" {
+		args = append(args, "--profile", profile)
+	}
+	return append(args, AuthArgs(instancePrincipal)...)
+}
+
+// RunOCI execs the oci CLI (LookPath'd like every other external seam) and
+// returns stdout; stderr rides the error so callers can classify failures.
+// It IS the oci leg of RunCloud below — every oci argv builder in the
+// package feeds it; the gcp twin is runGCloud.
+func RunOCI(ctx context.Context, args []string) (string, error) {
+	bin, err := exec.LookPath("oci")
+	if err != nil {
+		return "", fmt.Errorf("oci CLI not found — install oci-cli (https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm), then: oci setup config")
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		msg := ""
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			msg = strings.TrimSpace(string(exitErr.Stderr))
+		}
+		if msg != "" {
+			return string(out), fmt.Errorf("oci %s: %s", args[0], msg)
+		}
+		return string(out), fmt.Errorf("oci %s: %w", args[0], err)
+	}
+	return string(out), nil
 }
 
 // RunCloud is THE exec seam for provider traffic: dispatch on

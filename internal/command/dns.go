@@ -310,7 +310,7 @@ func runDNSRm(d Deps, c *cobra.Command) error {
 	if len(remaining) == len(items) {
 		return fmt.Errorf("no matching record: %s %s %s (see: kampodra dns records)", domain, rtype, value)
 	}
-	// an emptied RRSet is legal: the OCI leg marshals [] itself
+	// an emptied RRSet is legal: the provider legs handle the emptied set themselves
 	if err := cloud.DNSUpdateRRSet(c.Context(), dc.auth, dc.zoneID, domain, rtype, remaining); err != nil {
 		return fmt.Errorf("RRSet update failed for %s %s (zone %s): %w", domain, rtype, dc.zoneName, err)
 	}

@@ -1,9 +1,11 @@
-// DNS family of the oci CLI surface (the dns.sh port): pure validators,
-// zone/record/rrset parsing, and RRSet surgery primitives. AUTH RULE (hard):
-// the oci CLI's own auth ONLY — its config file (--profile) or instance
-// principal. kampodra NEVER accepts, stores, or logs credential material:
-// no key flags, no credential env vars, nothing token-shaped in args or
-// output. The OCI config file stays the single credential store.
+// DNS validators + types (neutral) and the OCI argv builders/parsers (see
+// dnsops_oci.go). The neutral half — Zone, Record, IsIPv4, the RRSet
+// surgery primitives — is consumed by both provider legs (dnsops_oci.go /
+// dnsops_gcp.go behind dnsops.go). AUTH RULE (hard, per leg): the provider
+// CLI's own auth ONLY — oci's config file (--profile) or instance
+// principal, gcloud's active config (+ the cloud block's project/account).
+// kampodra NEVER accepts, stores, or logs credential material: no key
+// flags, no credential env vars, nothing token-shaped in args or output.
 package cloud
 
 import (
