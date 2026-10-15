@@ -37,11 +37,10 @@ func runBluegreenFlip(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	rpOut, err := cloud.RunOCI(ctx, cloud.ReservedIPListArgs(pair.auth, pair.compOCID))
+	rip, ok, err := cloud.BGReservedIPList(ctx, pair.auth, pair.compOCID)
 	if err != nil {
 		return err
 	}
-	rip, ok := cloud.ParseReservedIPRow(rpOut)
 	if !ok {
 		return fmt.Errorf("no reserved IP (run 'kampodra bluegreen init' first)")
 	}
@@ -61,7 +60,7 @@ func runBluegreenFlip(d Deps, c *cobra.Command) error {
 		return err
 	}
 	fmt.Fprintf(d.Stdout, "flip[2/4]: guest answers on %s — reserved %s -> %s (anchor %s)\n", taddr, rip.Address, pair.colorName(to), tpip)
-	if _, err := cloud.RunOCI(ctx, cloud.PublicIPUpdateArgs(pair.auth, rip.OCID, tpip, "ASSIGNED")); err != nil {
+	if err := cloud.BGReservedIPAssign(ctx, pair.auth, rip.OCID, tpip, "ASSIGNED"); err != nil {
 		bgCleanupTargetAnchor(ctx, d, trow.PublicIP, pair.sshKey, pair.anchorConf, taddr)
 		return fmt.Errorf("OCI flip call failed — guest conf removed; run 'kampodra bluegreen status': %w", err)
 	}
@@ -118,23 +117,22 @@ func bgFlipResolveTarget(ctx context.Context, d Deps, pair bgPair, to string, fo
 	if trow.OCID == "" {
 		return ft, fmt.Errorf("%s is not RUNNING — nothing to flip to", pair.colorName(to))
 	}
-	tatt, err := cloud.RunOCI(ctx, cloud.VnicAttachmentsArgs(pair.auth, pair.compOCID, trow.OCID))
+	tvnic, _, ok, err := cloud.BGPrimaryVnic(ctx, pair.auth, pair.compOCID, trow.OCID)
 	if err != nil {
 		return ft, err
 	}
-	tvnic, _, ok := cloud.FirstVnic(tatt)
 	if !ok || tvnic == "" {
 		return ft, fmt.Errorf("no primary VNIC on %s", pair.colorName(to))
 	}
-	var tpip string
-	if aout, err := cloud.RunOCI(ctx, cloud.PrivateIPListArgs(pair.auth, tvnic)); err != nil {
+	tpip, err := cloud.BGAnchorIP(ctx, pair.auth, tvnic)
+	if err != nil {
 		return ft, err
-	} else if tpip = cloud.SecondaryPrivateIP(aout); tpip == "" {
-		cout, err := cloud.RunOCI(ctx, cloud.PrivateIPCreateArgs(pair.auth, tvnic, "kampodra-reserved-anchor"))
+	}
+	if tpip == "" {
+		tpip, err = cloud.BGPrivateIPCreate(ctx, pair.auth, tvnic, "kampodra-reserved-anchor")
 		if err != nil {
 			return ft, fmt.Errorf("could not create the reserved-anchor secondary private ip on %s: %w", pair.colorName(to), err)
 		}
-		tpip = cloud.PrivateIPID(cout)
 	}
 	if !cloud.IsOCID(tpip, "privateip") {
 		return ft, fmt.Errorf("could not resolve/create the reserved-anchor secondary private ip on %s", pair.colorName(to))
@@ -156,27 +154,24 @@ func bgFlipResolveTarget(ctx context.Context, d Deps, pair bgPair, to string, fo
 // returns.
 func bgFlipAnchor(ctx context.Context, d Deps, pair bgPair, to string, trow cloud.BGInstance, tpip string) (string, error) {
 	fmt.Fprintf(d.Stdout, "flip[1/4]: anchor conf -> %s guest (%s), watcher configures the address\n", pair.colorName(to), trow.PublicIP)
-	tsubOut, err := cloud.RunOCI(ctx, cloud.VnicAttachmentsArgs(pair.auth, pair.compOCID, trow.OCID))
+	_, tsubnet, ok, err := cloud.BGPrimaryVnic(ctx, pair.auth, pair.compOCID, trow.OCID)
 	if err != nil {
 		return "", err
 	}
-	_, tsubnet, ok := cloud.FirstVnic(tsubOut)
 	if !ok || !cloud.IsOCID(tsubnet, "subnet") {
 		return "", fmt.Errorf("could not resolve %s's subnet id", pair.colorName(to))
 	}
-	cidrOut, err := cloud.RunOCI(ctx, cloud.SubnetGetArgs(pair.auth, tsubnet))
+	tcidr, err := cloud.BGSubnetCIDR(ctx, pair.auth, tsubnet)
 	if err != nil {
 		return "", err
 	}
-	tcidr := cloud.SubnetCIDR(cidrOut)
 	if !bgCIDRRe.MatchString(tcidr) {
 		return "", fmt.Errorf("could not resolve %s's subnet cidr (got: %s)", pair.colorName(to), orNone(tcidr))
 	}
-	pipOut, err := cloud.RunOCI(ctx, cloud.PrivateIPGetArgs(pair.auth, tpip))
+	tanchor, err := cloud.BGPrivateIPAddress(ctx, pair.auth, tpip)
 	if err != nil {
 		return "", err
 	}
-	tanchor := cloud.PrivateIPAddress(pipOut)
 	if !bgIPRe.MatchString(tanchor) {
 		return "", fmt.Errorf("could not resolve the anchor private address on %s", pair.colorName(to))
 	}
@@ -261,19 +256,17 @@ func bgFlipFailureRollback(ctx context.Context, d Deps, pair bgPair, to, ob, roc
 	fmt.Fprintln(d.Stderr, "post-assign failure — auto-rollback")
 	recovered := false
 	if brow, err := bgInstance(ctx, pair, ob); err == nil && brow.OCID != "" {
-		if batt, err := cloud.RunOCI(ctx, cloud.VnicAttachmentsArgs(pair.auth, pair.compOCID, brow.OCID)); err == nil {
-			if bnic, _, ok := cloud.FirstVnic(batt); ok && bnic != "" {
-				if bpip, err := bgAnchorIP(ctx, pair, bnic); err == nil && cloud.IsOCID(bpip, "privateip") {
-					if _, err := cloud.RunOCI(ctx, cloud.PublicIPUpdateArgs(pair.auth, rocid, bpip, "")); err == nil {
-						fmt.Fprintf(d.Stderr, "rolled back to %s (existing anchor %s)\n", pair.colorName(ob), bpip)
-						recovered = true
-					}
+		if bnic, _, ok, err := cloud.BGPrimaryVnic(ctx, pair.auth, pair.compOCID, brow.OCID); err == nil && ok && bnic != "" {
+			if bpip, err := bgAnchorIP(ctx, pair, bnic); err == nil && cloud.IsOCID(bpip, "privateip") {
+				if err := cloud.BGReservedIPAssign(ctx, pair.auth, rocid, bpip, ""); err == nil {
+					fmt.Fprintf(d.Stderr, "rolled back to %s (existing anchor %s)\n", pair.colorName(ob), bpip)
+					recovered = true
 				}
 			}
 		}
 	}
 	if !recovered {
-		if _, err := cloud.RunOCI(ctx, cloud.PublicIPUpdateArgs(pair.auth, rocid, "", "AVAILABLE")); err == nil {
+		if err := cloud.BGReservedIPRelease(ctx, pair.auth, rocid); err == nil {
 			fmt.Fprintf(d.Stderr, "reserved ip UNASSIGNED (dormant) — no existing anchor on %s\n", pair.colorName(ob))
 		} else {
 			bgCleanupTargetAnchor(ctx, d, tpub, pair.sshKey, pair.anchorConf, taddr)
@@ -299,11 +292,10 @@ func runBluegreenRollback(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	rpOut, err := cloud.RunOCI(ctx, cloud.ReservedIPListArgs(pair.auth, pair.compOCID))
+	rip, ok, err := cloud.BGReservedIPList(ctx, pair.auth, pair.compOCID)
 	if err != nil {
 		return err
 	}
-	rip, ok := cloud.ParseReservedIPRow(rpOut)
 	if !ok {
 		return fmt.Errorf("no reserved IP")
 	}
@@ -318,12 +310,8 @@ func runBluegreenRollback(d Deps, c *cobra.Command) error {
 		if err != nil || crow.OCID == "" {
 			continue
 		}
-		catt, err := cloud.RunOCI(ctx, cloud.VnicAttachmentsArgs(pair.auth, pair.compOCID, crow.OCID))
-		if err != nil {
-			continue
-		}
-		cnic, _, ok := cloud.FirstVnic(catt)
-		if !ok || cnic == "" {
+		cnic, _, ok, err := cloud.BGPrimaryVnic(ctx, pair.auth, pair.compOCID, crow.OCID)
+		if err != nil || !ok || cnic == "" {
 			continue
 		}
 		capip, err := bgAnchorIP(ctx, pair, cnic)
@@ -344,7 +332,7 @@ func runBluegreenRollback(d Deps, c *cobra.Command) error {
 		fmt.Fprintf(d.Stdout, "%s guest cleaned (anchor.conf removed%s)\n", pair.colorName(holderColor), orAddrDeleted(confAddr))
 	}
 	fmt.Fprintf(d.Stdout, "unassigning reserved %s (-> dormant)…\n", rip.Address)
-	if _, err := cloud.RunOCI(ctx, cloud.PublicIPUpdateArgs(pair.auth, rip.OCID, "", "AVAILABLE")); err != nil {
+	if err := cloud.BGReservedIPRelease(ctx, pair.auth, rip.OCID); err != nil {
 		return fmt.Errorf("unassign failed — check 'kampodra bluegreen status' and the console: %w", err)
 	}
 	fmt.Fprintf(d.Stdout, "ROLLED BACK: reserved %s UNASSIGNED (dormant)\n", rip.Address)

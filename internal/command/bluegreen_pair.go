@@ -82,6 +82,8 @@ func (p bgPair) colorName(color string) string {
 // landed (slices 3/5): CheckProvider passes a gcp profile, but their legs
 // still call the oci CLI directly — gcp would exec the wrong CLI. The
 // refusal below fails closed BEFORE any exec, naming the surface + remedy.
+// SLICE 4 replaces this guard with real dispatch: the bg ops it fronts
+// (cloud.BG*) already switch on auth.Provider.
 const (
 	surfaceBluegreen   = "bluegreen"
 	surfaceImageImport = "image-import"
@@ -120,7 +122,7 @@ func resolveBGPair(d Deps, target Target, compartmentOverride, surface string) (
 	if name == "" {
 		return bgPair{}, fmt.Errorf("no OCI compartment configured — set the instance profile's \"cloud\" block ({\"compartment\": \"<name or ocid>\"}) in ~/.kampodra/config.json, or export OCI_COMPARTMENT=<compartment name or ocid> — compartments are account-specific")
 	}
-	ocid, err := cloud.ResolveCompartment(context.Background(), auth, name)
+	ocid, err := cloud.BGResolveScope(context.Background(), auth, name)
 	if err != nil {
 		return bgPair{}, err
 	}
@@ -144,39 +146,14 @@ func resolveBGPair(d Deps, target Target, compartmentOverride, surface string) (
 // ephemeral public IP ("" when the VNIC has none yet). Empty row = not
 // provisioned.
 func bgInstance(ctx context.Context, pair bgPair, color string) (cloud.BGInstance, error) {
-	out, err := cloud.RunOCI(ctx, cloud.InstanceListArgs(pair.auth, pair.compOCID, pair.colorName(color)))
-	if err != nil {
-		return cloud.BGInstance{}, err
-	}
-	inst, ok := cloud.ParseNewestInstance(out)
-	if !ok {
-		return cloud.BGInstance{}, nil
-	}
-	att, err := cloud.RunOCI(ctx, cloud.VnicAttachmentsArgs(pair.auth, pair.compOCID, inst.OCID))
-	if err != nil {
-		return cloud.BGInstance{}, err
-	}
-	vnic, _, ok := cloud.FirstVnic(att)
-	if !ok {
-		return inst, nil
-	}
-	vnicJSON, err := cloud.RunOCI(ctx, cloud.VnicGetArgs(pair.auth, vnic))
-	if err != nil {
-		return cloud.BGInstance{}, err
-	}
-	inst.PublicIP = cloud.VnicPublicIP(vnicJSON)
-	return inst, nil
+	return cloud.BGColorInstance(ctx, pair.auth, pair.compOCID, pair.colorName(color))
 }
 
 // bgAnchorIP resolves the secondary-private-ip anchor on a VNIC ("" when
 // none). LOOKUP-ONLY by contract — callers that may create use the flip
 // target's own path.
 func bgAnchorIP(ctx context.Context, pair bgPair, vnic string) (string, error) {
-	out, err := cloud.RunOCI(ctx, cloud.PrivateIPListArgs(pair.auth, vnic))
-	if err != nil {
-		return "", err
-	}
-	return cloud.SecondaryPrivateIP(out), nil
+	return cloud.BGAnchorIP(ctx, pair.auth, vnic)
 }
 
 // instanceHealthy gates on the target's OWN IP: service up + loopback app

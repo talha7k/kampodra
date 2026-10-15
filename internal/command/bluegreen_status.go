@@ -22,11 +22,10 @@ func runBluegreenStatus(d Deps, c *cobra.Command) error {
 		return err
 	}
 	fmt.Fprintf(d.Stdout, "== %s blue/green pair (compartment %s) ==\n", pair.container, pair.compName)
-	rpOut, err := cloud.RunOCI(ctx, cloud.ReservedIPListArgs(pair.auth, pair.compOCID))
+	rip, ok, err := cloud.BGReservedIPList(ctx, pair.auth, pair.compOCID)
 	if err != nil {
 		return err
 	}
-	rip, ok := cloud.ParseReservedIPRow(rpOut)
 	if !ok {
 		fmt.Fprintln(d.Stdout, "reserved IP : NONE (run 'kampodra bluegreen init')")
 	} else {
