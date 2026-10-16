@@ -48,7 +48,7 @@ const bgGCPHolderPath = "https://www.googleapis.com/compute/v1/projects/p1/zones
 
 func bgGCPRow(name, natIP, created string) string {
 	return `{"name":"` + name + `","zone":"` + bgGCPZoneURL + `","creationTimestamp":"` + created +
-		`","natIP":"` + natIP + `","status":"RUNNING","subnetwork":"https://www.googleapis.com/compute/v1/projects/p1/regions/europe-west1/subnetworks/kampodra"}`
+		`","status":"RUNNING","networkInterfaces":[{"accessConfigs":[{"natIP":"` + natIP + `"}],"subnetwork":"https://www.googleapis.com/compute/v1/projects/p1/regions/europe-west1/subnetworks/kampodra"}]}`
 }
 
 func bgGCPGreenRow() string {
