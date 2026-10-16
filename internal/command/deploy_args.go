@@ -153,10 +153,15 @@ func positionalRollbackSha(c *cobra.Command, args []string) (string, error) {
 // assembleDeployRun resolves the deploy target and pipeline options:
 // config + manifest + host resolution, the --dockerfile ladder, and the
 // sidecar set off the repo manifest.
-func assembleDeployRun(d Deps, c *cobra.Command) (Target, deployOpts, error) {
+// profileOverride is the group fan-out's per-member profile name ("" = the
+// usual ladder: --profile flag > KAMPODRA_PROFILE > defaultProfile).
+func assembleDeployRun(d Deps, c *cobra.Command, profileOverride string) (Target, deployOpts, error) {
 	host, _ := c.Flags().GetString("host")
 	key, _ := c.Flags().GetString("ssh-key")
-	profile, _ := c.Flags().GetString("profile")
+	profile := profileOverride
+	if profile == "" {
+		profile, _ = c.Flags().GetString("profile")
+	}
 	rolling := resolveRollingMode(c)
 	// Rollback never boots a shadow: it is instant and inherently
 	// in-place (the old image is already on the VM).
