@@ -148,6 +148,9 @@ stop_post() {
 // add`s the anchor address at flip time. ADD-ONLY by design; inert without
 // the conf.
 func RenderAnchorScript(n Naming) string {
+	if n.Provider == "gcp" {
+		return renderAnchorScriptGCE(n)
+	}
 	return fmt.Sprintf(`#!/bin/sh
 # kampodra-anchor.sh — guest half of the blue-green reserved-ip flip.
 #
@@ -207,6 +210,43 @@ while :; do
   sleep "$INTERVAL"
 done
 `, n.AnchorConf, AnchorLogPath)
+}
+
+// renderAnchorScriptGCE is the GCE variant of the guest watcher. GCP
+// attaches the reserved EXTERNAL ip at the NIC (access-config) — the guest
+// needs no `+"`ip addr`"+` work at all; this watcher only OBSERVES the external
+// ip via the metadata server and logs transitions, keeping the same log
+// contract as the oci variant (the idle-log gate greps it). It carries no
+// anchor.conf: on gcp the flip writes none (live-fire 2026-10-16 design —
+// the flip's access-config swap is the whole cutover; the metadata poll is
+// pure observability).
+func renderAnchorScriptGCE(n Naming) string {
+	return `#!/bin/sh
+# kampodra-anchor.sh (gce variant) — OBSERVER, not an actor: gcp attaches
+# the reserved external ip at the NIC, so unlike the oci variant this
+# script NEVER runs `+"`ip addr`"+` and reads NO anchor.conf. It polls the
+# metadata server for the instance's external ip and logs TRANSITIONS —
+# the flip's post-cutover trail (bounded: only changes log).
+
+INTERVAL="${KAMPODRA_ANCHOR_INTERVAL:-5}"
+META="http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"
+STATE="boot"
+prev=""
+
+log() { printf '%%s kampodra-anchor: %%s\n' "$(date '+%%Y-%%m-%%dT%%H:%%M:%%S%%z')" "$*"; }
+trap 'exit 0' TERM INT
+
+# The fresh-vm gate greps the SAME idle phrase the oci variant emits.
+log "no anchor conf on gce — observing the metadata external-ip"
+
+while :; do
+  cur=$(wget -q -O - --header 'Metadata-Flavor: Google' "$META" 2>/dev/null)
+  if [ -n "$cur" ] && [ "$cur" != "$prev" ]; then
+    log "external-ip ${prev:-none} -> $cur"
+    prev="$cur"
+  fi
+  sleep "$INTERVAL"
+done`
 }
 
 // RenderInitDAnchor ports the anchor OpenRC unit: supervise-daemon runs the

@@ -11,6 +11,7 @@ package command
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -200,6 +201,22 @@ func namingFromProject(pj project.Config, bin *project.ManifestBinary, statics [
 	return n
 }
 
+// cloudProviderOf reads the profile cloud block's "provider" ("" = the oci
+// default, the cloud adapter's own convention) — vm-prepare needs it only
+// to pick the anchor watcher variant the guest image carries.
+func CloudProviderOf(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var block struct {
+		Provider string `json:"provider"`
+	}
+	if err := json.Unmarshal(raw, &block); err != nil {
+		return "" // a malformed block fails later at CheckProvider, named there
+	}
+	return block.Provider
+}
+
 // DroppedUnitEnvKeys diffs the -e keys of the unit ON the VM against the
 // keys the fresh render carries. The live-fire 2026-10-16 class: a
 // re-render silently dropped -e LIBSQL_TENANT_DIR (owned by the old
@@ -301,8 +318,9 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 			return err
 		}
 	}
-	p := &vmProvisioner{ctx: ctx, d: d, target: target,
-		n: namingFromProject(target.Project, bin, staticBlocks(target.Binary), target.UnitEnvs)}
+	n := namingFromProject(target.Project, bin, staticBlocks(target.Binary), target.UnitEnvs)
+	n.Provider = CloudProviderOf(target.Cloud)
+	p := &vmProvisioner{ctx: ctx, d: d, target: target, n: n}
 
 	// --- 0. connectivity ------------------------------------------------------
 	p.say("waiting for ssh on %s…", target.HostSpec.Host)
