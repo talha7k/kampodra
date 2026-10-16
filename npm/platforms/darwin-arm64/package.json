@@ -1,5 +1,5 @@
 {
-  "name": "@talha7k/kampodra-darwin-arm64",
+  "name": "@kampodra/darwin-arm64",
   "version": "0.8.3",
   "description": "kampodra native binary for darwin-arm64 — installed automatically as an optionalDependency of the kampodra package; do not install directly",
   "license": "AGPL-3.0",
