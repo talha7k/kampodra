@@ -355,14 +355,27 @@ func runBluegreenRollback(d Deps, c *cobra.Command) error {
 	if holderColor == "" {
 		fmt.Fprintf(d.Stdout, "warning: reserved %s held by an anchor of neither RUNNING color (terminated instance?) — unassigning without guest cleanup\n", rip.Address)
 	} else {
-		fmt.Fprintf(d.Stdout, "current holder: %s (%s) — cleaning the guest anchor, then unassigning\n", pair.colorName(holderColor), holderIP)
-		confAddr := bgReadAnchorAddr(ctx, d, holderIP, pair.sshKey, pair.anchorConf)
-		bgCleanupTargetAnchor(ctx, d, holderIP, pair.sshKey, pair.anchorConf, confAddr)
-		fmt.Fprintf(d.Stdout, "%s guest cleaned (anchor.conf removed%s)\n", pair.colorName(holderColor), orAddrDeleted(confAddr))
+		fmt.Fprintf(d.Stdout, "current holder: %s (%s) — unassigning FIRST, then cleaning the guest anchor\n", pair.colorName(holderColor), holderIP)
 	}
-	fmt.Fprintf(d.Stdout, "unassigning reserved %s (-> dormant)…\n", rip.Address)
+	confAddr := ""
+	if holderColor != "" {
+		confAddr = bgReadAnchorAddr(ctx, d, holderIP, pair.sshKey, pair.anchorConf)
+	}
+	// ORDER IS THE FIX (live-fire 2026-10-16 incident): the cloud unassign
+	// must land BEFORE the guest address is deleted, and must run on EVERY
+	// path (a first cut of this reorder nested it in the holder-known
+	// branch — the no-holder rollback skipped the unassign and printed
+	// ROLLED BACK with the IP still attached). The old guest-cleanup-first
+	// order opened a blackhole window where the reserved IP still mapped
+	// to a PRIVATE address the guest no longer had — established
+	// connections through the reserved IP died without the app ever being
+	// signaled.
 	if err := cloud.BGReservedIPRelease(ctx, pair.auth, rip.OCID); err != nil {
 		return fmt.Errorf("unassign failed — check 'kampodra bluegreen status' and the console: %w", err)
+	}
+	if holderColor != "" {
+		bgCleanupTargetAnchor(ctx, d, holderIP, pair.sshKey, pair.anchorConf, confAddr)
+		fmt.Fprintf(d.Stdout, "%s guest cleaned (anchor.conf removed%s)\n", pair.colorName(holderColor), orAddrDeleted(confAddr))
 	}
 	fmt.Fprintf(d.Stdout, "ROLLED BACK: reserved %s UNASSIGNED (dormant)\n", rip.Address)
 	return nil
