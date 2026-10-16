@@ -16,3 +16,6 @@ coverage.out
 
 # internal secret wiring (varlock schema) — local only, never public
 /.env.schema
+
+# npm packaging: skill copied in at cross-compile (never committed)
+/npm/skills/

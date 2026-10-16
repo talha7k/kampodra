@@ -72,6 +72,10 @@ endif
 # shipped binaries report the release, not the main.go fallback.
 cross-compile:
 	@mkdir -p dist
+	# Ship the agent skill inside the root npm package (files: skills/ is
+	# npm/-relative and cannot reach the repo's skills/ — copy it in, like
+	# the platform bins).
+	@rm -rf npm/skills && mkdir -p npm/skills && cp -R skills/kampodra npm/skills/
 	# Single source of truth for npm versions: every platform package.json
 	# and the root package's optionalDependencies pins are STAMPED from
 	# $(VERSION) at cross-compile time — static drift here once shipped a
