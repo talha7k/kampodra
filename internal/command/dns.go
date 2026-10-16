@@ -28,7 +28,8 @@ Auth is the provider CLI's own — kampodra passes no auth flags unless the
 instance profile's "cloud" block overrides it:
   oci: {"profile": "…", "instancePrincipal": true, "compartment": "…",
        "dnsCompartment": "…"} —
-       OCI_PROFILE / OCI_COMPARTMENT env are the escape hatch.
+       KAMPODRA_CLOUD_PROFILE / KAMPODRA_CLOUD_COMPARTMENT env are the
+       escape hatch (deprecated aliases: OCI_PROFILE / OCI_COMPARTMENT).
   gcp: {"provider": "gcp", "project": "…", "account": "…"} — an empty
        project/account = gcloud's active config; CLOUDSDK_CORE_PROJECT /
        CLOUDSDK_CORE_ACCOUNT / CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT
@@ -131,8 +132,8 @@ func dnsNeedProvider(d Deps, auth cloud.CloudAuth) error {
 	if auth.Provider == "gcp" {
 		return nil
 	}
-	if v, ok := d.Env("OCI_COMPARTMENT"); !ok || v == "" {
-		return fmt.Errorf("set OCI_COMPARTMENT=<compartment name or ocid> — no default: compartments are account-specific")
+	if v, _ := cloudEnvWithFallback(d, envCloudCompartment, envCloudCompartmentLegacy); v == "" {
+		return fmt.Errorf("set %s=<compartment name or ocid> (or the deprecated %s) — no default: compartments are account-specific", envCloudCompartment, envCloudCompartmentLegacy)
 	}
 	return nil
 }
@@ -193,7 +194,7 @@ func dnsResolveCompartment(d Deps, c *cobra.Command, ctx context.Context, target
 		return nil
 	}
 	if dc.auth.Compartment == "" {
-		return fmt.Errorf("no OCI compartment configured — set the instance profile's \"cloud\" block ({\"compartment\": \"<name or ocid>\"}) in ~/.kampodra/config.json, or export OCI_COMPARTMENT=<compartment name or ocid> — compartments are account-specific")
+		return fmt.Errorf("no OCI compartment configured — set the instance profile's \"cloud\" block ({\"compartment\": \"<name or ocid>\"}) in ~/.kampodra/config.json, or export KAMPODRA_CLOUD_COMPARTMENT=<compartment name or ocid> (deprecated: OCI_COMPARTMENT) — compartments are account-specific")
 	}
 	// A name (not an ocid) resolves through the neutral scope op; the ocid
 	// rides back on auth.Compartment for the ops downstream.

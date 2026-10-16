@@ -173,6 +173,18 @@ func TestBluegreenRequiresCompartment(t *testing.T) {
 	}
 }
 
+// The renamed kampodra-namespaced compartment env satisfies the same gate
+// the deprecated OCI_COMPARTMENT alias does — the rename must not close
+// the door on either spelling.
+func TestBluegreenCloudEnvCompartmentSatisfiesGate(t *testing.T) {
+	h := setupBG(t, map[string]string{}, nil)
+	t.Setenv("OCI_COMPARTMENT", "")
+	t.Setenv("KAMPODRA_CLOUD_COMPARTMENT", "test-compartment")
+	if code := h.run(t, "status"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+}
+
 func TestBluegreenSubcommandHelpHermetic(t *testing.T) {
 	h := setupBG(t, map[string]string{}, nil)
 	t.Setenv("OCI_COMPARTMENT", "")

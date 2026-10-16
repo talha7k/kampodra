@@ -794,3 +794,56 @@ func TestDNSGCPDNSCompartmentIgnored(t *testing.T) {
 		}
 	}
 }
+
+// --- cloud env rename: KAMPODRA_CLOUD_* is the primary escape hatch, the
+// --- vendor-prefixed OCI_* names stay as read-but-deprecated aliases.
+
+// The renamed env name alone satisfies the oci compartment gate and drives
+// the scope resolution end to end.
+func TestDNSCloudEnvCompartmentSatisfiesGate(t *testing.T) {
+	h := setupDNS(t, map[string]string{})
+	t.Setenv("OCI_COMPARTMENT", "")
+	t.Setenv("KAMPODRA_CLOUD_COMPARTMENT", "test-compartment")
+	if code := h.run(t, "records"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	joined := strings.Join(h.ociCalls(t), "\n")
+	if !strings.Contains(joined, "-c ocid1.compartment.oc1..aaa") {
+		t.Errorf("the new env name must drive the scope resolution:\n%s", joined)
+	}
+}
+
+// The missing-compartment gate error names the NEW env name first and keeps
+// the deprecated alias for existing scripts.
+func TestDNSCompartmentGateErrorNamesNewEnv(t *testing.T) {
+	h := setupDNS(t, map[string]string{})
+	t.Setenv("OCI_COMPARTMENT", "")
+	if code := h.run(t, "records"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	errOut := h.stderr.String()
+	for _, want := range []string{"KAMPODRA_CLOUD_COMPARTMENT", "OCI_COMPARTMENT"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("gate error must name %q:\n%s", want, errOut)
+		}
+	}
+}
+
+// Precedence at the command surface: when both names are set, the
+// KAMPODRA_CLOUD_* value wins and the deprecated value never reaches the
+// provider argv.
+func TestDNSNewCloudEnvBeatsDeprecatedOCIEnv(t *testing.T) {
+	h := setupDNS(t, map[string]string{})
+	t.Setenv("OCI_COMPARTMENT", "ocid1.compartment.oc1..old")
+	t.Setenv("KAMPODRA_CLOUD_COMPARTMENT", "ocid1.compartment.oc1..new")
+	if code := h.run(t, "records"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	joined := strings.Join(h.ociCalls(t), "\n")
+	if !strings.Contains(joined, "-c ocid1.compartment.oc1..new") {
+		t.Errorf("the new env name must win:\n%s", joined)
+	}
+	if strings.Contains(joined, "ocid1.compartment.oc1..old") {
+		t.Errorf("the deprecated value must lose entirely:\n%s", joined)
+	}
+}

@@ -50,27 +50,42 @@ func TestBackupListExplicitNamespaceFlagSkipsResolution(t *testing.T) {
 	}
 }
 
-// OCI_NAMESPACE is the escape hatch (matching OCI_PROFILE / OCI_COMPARTMENT);
-// the explicit flag still beats it.
-func TestBackupNamespaceOCIEnvEscapeHatch(t *testing.T) {
+// namespaceEscapeHatchCase is the SHARED body for both env-var escape
+// hatch tests (the KAMPODRA_CLOUD_* primary and the deprecated OCI_*
+// alias — same behavior, one source): the env rides the list call
+// without an ns get, and the explicit flag beats it.
+func namespaceEscapeHatchCase(t *testing.T, envKey string) {
 	h := setupBackup(t)
-	t.Setenv("OCI_NAMESPACE", "env-ns")
+	t.Setenv(envKey, "env-ns")
 	if code := h.run(t, "list", "--bucket", "b"); code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
 	}
 	calls := h.ociInvocations(t)
 	if strings.Contains(calls, "os ns") || !strings.Contains(calls, "--namespace env-ns") {
-		t.Errorf("OCI_NAMESPACE must ride the list call without an ns get:\n%s", calls)
+		t.Errorf("%s must ride the list call without an ns get:\n%s", envKey, calls)
 	}
 
 	h = setupBackup(t)
-	t.Setenv("OCI_NAMESPACE", "env-ns")
+	t.Setenv(envKey, "env-ns")
 	if code := h.run(t, "list", "--bucket", "b", "--namespace", "flag-ns"); code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
 	}
 	if calls := h.ociInvocations(t); !strings.Contains(calls, "--namespace flag-ns") || strings.Contains(calls, "env-ns") {
-		t.Errorf("--namespace flag must beat OCI_NAMESPACE:\n%s", calls)
+		t.Errorf("--namespace flag must beat %s:\n%s", envKey, calls)
 	}
+}
+
+// OCI_NAMESPACE is the deprecated escape hatch (matching
+// OCI_PROFILE / OCI_COMPARTMENT); the explicit flag still beats it.
+func TestBackupNamespaceOCIEnvEscapeHatch(t *testing.T) {
+	namespaceEscapeHatchCase(t, "OCI_NAMESPACE")
+}
+
+// The renamed kampodra-namespaced env is the primary namespace escape hatch
+// (the deprecated OCI_NAMESPACE alias keeps resolving one release); the
+// explicit flag still beats it.
+func TestBackupNamespaceCloudEnvEscapeHatch(t *testing.T) {
+	namespaceEscapeHatchCase(t, "KAMPODRA_CLOUD_NAMESPACE")
 }
 
 // The instance profile's cloud block "namespace" field is the persistent

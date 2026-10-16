@@ -105,7 +105,8 @@ func gcpOCIOnlyRefusal(auth cloud.CloudAuth, surface string) error {
 }
 
 // resolveBGPair resolves the OCI compartment (flag override > cloud block
-// > OCI_COMPARTMENT env, name or ocid) and the pair naming from the target.
+// > KAMPODRA_CLOUD_COMPARTMENT env, deprecated: OCI_COMPARTMENT — name or
+// ocid) and the pair naming from the target.
 // A missing compartment is a usage error naming both configuration sites.
 // surface (surfaceBluegreen | surfaceImageImport) drives the gcp
 // refusal for the still-OCI-only surfaces — it fires before any exec.
@@ -126,7 +127,7 @@ func resolveBGPair(d Deps, target Target, compartmentOverride, surface string) (
 	// natively via the cloud block's project — an empty project riding
 	// gcloud's active config is NOT an error (mirror dnsNeedProvider).
 	if name == "" && auth.Provider != "gcp" {
-		return bgPair{}, fmt.Errorf("no OCI compartment configured — set the instance profile's \"cloud\" block ({\"compartment\": \"<name or ocid>\"}) in ~/.kampodra/config.json, or export OCI_COMPARTMENT=<compartment name or ocid> — compartments are account-specific")
+		return bgPair{}, fmt.Errorf("no OCI compartment configured — set the instance profile's \"cloud\" block ({\"compartment\": \"<name or ocid>\"}) in ~/.kampodra/config.json, or export KAMPODRA_CLOUD_COMPARTMENT=<compartment name or ocid> (deprecated: OCI_COMPARTMENT) — compartments are account-specific")
 	}
 	ocid, err := cloud.BGResolveScope(context.Background(), auth, name)
 	if err != nil {

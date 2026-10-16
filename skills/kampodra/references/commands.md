@@ -55,8 +55,12 @@ the first debugging stop. Every command supports `--help` (usage + examples).
 | `KAMPODRA_BUCKET` | The project ladder's canonical bucket override — beats the project config's `bucket` (only `--bucket` beats it) |
 | `KAMPODRA_MIGRATE_SCRIPT` | Repo-relative migrate script path override for `migrate` |
 | `KAMPODRA_REPO_ROOT` | Fallback VM repo checkout for `migrate` (`--repo-root` beats it) |
-| `OCI_PROFILE` | OCI config profile override when the profile's `cloud` block sets none (else native resolution) |
-| `OCI_COMPARTMENT` | REQUIRED by the oci legs of `dns`/`bluegreen`/`image-import` — no default; name or `ocid1.` ocid |
+| `KAMPODRA_CLOUD_PROFILE` | OCI config profile override when the profile's `cloud` block sets none (else native resolution) |
+| `KAMPODRA_CLOUD_COMPARTMENT` | REQUIRED by the oci legs of `dns`/`bluegreen`/`image-import` — no default; name or `ocid1.` ocid |
+| `KAMPODRA_CLOUD_NAMESPACE` | OCI tenancy object-storage namespace override (`--namespace` flag > cloud block / this env > `oci os ns get`; ignored for gcp) |
+| `OCI_PROFILE` **(deprecated)** | legacy alias of `KAMPODRA_CLOUD_PROFILE` — still read this release (one stderr notice per process); removed in a future release |
+| `OCI_COMPARTMENT` **(deprecated)** | legacy alias of `KAMPODRA_CLOUD_COMPARTMENT` — same ladder, same notice; the new name wins when both are set |
+| `OCI_NAMESPACE` **(deprecated)** | legacy alias of `KAMPODRA_CLOUD_NAMESPACE` — same ladder, same notice; the new name wins when both are set |
 | `MIGRATE_JOBS` | Fallback parallelism for `migrate` (else 4; accepted range 1–64) |
 
 Each `kampodra.json` field also has a `KAMPODRA_*` env override in the ladder:
@@ -377,7 +381,7 @@ flags unless the profile's `cloud` block overrides (oci:
 `profile`/`compartment`/`instancePrincipal`; gcp: `provider: "gcp"` +
 `project`/`account`, else gcloud's active config); never credential
 material. An OCI compartment is REQUIRED for oci only (block or
-`OCI_COMPARTMENT` env), no default (a plain name resolves through
+`KAMPODRA_CLOUD_COMPARTMENT` env — deprecated: `OCI_COMPARTMENT`), no default (a plain name resolves through
 `iam compartment list`; an `ocid1.`
 value is used as-is); gcp scopes via the block's `project`. Zone
 resolution: `--zone` (ocid → name fetched; name →
@@ -531,8 +535,9 @@ staged object deleted unless kept; prints the image OCID.
 - **Cloud auth is provider-native**: `backup`/`dns` (multi-provider: oci |
   gcp) take no auth flags. The instance profile's `cloud` block (oci:
   `profile`/`compartment`/`instancePrincipal`; gcp: `provider: "gcp"` +
-  `project`/`account`) overrides; `OCI_PROFILE`/`OCI_COMPARTMENT` env are
-  the oci escape hatch; with neither set the provider CLI resolves its
+  `project`/`account`) overrides; `KAMPODRA_CLOUD_PROFILE`/`KAMPODRA_CLOUD_COMPARTMENT` env are
+  the oci escape hatch (the `OCI_*` names are deprecated aliases — read
+  this release only, one stderr notice per process); with neither set the provider CLI resolves its
   default itself. `bluegreen`/`image-import` are OCI-only today — a `gcp`
   profile fails closed naming the surface.
   `--profile` always means the kampodra INSTANCE profile.
