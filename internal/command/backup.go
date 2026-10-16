@@ -26,12 +26,15 @@ const backupHelp = `Usage:
 Auth is the provider CLI's own — kampodra passes no auth flags unless the
 instance profile's "cloud" block overrides it:
   oci: {"profile": "…", "compartment": "…", "namespace": "…",
-        "instancePrincipal": true} — OCI_PROFILE / OCI_COMPARTMENT /
-        OCI_NAMESPACE env are the escape hatch.
+        "instancePrincipal": true} — KAMPODRA_CLOUD_PROFILE /
+        KAMPODRA_CLOUD_COMPARTMENT / KAMPODRA_CLOUD_NAMESPACE env are the
+        escape hatch (deprecated aliases: OCI_PROFILE / OCI_COMPARTMENT /
+        OCI_NAMESPACE).
   gcp: {"provider": "gcp", "project": "…", "account": "…"} — an empty
         project/account = gcloud's active config.
 kampodra never accepts, stores, or logs credential material. The OCI
-tenancy namespace resolves --namespace > cloud block / OCI_NAMESPACE >
+tenancy namespace resolves --namespace > cloud block /
+KAMPODRA_CLOUD_NAMESPACE (deprecated: OCI_NAMESPACE) >
 oci os ns get and is passed explicitly (the CLI's internal namespace
 resolution fails on laptop configs); gcp ignores the namespace entirely —
 GCS scopes by bucket+project. Bucket: --bucket (default
@@ -67,7 +70,7 @@ func newBackupCommand(d Deps) *cobra.Command {
 	})
 	pf := cmd.PersistentFlags()
 	pf.String("bucket", "", "object-storage bucket (default: project config bucket; KAMPODRA_BUCKET overrides)")
-	pf.String("namespace", "", "tenancy object-storage namespace — ignored for gcp (default: resolved via oci os ns get; OCI_NAMESPACE / the profile cloud block \"namespace\" override)")
+	pf.String("namespace", "", "tenancy object-storage namespace — ignored for gcp (default: resolved via oci os ns get; KAMPODRA_CLOUD_NAMESPACE (deprecated: OCI_NAMESPACE) / the profile cloud block \"namespace\" override)")
 	pf.String("prefix", "", "object name prefix for list")
 	pf.String("out", "", "download destination (default: the object's basename)")
 	pf.String("profile", "", "kampodra INSTANCE profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
@@ -143,25 +146,26 @@ func backupBucket(c *cobra.Command, projectBucket string) string {
 }
 
 // cloudAuthFor resolves the provider-CLI auth overrides for one run:
-// the instance profile's `cloud` block, with the provider's own env vars
-// as the escape hatch. Everything empty = the oci CLI resolves natively
+// the instance profile's `cloud` block, with the provider-neutral env
+// names as the escape hatch (the deprecated OCI_* aliases ride the one
+// ladder in cloudenv.go). Everything empty = the oci CLI resolves natively
 // (its config's default/DEFAULT/first-profile precedence) — kampodra
 // passes no auth flags at all. Credentials NEVER appear here: the block
 // names config entries, and the provider CLI reads them itself.
 func cloudAuthFor(d Deps, target Target) cloud.CloudAuth {
 	auth := cloud.ParseCloudAuth(target.Cloud)
 	if auth.Profile == "" {
-		if v, ok := d.Env("OCI_PROFILE"); ok {
+		if v, _ := cloudEnvWithFallback(d, envCloudProfile, envCloudProfileLegacy); v != "" {
 			auth.Profile = v
 		}
 	}
 	if auth.Compartment == "" {
-		if v, ok := d.Env("OCI_COMPARTMENT"); ok {
+		if v, _ := cloudEnvWithFallback(d, envCloudCompartment, envCloudCompartmentLegacy); v != "" {
 			auth.Compartment = v
 		}
 	}
 	if auth.Namespace == "" {
-		if v, ok := d.Env("OCI_NAMESPACE"); ok {
+		if v, _ := cloudEnvWithFallback(d, envCloudNamespace, envCloudNamespaceLegacy); v != "" {
 			auth.Namespace = v
 		}
 	}

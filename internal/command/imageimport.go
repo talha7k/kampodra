@@ -20,7 +20,8 @@ import (
 // A1/Ampere is UEFI-only and rejects BIOS images at launch, so a non-UEFI
 // result warns loudly instead of failing: x86 shapes launch it fine, and
 // the A1 route is capture-from-instance. Cloud auth rides the instance
-// profile's cloud block (or OCI_PROFILE/OCI_COMPARTMENT env); the oci CLI
+// profile's cloud block (or KAMPODRA_CLOUD_PROFILE/KAMPODRA_CLOUD_COMPARTMENT
+// env — deprecated aliases: OCI_PROFILE/OCI_COMPARTMENT); the oci CLI
 // resolves natively otherwise. kampodra never accepts credentials —
 // configure the oci CLI (`oci setup config`) with keys sourced from your
 // own pass store.
@@ -50,7 +51,7 @@ func newImageImportCommand(d Deps) *cobra.Command {
 	pf.String("bucket", "", "staging bucket (KAMPODRA_IMPORT_BUCKET env, else <container>-image-import)")
 	pf.String("name-prefix", "", "image display-name prefix (default <container>-alpine, or <container>-ubuntu-24.04 with --os ubuntu)")
 	pf.String("os", "alpine", "guest OS of the qcow2 (alpine|ubuntu)")
-	pf.String("compartment", "", "compartment name or ocid (cloud block or OCI_COMPARTMENT env)")
+	pf.String("compartment", "", "compartment name or ocid (cloud block or KAMPODRA_CLOUD_COMPARTMENT env; deprecated: OCI_COMPARTMENT)")
 	pf.Bool("keep-object", false, "keep the staged qcow2 object after a successful import")
 	return cmd
 }

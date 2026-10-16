@@ -154,12 +154,14 @@ func newDeployLogsSub(d Deps, resolve func(*cobra.Command, string) (Target, erro
 			}
 			since, _ := c.Flags().GetString("since")
 			follow, _ := c.Flags().GetBool("follow")
-			return runDeployLogs(d, c, target, lines, since, follow)
+			unitLog, _ := c.Flags().GetBool("unit-log")
+			return runDeployLogs(d, c, target, lines, since, follow, unitLog)
 		},
 	}
 	cmd.Flags().String("lines", deployLogLines, "number of lines to tail")
 	cmd.Flags().String("since", "", "show logs since this moment: Go duration (2h) or RFC3339 timestamp — passed verbatim to podman logs; catches boot-first lines a bare --tail cuts off")
 	cmd.Flags().Bool("follow", false, "stream the logs until ctrl-c (clean exit)")
+	cmd.Flags().Bool("unit-log", false, "tail the init unit's PERSISTED stderr log (/var/log/kampodra-<container>.log) instead of podman logs — the durable record that survives container recreation (crashes/panics live here)")
 	return cmd
 }
 
@@ -351,11 +353,44 @@ func runDeployPrune(d Deps, ctx context.Context, target Target, keepN int, dryRu
 // passes through verbatim (Go duration or RFC3339): a startup WARN is the
 // FIRST line of a boot, so --tail N alone cuts it off and post-restart
 // checks look clean while the boot was dirty.
-func runDeployLogs(d Deps, cmd *cobra.Command, target Target, lines, since string, follow bool) error {
+func runDeployLogs(d Deps, cmd *cobra.Command, target Target, lines, since string, follow, unitLog bool) error {
 	host := target.HostSpec.Host
 	verb := ""
 	if since != "" {
 		verb = fmt.Sprintf("--since %s ", since)
+	}
+	// --unit-log reads the DURABLE crash record: podman logs dies with the
+	// recreated container (--rm on every supervised start), but the unit
+	// persists the podman client's stderr — container stderr included — to
+	// /var/log/kampodra-<container>.log. Post-crash forensics read HERE
+	// (live-fire 2026-10-16: a panic stack existed only in this file).
+	unitLogPath := fmt.Sprintf("/var/log/kampodra-%s.log", target.Project.Container)
+	if unitLog {
+		remote := fmt.Sprintf("tail -n %s %s", lines, unitLogPath)
+		if since != "" {
+			remote = fmt.Sprintf("tail -n %s %s", lines, unitLogPath)
+		}
+		if follow {
+			remote = fmt.Sprintf("tail -n %s -f %s", lines, unitLogPath)
+			fmt.Fprintf(d.Stdout, "[deploy logs] streaming the unit log %s on %s (last %s lines) — ctrl-c to stop\n", unitLogPath, host, lines)
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			code, err := d.Runner.Stream(ctx, transport.SSHArgs(target.HostSpec, remote))
+			if err != nil {
+				return err
+			}
+			if code != 0 {
+				return &exitError{code: code}
+			}
+			return nil
+		}
+		fmt.Fprintf(d.Stdout, "[deploy logs] tailing the unit log %s on %s (last %s lines)\n", unitLogPath, host, lines)
+		out, err := d.Runner.Run(cmd.Context(), target.HostSpec, remote)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(d.Stdout, out)
+		return nil
 	}
 	tail := fmt.Sprintf("--tail %s %s", lines, target.Project.Container)
 	if follow {

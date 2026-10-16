@@ -44,3 +44,28 @@ func TestDeployLogsOmittedSinceLeavesArgvUnchanged(t *testing.T) {
 		t.Errorf("omitting --since must leave the podman logs argv untouched (no --since at all):\n%s", inv)
 	}
 }
+
+// The unit log is the DURABLE crash record (podman logs dies with the
+// recreated container; the unit's persisted stderr survives). --unit-log
+// must tail /var/log/kampodra-<container>.log via plain tail — NOT podman
+// logs (live-fire 2026-10-16: a panic stack existed only in that file).
+func TestDeployLogsUnitLogTailsThePersistedFile(t *testing.T) {
+	deps, stubDir, stdout, _, _ := setupDeployPipeline(t)
+	if code := runDeploy(t, deps, "--host", statusHost, "logs", "--lines", "50", "--unit-log"); code != 0 {
+		t.Fatalf("exit = %d, stdout:\n%s", code, stdout.String())
+	}
+	inv := invocations(t, stubDir)
+	mustContain(t, inv, "tail -n 50 /var/log/kampodra-"+deployContainer+".log")
+	if strings.Contains(inv, "podman logs --tail") {
+		t.Errorf("--unit-log must not read podman logs:\n%s", inv)
+	}
+}
+
+func TestDeployLogsUnitLogFollowStreamsTheFile(t *testing.T) {
+	deps, stubDir, stdout, _, _ := setupDeployPipeline(t)
+	if code := runDeploy(t, deps, "--host", statusHost, "logs", "--unit-log", "--follow"); code != 0 {
+		t.Fatalf("exit = %d, stdout:\n%s", code, stdout.String())
+	}
+	inv := invocations(t, stubDir)
+	mustContain(t, inv, "tail -n 100 -f /var/log/kampodra-"+deployContainer+".log")
+}

@@ -35,8 +35,9 @@ const bluegreenHelp = `Usage:
   kampodra bluegreen rollback                # unassign to DORMANT + holder guest cleanup
 
 Each sub-step has its own --help: status | init | provision | deploy | flip | rollback.
-Cloud auth rides the instance profile's cloud block (or OCI_PROFILE /
-OCI_COMPARTMENT env); the oci CLI resolves natively otherwise.
+Cloud auth rides the instance profile's cloud block (or KAMPODRA_CLOUD_PROFILE /
+KAMPODRA_CLOUD_COMPARTMENT env — deprecated aliases: OCI_PROFILE /
+OCI_COMPARTMENT); the oci CLI resolves natively otherwise.
 
 bluegreen deploy (the standby-update composite — "blue-green always up"):
   deploys onto the NON-serving color on its own public ip (the deploy
