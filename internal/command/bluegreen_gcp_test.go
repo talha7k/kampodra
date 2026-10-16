@@ -302,20 +302,45 @@ func TestBluegreenGCPFlipFailsClosedBeforeAnyWrite(t *testing.T) {
 	}
 }
 
-// provision fail-closed on gcp: the sibling's subnet handle is not an
-// ocid, so the template gate refuses before the launch — the launch argv
-// itself is pinned at the op level (bgops_gcp_test.go).
-func TestBluegreenGCPProvisionFailsClosedAtSubnetGate(t *testing.T) {
-	h := setupBGCP(t, map[string]string{"inst-green": bgGCPGreenRow()})
+// provision on gcp launches beside its sibling: the subnet handle is a
+// plain NAME on gcp (the OCI ocid-shape gate is oci-leg only — live-fire
+// 2026-10-16 caught the gate refusing gcp subnets), so the native route
+// (--image-id) goes straight to the launch argv pinned here.
+func TestBluegreenGCPProvisionLaunchesBesideSibling(t *testing.T) {
+	h := setupBGCP(t, map[string]string{"inst-blue": bgGCPBlueRow(), "inst-green": `[]`})
 	writeBGCPProfile(t, h)
-	if code := h.run(t, "provision", "blue", "--profile", "gcp-prof"); code != 1 {
+	if code := h.run(t, "provision", "green", "--profile", "gcp-prof",
+		"--image-id", "projects/debian-cloud/global/images/family/debian-12"); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, h.stderr.String())
+	}
+	joined := strings.Join(h.ociCalls(t), "\n")
+	for _, want := range []string{
+		"compute instances create app-green",
+		"--zone=europe-west1-b", // the sibling's zone, last segment
+		"--machine-type=e2-standard-2",
+		"--subnet=kampodra", // the sibling's subnet, bare gcp name — no ocid gate
+		"--image=projects/debian-cloud/global/images/family/debian-12",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("launch argv missing %q:\n%s", want, joined)
+		}
+	}
+	if execs := h.ociExecs(t); len(execs) != 0 {
+		t.Errorf("a gcp profile must never exec oci: %v", execs)
+	}
+}
+
+// Without --image-id and with no golden image, gcp provision fails closed
+// at the inject route's ocid gate (the record's image handle is gcp-native,
+// not an ocid — the inject route is oci-leg only by design).
+func TestBluegreenGCPProvisionInjectRouteRefuses(t *testing.T) {
+	h := setupBGCP(t, map[string]string{"inst-blue": bgGCPBlueRow(), "inst-green": `[]`, "images": `[]`})
+	writeBGCPProfile(t, h)
+	if code := h.run(t, "provision", "green", "--profile", "gcp-prof"); code != 1 {
 		t.Fatalf("exit = %d, want 1 (stderr: %s)", code, h.stderr.String())
 	}
-	if !strings.Contains(h.stderr.String(), "could not resolve app-green's subnet id") {
+	if !strings.Contains(h.stderr.String(), "no resolvable image-id") {
 		t.Errorf("stderr = %q", h.stderr.String())
-	}
-	if joined := strings.Join(h.ociCalls(t), "\n"); strings.Contains(joined, "instances create") {
-		t.Errorf("the refused provision must not launch:\n%s", joined)
 	}
 	if execs := h.ociExecs(t); len(execs) != 0 {
 		t.Errorf("a gcp profile must never exec oci: %v", execs)
