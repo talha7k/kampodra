@@ -43,8 +43,8 @@ type gcpInstanceRow struct {
 	Created           string `json:"creationTimestamp"`
 	Status            string `json:"status"`
 	NetworkInterfaces []struct {
-		Subnetwork     string `json:"subnetwork"`
-		AccessConfigs  []struct {
+		Subnetwork    string `json:"subnetwork"`
+		AccessConfigs []struct {
 			NatIP string `json:"natIP"`
 		} `json:"accessConfigs"`
 	} `json:"networkInterfaces"`
