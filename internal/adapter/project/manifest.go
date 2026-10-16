@@ -61,6 +61,19 @@ type ManifestFields struct {
 	MigrateScript      string                    `json:"migrateScript,omitempty"`
 	Images             *ManifestImages           `json:"images,omitempty"`
 	Binary             map[string]ManifestBinary `json:"binary,omitempty"`
+	Unit               *ManifestUnit             `json:"unit,omitempty"`
+}
+
+// ManifestUnit is repo-owned run-unit surface: -e K=V flags rendered into
+// the app unit verbatim. This is the COMMITTED home for read-through envs
+// the ansible template used to hardcode (live-fire 2026-10-16: a unit
+// re-render dropped -e LIBSQL_TENANT_DIR because nothing in kampodra owned
+// it — the env file assumed the unit owned it, the unit assumed the env
+// file). One source of truth per key: renderer clear-envs (NODE_ENV/PORT)
+// stay renderer-owned; secrets stay in the env file; everything else the
+// repo declares HERE.
+type ManifestUnit struct {
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // BinaryKinds are the artifact kinds `deploy --binary` supports. The kind
@@ -376,7 +389,7 @@ var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 const manifestKeyHint = "container, pairInstancePrefix, shadowSuffix, envFile, dataDir, bucket, " +
 	"objectPrefix, healthPath, proxyHost, services, imagePrefix, port, " +
 	"network, shadowProbePort, deployedShaFile, envClearKeys, dockerfile, " +
-	"migrateScript, images, binary"
+	"migrateScript, images, binary, unit"
 
 // ParseManifest parses raw manifest bytes strictly: malformed JSON and
 // unknown keys FAIL CLOSED (error names the file and the offending

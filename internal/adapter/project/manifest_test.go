@@ -214,7 +214,7 @@ func TestManifestKeyHintMatchesStruct(t *testing.T) {
 	if manifestKeyHint != "container, pairInstancePrefix, shadowSuffix, envFile, dataDir, bucket, "+
 		"objectPrefix, healthPath, proxyHost, services, imagePrefix, port, "+
 		"network, shadowProbePort, deployedShaFile, envClearKeys, dockerfile, "+
-		"migrateScript, images, binary" {
+		"migrateScript, images, binary, unit" {
 		t.Fatalf("manifestKeyHint const drifted from its own formatting")
 	}
 	if !strings.Contains(manifestKeyHint, want) || len(strings.Split(manifestKeyHint, ", ")) != len(keys) {

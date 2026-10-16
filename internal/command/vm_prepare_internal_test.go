@@ -82,7 +82,7 @@ func TestNamingFromProjectStaticBlock(t *testing.T) {
 	apiGo := project.ManifestBinary{Kind: project.BinaryKindGo, Dir: "/data/app", Entry: "esellar-api-go"}
 	web := project.ManifestBinary{Kind: project.BinaryKindStatic, Dir: "/data/web", Env: "WEB_DIST_DIR"}
 
-	n := namingFromProject(project.Config{}, &apiGo, []project.ManifestBinary{web})
+	n := namingFromProject(project.Config{}, &apiGo, []project.ManifestBinary{web}, nil)
 
 	if n.BinaryMount != "-v /data/app:/data/app" || n.BinaryEntrypointFlag != "--entrypoint /data/app/esellar-api-go" {
 		t.Errorf("the pinned exec-kind block must keep its mount+override: %+v", n)
@@ -101,7 +101,7 @@ func TestNamingFromProjectStaticBlock(t *testing.T) {
 func TestNamingFromProjectPinnedStaticNoDoubleMount(t *testing.T) {
 	web := project.ManifestBinary{Kind: project.BinaryKindStatic, Dir: "/data/web", Env: "WEB_DIST_DIR"}
 
-	n := namingFromProject(project.Config{}, &web, []project.ManifestBinary{web})
+	n := namingFromProject(project.Config{}, &web, []project.ManifestBinary{web}, nil)
 
 	if n.BinaryMount != "-v /data/web:/data/web" {
 		t.Errorf("BinaryMount = %q", n.BinaryMount)

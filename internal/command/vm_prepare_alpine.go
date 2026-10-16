@@ -74,6 +74,9 @@ func (p *vmProvisioner) alpineOpenRCUnits() error {
 	}
 	p.say("installing OpenRC services %s + %s (supervise-daemon around podman run)…", n.Container, vmbootstrap.ProxyContainer)
 	apiInitD := "/etc/init.d/" + n.Container
+	if err := p.guardUnitEnvDrop(apiInitD, vmbootstrap.RenderInitDAPI(n)); err != nil {
+		return err
+	}
 	if err := p.upload(apiInitD, vmbootstrap.RenderInitDAPI(n)); err != nil {
 		return err
 	}
