@@ -55,13 +55,14 @@ func newEnvCommand(d Deps) *cobra.Command {
 
 	subList := newEnvListSub(d)
 	subPush := newEnvPushSub(d)
+	subSet := newEnvSetSub(d)
 	subPull := newEnvPullSub(d)
 	subFingerprint := newEnvFingerprintSub(d)
 	subDiff := newEnvDiffSub(d)
 
 	subFromSchema := newEnvFromSchemaCommand(d)
 	envTargetFlags(subFromSchema)
-	cmd.AddCommand(subList, subPush, subPull, subFingerprint, subDiff, subFromSchema)
+	cmd.AddCommand(subList, subSet, subPush, subPull, subFingerprint, subDiff, subFromSchema)
 	return cmd
 }
 
@@ -107,7 +108,7 @@ func newEnvListSub(d Deps) *cobra.Command {
 func newEnvPushSub(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "push",
-		Short: "upload a local env file: 0600 temp + atomic mv + restart hint (values NEVER printed)",
+		Short: "upload a local env file: 0600 temp + atomic mv (+ --restart applies it init-aware); values NEVER printed",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			file, _ := c.Flags().GetString("file")
@@ -134,20 +135,145 @@ func newEnvPushSub(d Deps) *cobra.Command {
 				file, target.HostSpec.Host, remote)
 			fmt.Fprint(d.Stdout, envfile.Table(string(data)))
 
-			tmp := envfile.RemoteTmpPath(remote, os.Getpid())
-			if _, err := d.Runner.RunWithStdin(c.Context(), target.HostSpec, "umask 077; cat > "+tmp, strings.NewReader(string(data))); err != nil {
-				return fmt.Errorf("upload failed")
+			if err := installRemoteEnv(d, c.Context(), target, string(data)); err != nil {
+				return err
 			}
-			if _, err := d.Runner.Run(c.Context(), target.HostSpec, fmt.Sprintf("chmod 600 %s && mv -f %s %s", tmp, tmp, remote)); err != nil {
-				return fmt.Errorf("atomic install failed (remote temp left at: %s)", tmp)
+			if restart, _ := c.Flags().GetBool("restart"); restart {
+				return runDeployRestart(d, c.Context(), target)
 			}
-			fmt.Fprintf(d.Stdout, "[env] installed %s (0600) on %s\n", remote, target.HostSpec.Host)
-			fmt.Fprintf(d.Stdout, "[env] restart to apply: ssh %s 'rc-service %s restart'   # or: kampodra deploy\n", target.HostSpec.Host, target.Project.Container)
+			fmt.Fprintf(d.Stdout, "[env] restart to apply: kampodra env push --restart, ssh %s 'rc-service %s restart', or kampodra deploy\n", target.HostSpec.Host, target.Project.Container)
 			return nil
 		},
 	}
 	envTargetFlags(cmd)
 	cmd.Flags().String("file", "", "local env file to upload (verbatim — what you push is what lands)")
+	cmd.Flags().Bool("restart", false, "restart the api service after the push (init-aware) — the env file is re-read on container start")
+	return cmd
+}
+
+// installRemoteEnv lands env content on the VM atomically: 0600 temp in
+// the env file's directory + same-dir mv. The ONLY write path for env
+// content (push and set share it).
+func installRemoteEnv(d Deps, ctx context.Context, target Target, content string) error {
+	remote := target.Project.EnvFile
+	tmp := envfile.RemoteTmpPath(remote, os.Getpid())
+	if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, "umask 077; cat > "+tmp, strings.NewReader(content)); err != nil {
+		return fmt.Errorf("upload failed")
+	}
+	if _, err := d.Runner.Run(ctx, target.HostSpec, fmt.Sprintf("chmod 600 %s && mv -f %s %s", tmp, tmp, remote)); err != nil {
+		return fmt.Errorf("atomic install failed (remote temp left at: %s)", tmp)
+	}
+	fmt.Fprintf(d.Stdout, "[env] installed %s (0600) on %s\n", remote, target.HostSpec.Host)
+	return nil
+}
+
+// newEnvSetSub is env's `set` subcommand: upsert one or more KEY=VALUE
+// pairs into the REMOTE env file without maintaining a local copy — the
+// remote content is pulled, the pairs replace-in-place (or append), and
+// the merged file installs atomically. Values never print.
+func newEnvSetSub(d Deps) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "set KEY=VALUE [KEY=VALUE...] [KEY+=VALUE...]",
+		Short: "upsert KEY=VALUE pairs into the remote env file (values NEVER printed); KEY+=VALUE APPENDS to a comma-list (the trusted-origins pattern); pairs with spaces pass raw — podman --env-file takes the whole remainder",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(c *cobra.Command, args []string) error {
+			type pair struct {
+				key, value string
+				appendMode bool
+			}
+			var pairs []pair
+			for _, arg := range args {
+				// Separator precedence: a plain `=` at or before any `+=`
+				// makes the arg a REPLACE (values may legitimately contain
+				// `+=`); `KEY+=V` (+= first) is the comma-list APPEND.
+				eq := strings.Index(arg, "=")
+				plusEq := strings.Index(arg, "+=")
+				appendMode := plusEq >= 0 && (eq < 0 || plusEq < eq)
+				sep := "="
+				if appendMode {
+					sep = "+="
+				}
+				key, value, found := strings.Cut(arg, sep)
+				if !found {
+					return fmt.Errorf("%q is not KEY=VALUE or KEY+=VALUE — the first = (or +=) splits key from value", arg)
+				}
+				vars := envfile.Parse(key + "=" + value)
+				if len(vars) != 1 || vars[0].Key != key {
+					return fmt.Errorf("invalid env key %q — use [A-Za-z_][A-Za-z0-9_]*", key)
+				}
+				pairs = append(pairs, pair{key, value, appendMode})
+			}
+			target, err := resolveEnvTarget(d, c)
+			if err != nil {
+				return err
+			}
+			sayProvenance(d, "env set", target)
+			if err := requireHost(target); err != nil {
+				return err
+			}
+			remote := target.Project.EnvFile
+			// Missing file = a fresh estate (empty start). UNREADABLE file
+			// must FAIL CLOSED — an empty read here would clobber the real
+			// env with only the new pairs — so the sentinel distinguishes
+			// missing from error.
+			const noFileSentinel = "__kampodra_no_env_file__"
+			current, err := d.Runner.Run(c.Context(), target.HostSpec, fmt.Sprintf("if [ -f %s ]; then cat %s; else printf '%s\\n'; fi", remote, remote, noFileSentinel))
+			if err != nil {
+				return fmt.Errorf("cannot read the remote env file: %w", err)
+			}
+			if strings.TrimSpace(current) == noFileSentinel {
+				current = ""
+			}
+			// Upsert semantics: plain pairs REPLACE the key in place
+			// (later duplicates dropped); `KEY+=V` pairs APPEND V to the
+			// existing comma-list (missing key = V alone; V already in the
+			// list = a no-op — idempotent). Unseen keys keep their order;
+			// new keys append.
+			apply := func(existing string, sp pair) string {
+				if !sp.appendMode {
+					return sp.value
+				}
+				vals := []string{}
+				for _, v := range strings.Split(existing, ",") {
+					if v != "" && v != sp.value {
+						vals = append(vals, v)
+					}
+				}
+				return strings.Join(append(vals, sp.value), ",")
+			}
+			var lines []string
+			for _, v := range envfile.Parse(current) {
+				line := v.Key + "=" + v.Value
+				for _, sp := range pairs {
+					if sp.key == v.Key {
+						line = v.Key + "=" + apply(v.Value, sp)
+					}
+				}
+				lines = append(lines, line)
+			}
+			seen := map[string]bool{}
+			for _, line := range lines {
+				seen[strings.SplitN(line, "=", 2)[0]] = true
+			}
+			for _, sp := range pairs {
+				if !seen[sp.key] {
+					lines = append(lines, sp.key+"="+apply("", sp))
+				}
+			}
+			merged := strings.Join(lines, "\n") + "\n"
+			fmt.Fprint(d.Stdout, envfile.Table(merged))
+			if err := installRemoteEnv(d, c.Context(), target, merged); err != nil {
+				return err
+			}
+			if restart, _ := c.Flags().GetBool("restart"); restart {
+				return runDeployRestart(d, c.Context(), target)
+			}
+			fmt.Fprintf(d.Stdout, "[env] restart to apply: kampodra env set --restart, ssh %s 'rc-service %s restart', or kampodra deploy\n", target.HostSpec.Host, target.Project.Container)
+			return nil
+		},
+	}
+	envTargetFlags(cmd)
+	cmd.Flags().Bool("restart", false, "restart the api service after the set (init-aware) — the env file is re-read on container start")
 	return cmd
 }
 
