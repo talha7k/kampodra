@@ -1,10 +1,11 @@
 ---
 name: kampodra
-description: Operates the kampodra CLI, a kamal-alternative that deploys containers to Linux VMs over SSH with podman and kamal-proxy — no registry in the image path. Use when deploying or rolling back a release, recovering an interrupted rolling deploy, reading deploy logs or status, pushing or diffing remote env files, generating env from a schema, managing instance profiles, listing or verifying backups, planning a restore, managing OCI DNS records, running tenant database migrations, sampling VM metrics, or preparing and wiping VMs. Triggers: deploy, rollback, podman, kamal-proxy, SSH, env, metrics, backup, DNS, migrate, VM, Alpine.
+description: "Operates the kampodra CLI, a kamal-alternative that deploys containers or binaries to Linux VMs over SSH with podman and kamal-proxy — no registry in the image path, zero-downtime by default. Use when deploying or rolling back a release, running the standby-update bluegreen flow (deploy to the idle color then flip), recovering an interrupted rolling deploy, reading deploy logs/status, pushing or diffing remote env files, generating env from a schema, managing instance profiles, listing or verifying backups, planning a restore, managing DNS records on OCI or GCP, staging golden images, running tenant database migrations, sampling VM metrics, or preparing and wiping VMs. Triggers: deploy, rollback, podman, kamal-proxy, SSH, env, metrics, backup, DNS, gcp, gcloud, oci, bluegreen, flip, migrate, VM, Alpine."
 license: AGPL-3.0
+compatibility: Requires podman, ssh, and git locally; the target VM needs a Linux userland (Alpine or Ubuntu 24.04) with podman and kamal-proxy (vm-prepare installs them). Cloud families authenticate through the provider CLI itself (oci or gcloud).
 metadata:
   author: kampodra maintainers
-  version: 0.7.0-beta.2
+  version: 0.8.0
 ---
 
 # kampodra
@@ -43,7 +44,7 @@ flags > KAMPODRA_* env > profile "project" block > kampodra.json > built-in defa
 
    The first profile auto-becomes the default. Hosts/keys live only in profiles; the committed repo file `kampodra.json` carries project naming only.
 
-2. (Recommended) Commit a `kampodra.json` at the repo root naming YOUR app. The built-in defaults are deliberately generic placeholders (`app`, `/etc/kampodra/env`, `app-backups`, …) — set your real naming in the manifest (17 optional camelCase fields: `container`, `shadowSuffix`, `envFile`, `dataDir`, `bucket`, `objectPrefix`, `healthPath`, `proxyHost`, `services`, `imagePrefix`, `port`, `network`, `shadowProbePort`, `deployedShaFile`, `envClearKeys`, `dockerfile`, `migrateScript`; an optional `"$schema"` key points at docs/kampodra.schema.json for editor autocomplete and is ignored). The parse is strict: malformed JSON or an unknown key FAILS CLOSED — a typo errors (naming the valid keys) instead of silently resolving to defaults. See the field table in [references/commands.md](references/commands.md).
+2. (Recommended) Commit a `kampodra.json` at the repo root naming YOUR app. The built-in defaults are deliberately generic placeholders (`app`, `/etc/kampodra/env`, `app-backups`, …) — set your real naming in the manifest (19 optional camelCase fields: `container`, `shadowSuffix`, `envFile`, `dataDir`, `bucket`, `objectPrefix`, `healthPath`, `healthPaths`, `proxyHost`, `services`, `imagePrefix`, `port`, `network`, `shadowProbePort`, `deployedShaFile`, `envClearKeys`, `dockerfile`, `migrateScript`, plus a `unit.env` map rendering repo-owned -e flags into the app unit; an optional `"$schema"` key points at docs/kampodra.schema.json for editor autocomplete and is ignored). The parse is strict: malformed JSON or an unknown key FAILS CLOSED — a typo errors (naming the valid keys) instead of silently resolving to defaults. See the field table in [references/commands.md](references/commands.md).
 
 3. Push env (values are never printed; only KEY + fingerprint):
 
@@ -58,7 +59,7 @@ flags > KAMPODRA_* env > profile "project" block > kampodra.json > built-in defa
 ```
 kampodra deploy                      # build HEAD (clean-tree gate) and run the full pipeline
 kampodra status                      # live health through the proxy + deployment count + VM state
-kampodra deploy logs --lines 100     # tail the app container
+kampodra deploy logs --lines 100     # tail the app container (--since 2h catches boot-first lines)
 ```
 
 Deploy stamps the git sha. In deploy mode the clean tree is gated, so what HEAD names is what ships. `kampodra deploy list` shows history (VM sha-tagged images merged with the local ledger `~/.kampodra/deployments.jsonl`); `kampodra metrics` snapshots load/memory/disk/containers; `deploy prune` reclaims disk from old sha-tagged images (always preview with `--dry-run`).
@@ -100,9 +101,10 @@ A leftover shadow must be converged before the next `--rolling` deploy. `--drain
 
 - Defaults are GENERIC placeholders (`app`, `/etc/kampodra/env`, `app-backups`, `/up`), not your app's names — commit a `kampodra.json` before the first deploy against a new tree, or check `config print`.
 - `migrate` runs the app's own script on the VM: the path comes from the `migrateScript` config (default `scripts/migrate-db.ts`), executed with `pnpm exec tsx` inside `--repo-root` (or `KAMPODRA_REPO_ROOT`). Point `migrateScript` at your repo's real layout.
-- `dns`/`backup` are multi-provider (oci | gcp): they authenticate through the provider CLI's own auth, and kampodra passes no auth flags unless the instance profile's `cloud` block overrides it (oci: `profile`/`compartment`/`instancePrincipal`; gcp: `provider: gcp` + `project`/`account`); `OCI_PROFILE`/`OCI_COMPARTMENT` env work as the oci escape hatch, else the provider CLI resolves natively. A `dns` compartment is REQUIRED for oci only (block or env). `bluegreen`/`image-import` are OCI-only today — a `gcp` profile fails closed. `--profile` always means the kampodra INSTANCE profile now.
+- `dns`/`backup`/`bluegreen` are multi-provider (oci | gcp behind the neutral dispatch; one `RunCloud` seam): they authenticate through the provider CLI's own auth, and kampodra passes no auth flags unless the instance profile's `cloud` block overrides it (oci: `profile`/`compartment`/`instancePrincipal`; gcp: `provider: gcp` + `project`/`account`); `OCI_PROFILE`/`OCI_COMPARTMENT` env work as the oci escape hatch, else the provider CLI resolves natively; gcp scopes natively via the block's `project` (dns also takes `dnsCompartment` + `--dns-compartment` for split-compartment zones). `image-import` is OCI-only by design (a `gcp` profile fails closed — Cloud Build trust-shape). `bluegreen provision` pins `VM.Standard.A1.Flex` on oci, `e2-standard-2` on gcp. `--profile` always means the kampodra INSTANCE profile.
 - Fleet profiles: `--group web` filters `config list` / `status` / `deploy list`; `config clone prod prod-2 --host root@<ip>` stamps out a sibling with explicit copies (no live link).
-- `bluegreen` manages the OCI reserved-IP pair (`status | init | provision <color> | flip --to <color> [--force] | rollback`); `image-import --image <qcow2>` stages+imports golden images (warns on non-UEFI firmware). See [references/commands.md](references/commands.md).
+- `bluegreen` manages the reserved-IP pair (`status | init | provision <color> | deploy --to <color> | flip --to <color> [--force] | rollback`) — pairs + reserved IP derive from LIVE provider state, no manual-IP fallback. `deploy --to <color>` is the standby-update composite: build once → push to the idle color → health-gate it there → flip (pipeline failure = no flip). A flip warns when the CURRENT holder is unhealthy (no healthy fallback after cutover). `image-import --image <qcow2>` stages+imports golden images on oci (warns on non-UEFI firmware). See [references/commands.md](references/commands.md).
+- `deploy` health-gates and smokes EVERY path in the manifest's `healthPaths[]` (default: exactly [`healthPath`]) — pin the routes that must answer, not just the shallow one. Binary fast-pushes are sha256-fingerprinted and byte-verified on the VM before the swap; a stale rebuild (bytes identical to the previous push under a new sha) warns loudly.
 - No command ever prints env values — only KEY + fingerprint tables (value length + first 2 chars). Raw values move only through `env push`'s upload and `env pull`'s stdout/`--out` payload.
 
 ## Common flows

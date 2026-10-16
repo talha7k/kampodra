@@ -71,7 +71,7 @@ Each `kampodra.json` field also has a `KAMPODRA_*` env override in the ladder:
 
 Repo-level manifest, committed per-project; discovered upward from the working
 directory (nearest file wins). Carries project NAMING only — never hosts, ssh
-keys, or secrets. All 17 fields optional, camelCase; an optional `"$schema"`
+keys, or secrets. All 19 fields optional, camelCase (plus the `unit` block), an optional `"$schema"`
 key pointing at docs/kampodra.schema.json is accepted (ignored) for editor
 autocomplete:
 
@@ -94,6 +94,8 @@ autocomplete:
 | `envClearKeys` | string[] | env keys owned by init — `env from-schema` drops them from varlock output |
 | `dockerfile` | string | Containerfile/Dockerfile deploy builds |
 | `migrateScript` | string | repo-relative db migrate script (`migrate` runs it on the VM) |
+| `healthPaths` | string[] | EXTRA health-gate/smoke routes — the deploy probes EVERY path (default: exactly [`healthPath`]) |
+| `unit` | object | repo-owned app-unit surface: `unit.env` renders each key as `-e K=V` on the app container's `podman run` (later-wins over renderer clear-env defaults; secrets stay in the env file) |
 
 The parse is **strict fail-closed**: malformed JSON or an unknown key errors
 instead of silently resolving to defaults. An empty object is valid. Built-in
@@ -175,8 +177,10 @@ Example: `kampodra deploy prune --host root@203.0.113.10 --dry-run`
 Tails the running api container's logs. Flags: `--host`, `--profile`,
 `--ssh-key`, `--lines` (string, default `"100"`, positive integer),
 `--follow` (bool, default false — streams until ctrl-c with a clean exit; a
-non-zero remote exit code propagates).
-Example: `kampodra deploy logs --host root@203.0.113.10 --lines 200 --follow`
+non-zero remote exit code propagates), `--since` (Go duration like `2h` or
+RFC3339 — passed verbatim to `podman logs`; catches boot-first lines a bare
+`--tail` cuts off).
+Example: `kampodra deploy logs --host root@203.0.113.10 --lines 200 --since 30m --follow`
 
 ### deploy restart
 
@@ -390,6 +394,7 @@ provider call.
 | `--value` | string | `""` — type-shaped target |
 | `--ttl` | string | `"300"` (60..172800) |
 | `--profile` | string | `""` — instance profile (carries the `cloud` block) |
+| `--dns-compartment` | string | `""` — dns-only scope for split-compartment tenancies: flag > cloud block `dnsCompartment` > `compartment`; the no-zones error names the compartment it searched |
 
 
 - `dns records [--zone <id-or-name>]` — list records: domain / type / ttl / value.
@@ -447,10 +452,22 @@ Example: `kampodra status --host root@203.0.113.10 --verbose`
 
 ## bluegreen
 
-OCI reserved-IP pair for zero-downtime cutovers. One instance can start
-alone; the pair shares one RESERVED public IP (derived from live OCI
-state — no local state file). Instances are `<container>-blue/green`.
-Auth: profile `cloud` block / env / native (no cloud flags).
+Reserved-IP pair for zero-downtime cutovers, multi-provider (oci | gcp
+behind the neutral dispatch). One instance can start alone; the pair
+shares one RESERVED public IP (derived from LIVE provider state — no
+local state file). Instances are `<prefix>-blue/green`. Auth: profile
+`cloud` block / env / native (no cloud flags). Provision pins
+`VM.Standard.A1.Flex` 2/12 on oci, `e2-standard-2` on gcp; the gcp
+anchor is the reserved external IP itself (the guest watcher's metadata
+poll is the documented follow-up).
+
+- `deploy --to <blue|green> [--force-flip]` — the standby-update
+  composite: resolve the RUNNING idle color → build once (clean-tree
+  gate) → push + health-gate it on ITS own IP → flip (health-gated).
+  Pipeline failure = no flip (the pair keeps serving the holder). The
+  PRE-flip public smoke is skipped by design (the edge is still the
+  holder's); the flip's own ACME + served-sha verify through the
+  reserved IP is the post-cutover smoke.
 
 - `status` — pair view: reserved IP + holder, both instances (ocid, AD),
   per-color app health. Read-only.
@@ -471,9 +488,14 @@ Auth: profile `cloud` block / env / native (no cloud flags).
   own IP (unless `--force`) → anchor conf on the target guest (watcher
   configures it) → reserved IP assigned (waits ASSIGNED) → ACME on the
   target for the `<ip-dashes>.sslip.io` hostname → valid-cert HTTPS +
-  served-sha verify through the reserved IP → FLIPPED. Post-assign failure
-  auto-rolls back to the other color's EXISTING anchor (lookup-only) or
-  to dormant, then cleans the failed target's guest. Bad `--to` = **exit 2**.
+  served-sha verify through the reserved IP → FLIPPED, then prints the
+  post-flip proxyHost guidance (the pre-flip host is DE-REGISTERED —
+  update the profile's `project.proxyHost` AND kampodra.json). Warns when
+  the CURRENT holder is unhealthy: after the cutover there is NO healthy
+  fallback (warn-only — rescuing a dead pair is legitimate). Post-assign
+  failure auto-rolls back to the other color's EXISTING anchor
+  (lookup-only) or to dormant, then cleans the failed target's guest.
+  Bad `--to` = **exit 2**.
 - `rollback` — unassign to DORMANT: holder resolved by anchor match
   (lookup-only), guest cleaned (conf + address), unassign waits AVAILABLE.
 
