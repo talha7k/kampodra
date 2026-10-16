@@ -1,7 +1,7 @@
 {
-  "name": "@talha7k/linux-arm64",
+  "name": "@talha7k/kampodra-linux-arm64",
   "version": "0.8.3",
-  "description": "kampodra native binary for linux-arm64 \u2014 installed automatically as an optionalDependency of the kampodra package; do not install directly",
+  "description": "kampodra native binary for linux-arm64 — installed automatically as an optionalDependency of the kampodra package; do not install directly",
   "license": "AGPL-3.0",
   "os": [
     "linux"

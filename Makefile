@@ -152,7 +152,7 @@ publish:
 	$(MAKE) cross-compile
 	$(MAKE) release-check
 	set -e; for triple in $(PLATFORMS); do \
-		echo "== npm publish @talha7k/$$triple@$(VERSION)"; \
+		echo "== npm publish @talha7k/kampodra-$$triple@$(VERSION)"; \
 		npm publish ./npm/platforms/$$triple --tag $(NPM_TAG) --access public; \
 	done
 	echo "== npm publish kampodra@$(VERSION)"

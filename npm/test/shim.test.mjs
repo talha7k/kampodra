@@ -48,11 +48,11 @@ test("unsupported platform names the supported set", (t) => {
 
 test("installed package with missing binary fails clearly", (t) => {
   const { root, pkgDir } = stageTree(t);
-  const platformPkg = join(root, "node_modules", "@talha7k", `${process.platform}-${process.arch}`);
+  const platformPkg = join(root, "node_modules", "@talha7k", `kampodra-${process.platform}-${process.arch}`);
   mkdirSync(platformPkg, { recursive: true });
   writeFileSync(
     join(platformPkg, "package.json"),
-    JSON.stringify({ name: `@talha7k/${process.platform}-${process.arch}`, version: "0.0.0-test" }),
+    JSON.stringify({ name: `@talha7k/kampodra-${process.platform}-${process.arch}`, version: "0.0.0-test" }),
   );
   // require.resolve throws before existsSync can run when the file is
   // absent, so this branch is only reachable with a broken/partial install
@@ -73,11 +73,11 @@ test("installed package with missing binary fails clearly", (t) => {
 
 test("binary present: argv passes through verbatim, exit code propagates", (t) => {
   const { root, pkgDir } = stageTree(t);
-  const platformPkg = join(root, "node_modules", "@talha7k", `${process.platform}-${process.arch}`);
+  const platformPkg = join(root, "node_modules", "@talha7k", `kampodra-${process.platform}-${process.arch}`);
   mkdirSync(join(platformPkg, "bin"), { recursive: true });
   writeFileSync(
     join(platformPkg, "package.json"),
-    JSON.stringify({ name: `@talha7k/${process.platform}-${process.arch}`, version: "0.0.0-test" }),
+    JSON.stringify({ name: `@talha7k/kampodra-${process.platform}-${process.arch}`, version: "0.0.0-test" }),
   );
   const binPath = join(platformPkg, "bin", "kampodra");
   writeFileSync(
