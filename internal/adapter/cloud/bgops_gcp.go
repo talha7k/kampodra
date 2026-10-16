@@ -297,8 +297,10 @@ func bgReservedIPAssignGCP(ctx context.Context, auth CloudAuth, ripName, targetI
 	if err != nil {
 		return err
 	}
+	// add-access-config takes the IP LITERAL, not the address name
+	// (live-fire 2026-10-16: 'kampodra-active' is not a region IP).
 	_, err = RunCloud(ctx, auth, []string{"compute", "instances", "add-access-config",
-		targetInst, "--zone=" + zone, "--address=" + ripName}) // identity flags appended at the seam
+		targetInst, "--zone=" + zone, "--address=" + row.Address}) // identity flags appended at the seam
 	return err
 }
 

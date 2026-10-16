@@ -301,7 +301,7 @@ func TestBluegreenGCPFlipAssignsReservedIPToTarget(t *testing.T) {
 	if deleteAt > addAt {
 		t.Errorf("holder detach must precede the target attach:\n%s", joined)
 	}
-	for _, want := range []string{"app-blue", "app-green", "--address=kampodra-active"} {
+	for _, want := range []string{"app-blue", "app-green", "--address=203.0.113.50"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("flip sequence missing %q:\n%s", want, joined)
 		}

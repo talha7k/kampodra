@@ -244,7 +244,7 @@ func TestBGReservedIPAssignGCPOrdering(t *testing.T) {
 		"compute addresses list --filter=name=kampodra-active --format=json(name,address,status,users) --project=p1",
 		"compute instances delete-access-config app-blue --zone=europe-west1-b --project=p1",
 		"compute instances list --filter=name ~ ^app-green$ --format=json(name,zone) --project=p1",
-		"compute instances add-access-config app-green --zone=europe-west1-b --address=kampodra-active --project=p1",
+		"compute instances add-access-config app-green --zone=europe-west1-b --address=203.0.113.50 --project=p1",
 	}
 	if len(calls) != len(want) {
 		t.Fatalf("got %d calls, want %d:\n%s", len(calls), len(want), strings.Join(calls, "\n"))
@@ -271,7 +271,7 @@ func TestBGReservedIPAssignGCPRestoreOldHolder(t *testing.T) {
 	if !strings.Contains(joined, "delete-access-config app-green --zone=europe-west1-b") {
 		t.Errorf("the failed target must be detached first:\n%s", joined)
 	}
-	if !strings.Contains(joined, "add-access-config app-blue --zone=europe-west1-b --address=kampodra-active") {
+	if !strings.Contains(joined, "add-access-config app-blue --zone=europe-west1-b --address=203.0.113.50") {
 		t.Errorf("the old holder must be re-attached:\n%s", joined)
 	}
 	if strings.Contains(joined, "delete-access-config app-blue") {
