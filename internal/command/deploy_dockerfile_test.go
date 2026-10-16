@@ -19,8 +19,7 @@ func TestDeployDockerfileDefaultsThroughProjectConfig(t *testing.T) {
 	if code := runDeploy(t, deps, "--host", statusHost); code != 0 {
 		t.Fatalf("exit = %d, stdout:\n%sstderr:\n%s", code, stdout.String(), stderr.String())
 	}
-	mustContain(t, invocations(t, stubDir), "-f Dockerfile")
-	_ = reporoot
+	mustContain(t, invocations(t, stubDir), "-f "+filepath.Join(reporoot, "Dockerfile"))
 }
 
 func TestDeployDockerfileFromRepoManifest(t *testing.T) {
@@ -35,7 +34,7 @@ func TestDeployDockerfileFromRepoManifest(t *testing.T) {
 		t.Fatalf("exit = %d, stdout:\n%sstderr:\n%s", code, stdout.String(), stderr.String())
 	}
 	inv := invocations(t, stubDir)
-	mustContain(t, inv, "-f deploy/Containerfile")
+	mustContain(t, inv, "-f "+filepath.Join(reporoot, "deploy/Containerfile"))
 	if strings.Contains(inv, "-f Dockerfile ") || strings.Contains(inv, "-f Dockerfile"+reporoot) {
 		t.Errorf("manifest dockerfile must replace the default build file:\n%s", inv)
 	}
@@ -52,7 +51,7 @@ func TestDeployDockerfileFlagBeatsManifest(t *testing.T) {
 	if code := runDeploy(t, deps, "--host", statusHost, "--dockerfile", "Containerfile.custom"); code != 0 {
 		t.Fatalf("exit = %d, stdout:\n%sstderr:\n%s", code, stdout.String(), stderr.String())
 	}
-	mustContain(t, invocations(t, stubDir), "-f Containerfile.custom")
+	mustContain(t, invocations(t, stubDir), "-f "+filepath.Join(reporoot, "Containerfile.custom"))
 }
 
 func TestDeployDockerfileMalformedManifestFailsClosed(t *testing.T) {
