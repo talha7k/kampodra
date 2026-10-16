@@ -13,3 +13,6 @@ coverage.out
 /npm/platforms/*/bin/
 # agent worktrees (git-worktree checkouts live here, never in history)
 /.worktrees/
+
+# internal secret wiring (varlock schema) — local only, never public
+/.env.schema
