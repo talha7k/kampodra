@@ -129,6 +129,7 @@ func newBluegreenCommand(d Deps) *cobra.Command {
 	pf.String("platform-key", "", "provision inject route: ssh public key FILE for the platform-image first boot (OPS_SSH_PUBKEY env, else error)")
 	pf.String("platform-user", "", "provision inject route: platform-image ssh user (PLATFORM_SSH_USER env, default ubuntu)")
 	pf.String("to", "", "flip/deploy: target color (blue|green)")
+	pf.Int("drain-timeout", 0, "flip: seconds of grace BEFORE the cutover — in-flight requests through the reserved IP will be cut at the assign; 0 = flip immediately")
 	pf.Bool("force", false, "flip: cut over even when the target app is unhealthy")
 	return cmd
 }
