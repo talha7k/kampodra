@@ -133,7 +133,9 @@ func bgProvisionTemplate(ctx context.Context, pair bgPair, color string) (cloud.
 	if err != nil {
 		return cloud.BGInstance{}, "", err
 	}
-	if !ok || !cloud.IsOCID(subnet, "subnet") {
+	// gcp subnets are plain names/URLs, not ocids — the ocid-shape gate is
+	// oci-leg only (live-fire 2026-10-16: it refused every gcp provision).
+	if !ok || (pair.auth.Provider != "gcp" && !cloud.IsOCID(subnet, "subnet")) {
 		return cloud.BGInstance{}, "", fmt.Errorf("could not resolve %s's subnet id", pair.colorName(other))
 	}
 	return tmpl, subnet, nil
