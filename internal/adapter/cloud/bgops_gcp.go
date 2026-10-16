@@ -297,6 +297,13 @@ func bgReservedIPAssignGCP(ctx context.Context, auth CloudAuth, ripName, targetI
 	if err != nil {
 		return err
 	}
+	// GCP allows at most ONE access config per NIC (live-fire 2026-10-16):
+	// the target's ephemeral IP is deleted by design — it was never the
+	// serving address once the reserved one attaches, and a failed add
+	// leaves the flip's auto-rollback to restore the OLD holder.
+	if err := gcpDetachAccessConfig(ctx, auth, targetInst, zone); err != nil {
+		return err
+	}
 	// add-access-config takes the IP LITERAL, not the address name
 	// (live-fire 2026-10-16: 'kampodra-active' is not a region IP).
 	_, err = RunCloud(ctx, auth, []string{"compute", "instances", "add-access-config",

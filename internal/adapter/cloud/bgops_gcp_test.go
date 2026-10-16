@@ -244,6 +244,10 @@ func TestBGReservedIPAssignGCPOrdering(t *testing.T) {
 		"compute addresses list --filter=name=kampodra-active --format=json(name,address,status,users) --project=p1",
 		"compute instances delete-access-config app-blue --zone=europe-west1-b --project=p1",
 		"compute instances list --filter=name ~ ^app-green$ --format=json(name,zone) --project=p1",
+		// GCP allows at most ONE access config per NIC (live-fire
+		// 2026-10-16): the target's ephemeral IP is deleted by design —
+		// it was never the serving address once the reserved one attaches.
+		"compute instances delete-access-config app-green --zone=europe-west1-b --project=p1",
 		"compute instances add-access-config app-green --zone=europe-west1-b --address=203.0.113.50 --project=p1",
 	}
 	if len(calls) != len(want) {
