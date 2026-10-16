@@ -72,6 +72,13 @@
       "type": "string",
       "description": "App health endpoint behind the proxy (health gate)."
     },
+    "healthPaths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Additional health-gate routes: the deploy probes EVERY listed path (unset = [healthPath]) and each must serve the deployed sha, VM-side and through the public edge. Use when broken routes can live outside the single health endpoint (2026-10-16 incident: the health path answered while every store route was gone)."
+    },
     "proxyHost": {
       "type": "string",
       "description": "Public TLS edge hostname (kamal-proxy)."

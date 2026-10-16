@@ -119,6 +119,7 @@ func TestParseManifestFullSchema(t *testing.T) {
 	  "bucket": "my-backups",
 	  "objectPrefix": "dbs",
 	  "healthPath": "/healthz",
+	  "healthPaths": ["/healthz", "/api/catalog"],
 	  "proxyHost": "app.my.example.com",
 	  "services": ["my-api", "kamal-proxy"],
 	  "imagePrefix": "127.0.0.1:5000/my-api",
@@ -133,18 +134,36 @@ func TestParseManifestFullSchema(t *testing.T) {
 	if mf.Path != filepath.Join("/repo", ManifestFileName) {
 		t.Errorf("path = %q", mf.Path)
 	}
-	f := mf.Fields
+	assertFullSchemaScalars(t, mf.Fields)
+	assertFullSchemaLists(t, mf.Fields)
+}
+
+// assertFullSchemaScalars pins the scalar fields of the full-schema parse
+// (split out to keep the test gocyclo-clean).
+func assertFullSchemaScalars(t *testing.T, f ManifestFields) {
+	t.Helper()
 	if f.Container != "my-api" || f.ShadowSuffix != "-canary" || f.EnvFile != "/etc/my/env" ||
 		f.DataDir != "/srv/tenants" || f.Bucket != "my-backups" || f.ObjectPrefix != "dbs" ||
 		f.HealthPath != "/healthz" || f.ProxyHost != "app.my.example.com" || f.ImagePrefix != "127.0.0.1:5000/my-api" ||
 		f.Dockerfile != "deploy/Containerfile" || f.DeployedShaFile != "/etc/my/deployed-sha" {
 		t.Errorf("scalar fields did not parse: %+v", f)
 	}
+}
+
+// assertFullSchemaLists pins the list fields of the full-schema parse —
+// healthPaths included (the multi-path health gate routes; 2026-10-16
+// incident: the single health path answered while every store route was
+// gone).
+func assertFullSchemaLists(t *testing.T, f ManifestFields) {
+	t.Helper()
 	if len(f.Services) != 2 || f.Services[0] != "my-api" || f.Services[1] != "kamal-proxy" {
 		t.Errorf("services = %v", f.Services)
 	}
 	if len(f.EnvClearKeys) != 2 || f.EnvClearKeys[1] != "PORT" {
 		t.Errorf("envClearKeys = %v", f.EnvClearKeys)
+	}
+	if len(f.HealthPaths) != 2 || f.HealthPaths[0] != "/healthz" || f.HealthPaths[1] != "/api/catalog" {
+		t.Errorf("healthPaths = %v, want [/healthz /api/catalog]", f.HealthPaths)
 	}
 }
 
@@ -212,7 +231,7 @@ func TestManifestKeyHintMatchesStruct(t *testing.T) {
 	}
 	want := strings.Join(keys, ", ")
 	if manifestKeyHint != "container, pairInstancePrefix, shadowSuffix, envFile, dataDir, bucket, "+
-		"objectPrefix, healthPath, proxyHost, services, imagePrefix, port, "+
+		"objectPrefix, healthPath, healthPaths, proxyHost, services, imagePrefix, port, "+
 		"network, shadowProbePort, deployedShaFile, envClearKeys, dockerfile, "+
 		"migrateScript, images, binary, unit" {
 		t.Fatalf("manifestKeyHint const drifted from its own formatting")
@@ -265,6 +284,42 @@ func TestManifestSchemaFileInLockstep(t *testing.T) {
 		if !seen[name] {
 			t.Errorf("schema has property %q with no ManifestFields counterpart", name)
 		}
+	}
+}
+
+// TestConfigHealthPathsEffective: the gate path set — configured
+// healthPaths win WHOLESALE; unset falls back to EXACTLY [healthPath]
+// (byte-identical single-path gate for every existing project). Also
+// pins the two ladder layers that carry the field: kampodra.json and
+// KAMPODRA_HEALTH_PATHS.
+func TestConfigHealthPathsEffective(t *testing.T) {
+	def := LoadDefault()
+	if got := def.HealthPathsEffective(); len(got) != 1 || got[0] != def.HealthPath {
+		t.Errorf("default effective paths = %v, want exactly [healthPath]=[%s]", got, def.HealthPath)
+	}
+	c := def
+	c.HealthPaths = []string{"/one", "/two"}
+	if got := c.HealthPathsEffective(); len(got) != 2 || got[0] != "/one" || got[1] != "/two" {
+		t.Errorf("effective paths = %v, want the configured set", got)
+	}
+
+	mf := &Manifest{Path: "/repo/kampodra.json", Fields: ManifestFields{HealthPaths: []string{"/mf/one", "/mf/two"}}}
+	if got := Resolve(mf, nil, nil).HealthPaths; len(got) != 2 || got[0] != "/mf/one" {
+		t.Errorf("manifest healthPaths lost in the ladder: %v", got)
+	}
+	env := Resolve(nil, nil, func(k string) (string, bool) {
+		if k == "KAMPODRA_HEALTH_PATHS" {
+			return "/env/one /env/two", true
+		}
+		return "", false
+	})
+	if got := env.HealthPaths; len(got) != 2 || got[0] != "/env/one" || got[1] != "/env/two" {
+		t.Errorf("env healthPaths lost in the ladder: %v", got)
+	}
+	// Unset everywhere: HealthPaths stays empty — the effective fallback
+	// (exactly [healthPath]) is what consumers gate on.
+	if got := Resolve(nil, nil, nil).HealthPaths; got != nil {
+		t.Errorf("unset healthPaths = %v, want empty (effective falls back to healthPath)", got)
 	}
 }
 

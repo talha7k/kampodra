@@ -5,6 +5,9 @@
 package command_test
 
 import (
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -52,6 +55,63 @@ func TestBluegreenFlipHappyPath(t *testing.T) {
 	sshJoined := strings.Join(h.sshCalls(t), "\n")
 	if !strings.Contains(sshJoined, "anchor.conf") || !strings.Contains(sshJoined, "kamal-proxy deploy app --host=") {
 		t.Errorf("ACME-first sequence missing guest steps:\n%s", sshJoined)
+	}
+	// Healthy pair: no fallback warning on either stream.
+	if strings.Contains(out+h.stderr.String(), "NO healthy fallback") {
+		t.Errorf("healthy holder must not warn:\nstdout: %s\nstderr: %s", out, h.stderr.String())
+	}
+}
+
+// failNthHealthProbe rewrites the harness ssh shim so the Nth app health
+// probe (`rc-service app status …`) FAILS while the rest answer the
+// HEALTHY knob: the flip gates the TARGET first, then the holder, so
+// N=2 pins target-healthy + holder-unhealthy through the single knob.
+func failNthHealthProbe(t *testing.T, h *bgHarness, n int) {
+	t.Helper()
+	shimPath := filepath.Join(filepath.Dir(h.ociLog), "ssh")
+	raw, err := os.ReadFile(shimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := filepath.Join(filepath.Dir(h.ociLog), "health-probes")
+	guard := "  *\"rc-service app status\"*)\n" +
+		"    c=$(( $(cat '" + count + "' 2>/dev/null || echo 0) + 1 ))\n" +
+		"    printf '%s' \"$c\" > '" + count + "'\n" +
+		"    if [ \"$c\" = \"" + strconv.Itoa(n) + "\" ]; then exit 1; fi\n" +
+		"    exit 0 ;;\n"
+	marker := "case \"$remote\" in\n"
+	patched := strings.Replace(string(raw), marker, marker+guard, 1)
+	if patched == string(raw) {
+		t.Fatal("ssh shim marker not found — the harness shim changed")
+	}
+	if err := os.WriteFile(shimPath, []byte(patched), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestBluegreenFlipWarnsWhenHolderUnhealthy: flipping to a HEALTHY target
+// whose HOLDER (the other color — the post-flip rollback target) is dead
+// must warn that there is NO healthy fallback, and still proceed —
+// warn-only, the operator may be rescuing a dead pair on purpose.
+func TestBluegreenFlipWarnsWhenHolderUnhealthy(t *testing.T) {
+	h := setupBG(t, map[string]string{
+		"reserved":        "ocid1.publicip.r1 203.0.113.50 -",
+		"instances-green": greenRow(),
+		"instances-blue":  blueRow(),
+	}, map[string]string{"HEALTHY": "0", "ADDR_READY": "0", "ACME": "0", "SHA": "abc1234"})
+	failNthHealthProbe(t, h, 2) // probe 1 = target (healthy), probe 2 = holder (dead)
+	if code := h.run(t, "flip", "--to", "green"); code != 0 {
+		t.Fatalf("warn-only path must still flip: exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), "target health: app-green app HEALTHY") {
+		t.Errorf("target must gate HEALTHY before the holder check:\n%s", h.stdout.String())
+	}
+	warn := "WARN: app-blue is UNHEALTHY — after this flip there is NO healthy fallback (rollback would restore a dead instance)"
+	if !strings.Contains(h.stderr.String(), warn) {
+		t.Errorf("dead holder must warn:\nstderr: %s", h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), "FLIPPED:") {
+		t.Errorf("warning must never block the flip:\n%s", h.stdout.String())
 	}
 }
 

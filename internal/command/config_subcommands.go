@@ -39,27 +39,13 @@ func runConfigInit(d Deps, c *cobra.Command) error {
 		return fmt.Errorf("profile '%s' already exists — pass --force to overwrite (re-init also refreshes fields; the cached init field is kept unless you change host/ssh-key)", name)
 	}
 	// Fail closed BEFORE any mutation: moving an existing default to a
-	// different profile via --set-default is a confirmation-worthy move
-	// (the 2026-10-16 incident: an automation's --set-default silently
-	// re-pointed every no-flag command at a test instance).
-	if setDefault && !force && cfg.DefaultProfile != "" && cfg.DefaultProfile != name {
-		return fmt.Errorf("refusing to move the default from %s to %s — pass --force to confirm", cfg.DefaultProfile, name)
-	}
-	if err := state.RejectConfigValue(host, "--host"); err != nil {
+	// different profile via --set-default is a confirmation-worthy move —
+	// refuseDefaultMove owns the wording and the incident rationale.
+	if err := refuseDefaultMove(cfg, name, setDefault, force); err != nil {
 		return err
 	}
-	if err := state.RejectConfigValue(key, "--ssh-key"); err != nil {
+	if err := rejectProfileInputs(host, key, proxy, group); err != nil {
 		return err
-	}
-	if proxy != "" {
-		if err := state.RejectConfigValue(proxy, "--proxy-host"); err != nil {
-			return err
-		}
-	}
-	if group != "" {
-		if err := state.RejectConfigValue(group, "--group"); err != nil {
-			return err
-		}
 	}
 	keyAbs := state.ExpandTilde(key, d.Home)
 	if _, err := os.Stat(keyAbs); err != nil {
@@ -110,6 +96,37 @@ func runConfigInit(d Deps, c *cobra.Command) error {
 
 // sayDefaultBanner announces a default-profile change in no uncertain
 // terms: every command without --profile now targets <name> (<host>).
+// rejectProfileInputs runs the credential-free field guard over every
+// user-supplied profile field (one label per field, empty fields skip).
+func rejectProfileInputs(host, key, proxy, group string) error {
+	for _, f := range []struct{ val, flag string }{
+		{host, "--host"},
+		{key, "--ssh-key"},
+		{proxy, "--proxy-host"},
+		{group, "--group"},
+	} {
+		if f.val == "" {
+			continue
+		}
+		if err := state.RejectConfigValue(f.val, f.flag); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refuseDefaultMove guards the confirmation-worthy default move: moving an
+// EXISTING default to a new profile via --set-default must be explicit
+// (the 2026-10-16 incident: an automation's --set-default silently
+// re-pointed every no-flag command at a test instance). First-profile
+// adoption and same-name re-inits pass through.
+func refuseDefaultMove(cfg *state.Config, name string, setDefault, force bool) error {
+	if !setDefault || force || cfg.DefaultProfile == "" || cfg.DefaultProfile == name {
+		return nil
+	}
+	return fmt.Errorf("refusing to move the default from %s to %s — pass --force to confirm", cfg.DefaultProfile, name)
+}
+
 func sayDefaultBanner(d Deps, name, host string) {
 	fmt.Fprintf(d.Stdout, "[config] DEFAULT PROFILE IS NOW %s (%s) — every command without --profile targets it (override: --profile or KAMPODRA_PROFILE)\n", name, host)
 }

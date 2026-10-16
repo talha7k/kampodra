@@ -54,6 +54,15 @@ func runBluegreenFlip(d Deps, c *cobra.Command) error {
 	if to == "green" {
 		ob = "blue"
 	}
+	// The holder (current traffic holder) is the flip's rollback target:
+	// when it is ALREADY dead, the cutover leaves NO healthy fallback —
+	// a rollback would restore a dead instance. Warn-only (the operator
+	// may be rescuing a dead pair on purpose); the probe mirrors the
+	// target's own health gate below.
+	if brow, err := bgInstance(ctx, pair, ob); err == nil && brow.OCID != "" &&
+		!instanceHealthy(ctx, d, brow.PublicIP, pair.sshKey, pair.container, pair.port, pair.healthPath) {
+		fmt.Fprintf(d.Stderr, "WARN: %s is UNHEALTHY — after this flip there is NO healthy fallback (rollback would restore a dead instance)\n", pair.colorName(ob))
+	}
 	rhost := strings.ReplaceAll(rip.Address, ".", "-") + ".sslip.io"
 	// The anchor-conf stage is oci-leg only: on oci the guest watcher
 	// configures the secondary private IP from anchor.conf; on gcp the

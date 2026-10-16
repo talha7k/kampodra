@@ -34,6 +34,9 @@ const (
 	pipelineSubject  = "feat: deploy pipeline"
 	pipelineImageTag = deployImageRepo + ":" + pipelineVer
 	pipelineProxyCmd = "podman exec kamal-proxy kamal-proxy deploy " + deployContainer
+	// deployInPlaceHint is the banner's in-place downtime note — the mode
+	// line's companion, pinned iff the deploy restarts in place.
+	deployInPlaceHint = "note: in-place restart briefly drops the app — --rolling (default) is zero-downtime; bluegreen gives instance-level HA"
 )
 
 // The remote env/stamp/health paths render from the project defaults —
@@ -91,6 +94,8 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 	fixture("localimageexists", "1")
 	fixture("failon", "")
 	fixture("failonce", "")
+	fixture("healthfail", "")
+	fixture("extra-health-paths", "")
 	fixture("prevsha", "ccc3333\n")
 	fixture("depssha", "")
 	fixture("currentlink", "releases/ccc3333\n")
@@ -122,6 +127,20 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 	smokeMux.HandleFunc("/build-id.txt", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "%s\n", readStub("served-sha"))
 	})
+	// Multi-path health gate tests: the edge answers the extra gate routes
+	// (space-separated in the fixture) with the same sha body as the
+	// primary health path — read PER REQUEST so tests can set the routes
+	// after setup; empty fixture = plain 404 (single-path behavior
+	// untouched: /up, the health path, and /build-id.txt stay specific).
+	smokeMux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+		for _, p := range strings.Fields(readStub("extra-health-paths")) {
+			if req.URL.Path == p {
+				fmt.Fprintf(w, `{"ok":true,"git":"%s"}`, readStub("served-sha"))
+				return
+			}
+		}
+		http.NotFound(w, req)
+	})
 
 	sshShim := "#!/bin/bash\n" +
 
@@ -132,6 +151,8 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 		"failonce=\"$(cat '" + filepath.Join(stubDir, "failonce") + "' 2>/dev/null)\"\n" +
 		"if [ -n \"$failonce\" ] && [[ \"$cmd\" == *\"$failonce\"* ]]; then rm -f '" + filepath.Join(stubDir, "failonce") + "'; exit 1; fi\n" +
 		"if [ -n \"$failon\" ] && [[ \"$cmd\" == *\"$failon\"* ]]; then exit 1; fi\n" +
+		"hpfail=\"$(cat '" + filepath.Join(stubDir, "healthfail") + "' 2>/dev/null)\"\n" +
+		"if [ -n \"$hpfail\" ] && [[ \"$cmd\" == *\"$hpfail\"* ]]; then exit 1; fi\n" +
 		"case \"$cmd\" in\n" +
 		"  *\"cat > \"*) cat > '" + filepath.Join(stubDir, "stdin-capture") + "'; exit 0 ;;\n" +
 		// The byte-verify gate fingerprints the upload; the shim answers
@@ -227,7 +248,7 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 
 	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
 	for _, k := range []string{"KAMPODRA_HOST", "KAMPODRA_SSH_KEY", "KAMPODRA_PROFILE", "KAMPODRA_PROXY_HOST",
-		"KAMPODRA_CONTAINER", "KAMPODRA_IMAGE_PREFIX", "KAMPODRA_HEALTH_PATH", "KAMPODRA_PORT",
+		"KAMPODRA_CONTAINER", "KAMPODRA_IMAGE_PREFIX", "KAMPODRA_HEALTH_PATH", "KAMPODRA_HEALTH_PATHS", "KAMPODRA_PORT",
 		"KAMPODRA_NETWORK", "KAMPODRA_SHADOW_PROBE_PORT", "KAMPODRA_DEPLOYED_SHA_FILE", "KAMPODRA_ENV_FILE"} {
 		t.Setenv(k, "")
 	}
@@ -314,6 +335,13 @@ func TestDeployPipelineHappyPathSequencePinned(t *testing.T) {
 	mustContain(t, inv, "http://127.0.0.1:8080"+pipelineHealthPath)
 	mustContain(t, inv, pipelineProxyCmd+" --host app.example.com --target "+deployContainer+":8080 --tls --health-check-path "+pipelineHealthPath)
 
+	// Banner: the in-place downtime hint rides the mode line, and the
+	// single-path gate header stays byte-identical (healthPaths unset).
+	mustContain(t, stdout.String(), "── mode   in-place image deploy (restart)")
+	mustContain(t, stdout.String(), deployInPlaceHint)
+	mustContain(t, stdout.String(),
+		"health gate (VM-side fetch of "+pipelineHealthPath+" + served-sha verify against "+pipelineVer+")…")
+
 	// ORDER pins: gate before build; both stream legs after the build (save
 	// and load are CONCURRENT — a pipe — so their log lines race and may
 	// legitimately land in either order); retag after the stream; restart
@@ -352,6 +380,35 @@ func TestDeployPipelineHappyPathSequencePinned(t *testing.T) {
 	}
 	mustContain(t, stdout.String(), fmt.Sprintf("Total deployments: 4 · current tag: %s", pipelineVer))
 	mustContain(t, stdout.String(), "done (version: "+pipelineVer+"). instant rollback: kampodra deploy --rollback")
+}
+
+// TestDeployPipelineDowntimeHintIffInPlace: the banner's downtime note
+// names the in-place drop ONLY there — the rolling default (zero-downtime)
+// and a rollback (which restores, never restarts) must stay hint-free.
+func TestDeployPipelineDowntimeHintIffInPlace(t *testing.T) {
+	deps, _, stdout, _ := setupPipeline(t)
+	if code := runDeploy(t, deps, "--host", statusHost); code != 0 {
+		t.Fatalf("rolling default exit = %d, stderr: %s", code, stderrString(t, deps))
+	}
+	out := stdout.String()
+	mustContain(t, out, "── mode   rolling image deploy (zero-downtime shadow + proxy switch)")
+	if strings.Contains(out, deployInPlaceHint) {
+		t.Errorf("rolling default must NOT print the in-place hint:\n%s", out)
+	}
+
+	deps2, stubDir2, stdout2, _ := setupPipeline(t)
+	// The edge + VM gate must serve the RESTORED sha for the rollback to
+	// converge (the harness default serves abc1234).
+	writeFixture(t, stubDir2, "health", `{"ok":true,"git":"ccc3333"}`)
+	writeFixture(t, stubDir2, "served-sha", "ccc3333")
+	if code := runDeploy(t, deps2, "--host", statusHost, "--rollback", "ccc3333"); code != 0 {
+		t.Fatalf("rollback exit = %d, stderr: %s", code, stderrString(t, deps2))
+	}
+	out2 := stdout2.String()
+	mustContain(t, out2, "── mode   rollback — restoring the previous artifact")
+	if strings.Contains(out2, deployInPlaceHint) {
+		t.Errorf("rollback must NOT print the in-place hint:\n%s", out2)
+	}
 }
 
 func TestDeployPipelineVersionModeVMHasTagSkipsStream(t *testing.T) {

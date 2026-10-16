@@ -126,6 +126,13 @@ func (r *deployRun) banner() {
 	r.say("── target %s · profile %s · container %s · port %s",
 		r.target.HostSpec.Host, displayProfile(r.target.ProfileName), pj.Container, pj.Port)
 	r.say("── mode   %s", mode)
+	// The in-place restart is the OPT-IN downtime mode: say so once, where
+	// the operator reads the strategy. Never on rolling (zero-downtime by
+	// definition), binary/static (no restart), or rollback (restores, does
+	// not restart).
+	if !r.opts.rolling && r.opts.binary == "" && r.mode != "rollback" {
+		r.say("note: in-place restart briefly drops the app — --rolling (default) is zero-downtime; bluegreen gives instance-level HA")
+	}
 	// WHICH tree is shipping: a wrong-checkout deploy (worktree vs shared
 	// checkout) otherwise only surfaces as a confusing health-gate failure
 	// long after the fact (2026-10-16 complaint).

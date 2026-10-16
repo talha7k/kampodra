@@ -24,6 +24,7 @@ type Config struct {
 	Bucket             string   `json:"bucket"`             // object-storage backup bucket
 	ObjectPrefix       string   `json:"objectPrefix"`       // backup object prefix
 	HealthPath         string   `json:"healthPath"`         // app health endpoint behind the proxy
+	HealthPaths        []string `json:"healthPaths"`        // EXTRA health-gate routes; empty = [HealthPath]
 	ProxyHost          string   `json:"proxyHost"`          // public TLS edge hostname
 	Services           []string `json:"services"`           // the service roll call
 	ImagePrefix        string   `json:"imagePrefix"`        // VM-local registry path for deploy images
@@ -118,6 +119,17 @@ func (c Config) SidecarImageRef(name string) string {
 	return c.ImagePrefix + "-" + name
 }
 
+// HealthPathsEffective is the health-gate path set: the configured
+// HealthPaths wholesale (kampodra.json healthPaths), else EXACTLY
+// [HealthPath] — the unset case keeps every existing single-path project
+// byte-identical. Consumers (the deploy gate + smoke) iterate the result.
+func (c Config) HealthPathsEffective() []string {
+	if len(c.HealthPaths) > 0 {
+		return c.HealthPaths
+	}
+	return []string{c.HealthPath}
+}
+
 // PairInstancePrefixEffective is the blue/green pair's instance
 // display-name prefix: the configured PairInstancePrefix, else the
 // container (the neutral default). Legacy estates whose instances predate
@@ -181,6 +193,7 @@ var fieldBindings = []fieldBinding{
 	{"bucket", func(c Config) string { return c.Bucket }, func(c *Config, v string) { c.Bucket = v }, nil},
 	{"objectPrefix", func(c Config) string { return c.ObjectPrefix }, func(c *Config, v string) { c.ObjectPrefix = v }, nil},
 	{"healthPath", func(c Config) string { return c.HealthPath }, func(c *Config, v string) { c.HealthPath = v }, nil},
+	{"healthPaths", func(c Config) string { return strings.Join(c.HealthPathsEffective(), " ") }, func(c *Config, v string) { c.HealthPaths = strings.Fields(v) }, func(c Config) []string { return c.HealthPaths }},
 	{"proxyHost", func(c Config) string { return c.ProxyHost }, func(c *Config, v string) { c.ProxyHost = v }, nil},
 	{"services", func(c Config) string { return strings.Join(c.Services, " ") }, func(c *Config, v string) { c.Services = strings.Fields(v) }, func(c Config) []string { return c.Services }},
 	{"imagePrefix", func(c Config) string { return c.ImagePrefix }, func(c *Config, v string) { c.ImagePrefix = v }, nil},
@@ -213,6 +226,7 @@ var envBindingKeys = map[string]string{
 	"bucket":             "KAMPODRA_BUCKET",
 	"objectPrefix":       "KAMPODRA_OBJECT_PREFIX",
 	"healthPath":         "KAMPODRA_HEALTH_PATH",
+	"healthPaths":        "KAMPODRA_HEALTH_PATHS",
 	"proxyHost":          "KAMPODRA_PROXY_HOST",
 	"services":           "KAMPODRA_SERVICES",
 	"imagePrefix":        "KAMPODRA_IMAGE_PREFIX",
@@ -396,6 +410,8 @@ func manifestListField(o ManifestFields, key string) []string {
 		return o.Services
 	case "envClearKeys":
 		return o.EnvClearKeys
+	case "healthPaths":
+		return o.HealthPaths
 	}
 	return nil
 }
