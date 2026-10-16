@@ -11,7 +11,7 @@ import (
 // StrictHostKeyChecking=accept-new (the shell's SSH_ARGS in vm-prepare.sh).
 func TestSSHArgsAcceptNewHostKey(t *testing.T) {
 	got := SSHArgs(HostSpec{Host: "root@203.0.113.9", AcceptNewHostKey: true}, "true")
-	want := "-o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=accept-new root@203.0.113.9 true"
+	want := "-o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=accept-new root@203.0.113.9 true"
 	if strings.Join(got, " ") != want {
 		t.Errorf("SSHArgs() = %v, want %q", got, want)
 	}

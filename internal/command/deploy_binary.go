@@ -254,28 +254,48 @@ func (r *deployRun) pushArtifact() error {
 		}
 	}
 	r.artifactSHA256 = localSum
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		f.Close()
-		return fmt.Errorf("cannot rewind the artifact: %w", err)
-	}
 	tmp := filepath.Join(bin.Dir, "."+bin.Entry+".new")
-	if _, err := r.d.Runner.RunWithStdin(r.ctx, r.target.HostSpec, "umask 077; cat > "+tmp, f); err != nil {
-		f.Close()
-		return fmt.Errorf("artifact upload failed: %w", err)
+	// Upload with ONE retry, then byte-verify: long stdin streams die
+	// mid-transfer (2026-10-16: three truncated/corrupt 26.8MB pushes in a
+	// row while small commands passed — a NAT drop the keepalives now
+	// mitigate). Every failed attempt cleans its partial .new (no 11MB
+	// litter beside the run path), and the fingerprint gate re-verifies
+	// each attempt — a corrupt upload can never reach the swap.
+	var lastErr error
+	verified := false
+	for attempt := 1; attempt <= 2 && !verified; attempt++ {
+		if lastErr != nil {
+			r.say("upload attempt %d failed — retrying: %v", attempt-1, lastErr)
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			f.Close()
+			return fmt.Errorf("cannot rewind the artifact: %w", err)
+		}
+		if _, err := r.d.Runner.RunWithStdin(r.ctx, r.target.HostSpec, "umask 077; cat > "+tmp, f); err != nil {
+			lastErr = fmt.Errorf("artifact upload failed: %w", err)
+			_, _ = r.d.Runner.Run(r.ctx, r.target.HostSpec, "rm -f "+tmp)
+			continue
+		}
+		// Byte-verify the VM copy BEFORE the swap: what landed must equal
+		// what was read — a drifting host artifact can never masquerade as
+		// this push.
+		sumOut, err := r.d.Runner.Run(r.ctx, r.target.HostSpec, "sha256sum "+tmp)
+		if err != nil {
+			lastErr = fmt.Errorf("cannot fingerprint the uploaded artifact: %w", err)
+			_, _ = r.d.Runner.Run(r.ctx, r.target.HostSpec, "rm -f "+tmp)
+			continue
+		}
+		remoteSum := strings.Fields(sumOut)
+		if len(remoteSum) == 0 || remoteSum[0] != localSum {
+			lastErr = fmt.Errorf("uploaded artifact DOES NOT match the local bytes (local sha256 %s, VM reports %s)", localSum, strings.TrimSpace(sumOut))
+			_, _ = r.d.Runner.Run(r.ctx, r.target.HostSpec, "rm -f "+tmp)
+			continue
+		}
+		verified = true
 	}
 	f.Close()
-	// Byte-verify the VM copy BEFORE the swap: what landed must equal what
-	// was read — a drifting host artifact (the mystery probe caught: the
-	// on-disk binary was an OLD worktree commit while the process served
-	// the fresh env-stamped sha) can never masquerade as this push.
-	sumOut, err := r.d.Runner.Run(r.ctx, r.target.HostSpec, "sha256sum "+tmp)
-	if err != nil {
-		return fmt.Errorf("cannot fingerprint the uploaded artifact: %w", err)
-	}
-	remoteSum := strings.Fields(sumOut)
-	if len(remoteSum) == 0 || remoteSum[0] != localSum {
-		return fmt.Errorf("uploaded artifact DOES NOT match the local bytes (local sha256 %s, VM reports %s) — refusing the swap; the host artifact is unreliable",
-			localSum, strings.TrimSpace(sumOut))
+	if !verified {
+		return fmt.Errorf("%w — refusing the swap; the host artifact is unreliable (one retry already attempted — check the VM's network/ssh)", lastErr)
 	}
 	r.say("artifact %d bytes, sha256 %s… verified on VM", r.artifactBytes(localSum), localSum[:12])
 	return r.binarySwap(tmp, filepath.Join(bin.Dir, bin.Entry), "chmod 755 "+filepath.Join(bin.Dir, bin.Entry))
