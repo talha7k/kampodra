@@ -132,11 +132,12 @@ func newDeployPruneSub(d Deps, resolve func(*cobra.Command, string) (Target, err
 }
 
 // newDeployLogsSub is deploy's `logs` subcommand: tail the running api
-// container's logs; --follow streams until ctrl-c.
+// container's logs; --since <when> widens the window (Go duration or
+// RFC3339, verbatim); --follow streams until ctrl-c.
 func newDeployLogsSub(d Deps, resolve func(*cobra.Command, string) (Target, error)) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "logs",
-		Short: "tail the running api container's logs (--lines N); --follow streams until ctrl-c",
+		Short: "tail the running api container's logs (--lines N, --since <when>); --follow streams until ctrl-c",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			target, err := resolve(c, "")
@@ -150,11 +151,13 @@ func newDeployLogsSub(d Deps, resolve func(*cobra.Command, string) (Target, erro
 			if !nonZeroIntRe.MatchString(lines) {
 				return fmt.Errorf("--lines must be a positive integer (got: %s)", lines)
 			}
+			since, _ := c.Flags().GetString("since")
 			follow, _ := c.Flags().GetBool("follow")
-			return runDeployLogs(d, c, target, lines, follow)
+			return runDeployLogs(d, c, target, lines, since, follow)
 		},
 	}
 	cmd.Flags().String("lines", deployLogLines, "number of lines to tail")
+	cmd.Flags().String("since", "", "show logs since this moment: Go duration (2h) or RFC3339 timestamp — passed verbatim to podman logs; catches boot-first lines a bare --tail cuts off")
 	cmd.Flags().Bool("follow", false, "stream the logs until ctrl-c (clean exit)")
 	return cmd
 }
@@ -331,12 +334,19 @@ func runDeployPrune(d Deps, ctx context.Context, target Target, keepN int, dryRu
 }
 
 // runDeployLogs ports the `deploy logs` case; --follow streams with a
-// clean-exit ctrl-c contract (signal-cancelled context, exit 0).
-func runDeployLogs(d Deps, cmd *cobra.Command, target Target, lines string, follow bool) error {
+// clean-exit ctrl-c contract (signal-cancelled context, exit 0). --since
+// passes through verbatim (Go duration or RFC3339): a startup WARN is the
+// FIRST line of a boot, so --tail N alone cuts it off and post-restart
+// checks look clean while the boot was dirty.
+func runDeployLogs(d Deps, cmd *cobra.Command, target Target, lines, since string, follow bool) error {
 	host := target.HostSpec.Host
-	verb, tail := "", fmt.Sprintf("--tail %s %s", lines, target.Project.Container)
+	verb := ""
+	if since != "" {
+		verb = fmt.Sprintf("--since %s ", since)
+	}
+	tail := fmt.Sprintf("--tail %s %s", lines, target.Project.Container)
 	if follow {
-		verb = "-f "
+		verb += "-f "
 		fmt.Fprintf(d.Stdout, "[deploy logs] streaming %s on %s (last %s lines) — ctrl-c to stop\n", target.Project.Container, host, lines)
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()

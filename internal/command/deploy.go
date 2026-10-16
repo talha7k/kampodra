@@ -36,7 +36,7 @@ const deployHelp = `Usage:
   kampodra deploy converge [--host root@<ip>] [--profile <name>] [<sha7>]   # finish an interrupted --rolling
   kampodra deploy list   [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--all-profiles] [--group <g>]
   kampodra deploy prune  [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--keep N] [--dry-run]
-  kampodra deploy logs   [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--lines N] [--follow]
+  kampodra deploy logs   [--host root@<ip>] [--profile <name>] [--ssh-key <path>] [--lines N] [--since <when>] [--follow]
   kampodra deploy restart [--host root@<ip>] [--profile <name>] [--ssh-key <path>]
   kampodra deploy shell  [--host root@<ip>] [--profile <name>] [exec -- <cmd>...]
 
@@ -81,8 +81,10 @@ KAMPODRA_HOST; --ssh-key | profile sshKey | KAMPODRA_SSH_KEY | ssh-agent /
   prune    reclaim VM disk: removes OLD sha-tagged deploy images. ALWAYS kept:
            the currently-running image, ts-rollback, and the newest --keep N
            (default 2). --dry-run prints the exact podman rmi commands.
-  logs     tail the running api container's logs (--lines N); --follow streams
-           until ctrl-c (clean exit).
+   logs     tail the running api container's logs (--lines N; --since <when>:
+            Go duration like 2h, or RFC3339 timestamp — sees the whole boot
+            window, not just the last N lines); --follow streams until
+            ctrl-c (clean exit).
   restart  restart the api service (init-aware: rc-service on Alpine, systemctl
            on systemd hosts).
   shell    interactive sh inside the running api container; ` + "`exec -- <cmd>`" + `
