@@ -16,8 +16,9 @@ import (
 // project shape (project.Config — naming never referenced directly).
 type Target struct {
 	HostSpec    transport.HostSpec
-	ProxyHost   string
-	ProfileName string
+	ProxyHost       string
+	ProxyHostSource string // which ladder layer supplied proxyHost (smoke failures name it)
+	ProfileName     string
 	ProfileInit string // cached init verdict from the profile (probe skip)
 	Project     project.Config
 	Cloud       json.RawMessage                   // raw profile "cloud" block (provider-CLI auth overrides)
@@ -51,12 +52,22 @@ func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, man
 		}
 	}
 
-	pc := project.Resolve(manifest, profile.Project, lookup)
+	pc, traces := project.ResolveTraced(nil, lookup, profile.Project, manifest)
 	proxy := pc.ProxyHost
+	proxySource := ""
+	for _, t := range traces {
+		if t.Field == "proxyHost" {
+			proxySource = string(t.Source)
+			if t.Origin != "" {
+				proxySource += " (" + t.Origin + ")"
+			}
+		}
+	}
 	if profile.ProxyHost != "" {
 		// The legacy flat field predates the project block; explicit config
 		// wins over the default either way.
 		proxy = profile.ProxyHost
+		proxySource = "profile (legacy flat field)"
 	}
 
 	host := firstNonEmpty(flagHost, profile.Host, envValue(lookup, "KAMPODRA_HOST"))
@@ -67,9 +78,10 @@ func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, man
 		binaryBlocks = manifest.Fields.Binary
 	}
 	return Target{
-		HostSpec:    transport.HostSpec{Host: host, SSHKey: key},
-		ProxyHost:   proxy,
-		ProfileName: name,
+		HostSpec:        transport.HostSpec{Host: host, SSHKey: key},
+		ProxyHost:       proxy,
+		ProxyHostSource: proxySource,
+		ProfileName:     name,
 		ProfileInit: profile.Init,
 		Project:     pc,
 		Cloud:       profile.Cloud,

@@ -49,7 +49,12 @@ func TestDeployPipelineSmokeMismatchDies(t *testing.T) {
 	if code := runDeploy(t, deps, "--host", statusHost, "--in-place"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	mustContain(t, stderr.String(), "served git sha mismatch")
+	mustContain(t, stderr.String(), "public smoke: served git sha")
+	// The failure must name WHERE proxyHost came from (the 2026-10-16
+	// incident: a stale profile project block shadowed the fixed manifest)
+	// and reassure that the VM-side app is fine.
+	mustContain(t, stderr.String(), "proxyHost source:")
+	mustContain(t, stderr.String(), "the VM health gate PASSED")
 }
 
 func TestDeployPipelineSkipSmoke(t *testing.T) {
