@@ -15,6 +15,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -144,7 +146,7 @@ func newVMPrepareCommand(d Deps) *cobra.Command {
 // statics are EVERY static-kind block's mounts/envs (a SPA dist shares the
 // unit with the exec-kind backend; the pinned block's own dir is skipped —
 // its mount already rode in via BinaryMount).
-func namingFromProject(pj project.Config, bin *project.ManifestBinary, statics []project.ManifestBinary) vmbootstrap.Naming {
+func namingFromProject(pj project.Config, bin *project.ManifestBinary, statics []project.ManifestBinary, unitEnvs map[string]string) vmbootstrap.Naming {
 	envDir := pj.EnvFile
 	if i := strings.LastIndex(pj.EnvFile, "/"); i > 0 {
 		envDir = pj.EnvFile[:i]
@@ -184,7 +186,60 @@ func namingFromProject(pj project.Config, bin *project.ManifestBinary, statics [
 			n.StaticEnvs = append(n.StaticEnvs, env)
 		}
 	}
+	// Repo-owned unit envs (manifest unit.env) render LAST: -e is
+	// later-wins in podman, and a declared repo key outranks a renderer
+	// clear-env default.
+	keys := make([]string, 0, len(unitEnvs))
+	for k := range unitEnvs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		n.UnitEnvs = append(n.UnitEnvs, "-e "+k+"="+unitEnvs[k])
+	}
 	return n
+}
+
+// DroppedUnitEnvKeys diffs the -e keys of the unit ON the VM against the
+// keys the fresh render carries. The live-fire 2026-10-16 class: a
+// re-render silently dropped -e LIBSQL_TENANT_DIR (owned by the old
+// ansible template, adopted by nobody) — the store never opened, routes
+// vanished, and shallow health checks kept the smoke green. A dropped key is a
+// fail-closed event naming the migration paths.
+func DroppedUnitEnvKeys(oldUnit, newUnit string) []string {
+	re := regexp.MustCompile(`-e ([A-Za-z_][A-Za-z0-9_]*)=`)
+	old := map[string]bool{}
+	for _, m := range re.FindAllStringSubmatch(oldUnit, -1) {
+		old[m[1]] = true
+	}
+	fresh := map[string]bool{}
+	for _, m := range re.FindAllStringSubmatch(newUnit, -1) {
+		fresh[m[1]] = true
+	}
+	var dropped []string
+	for k := range old {
+		if !fresh[k] {
+			dropped = append(dropped, k)
+		}
+	}
+	sort.Strings(dropped)
+	return dropped
+}
+
+// guardUnitEnvDrop refuses a unit upload whose render loses -e keys the
+// CURRENT unit on the VM carries (diff of both renders' -e keys). Unreadable
+// old unit = fresh VM, nothing to drop. Call it immediately before the app
+// unit upload, with the SAME path + render.
+func (p *vmProvisioner) guardUnitEnvDrop(unitPath, newUnit string) error {
+	old, err := p.d.Runner.Run(p.ctx, p.target.HostSpec, "cat "+unitPath+" 2>/dev/null || true")
+	if err != nil {
+		return nil // fresh VM — nothing on disk to drop
+	}
+	dropped := DroppedUnitEnvKeys(old, newUnit)
+	if len(dropped) == 0 {
+		return nil
+	}
+	return fmt.Errorf("re-rendering %s would DROP these -e keys the current unit carries: %s — migrate them into kampodra.json's \"unit\": {\"env\": {...}} or the env file, then re-run (a dropped store/route env silently disables app surfaces while /api health checks stay green)", unitPath, strings.Join(dropped, ", "))
 }
 
 // staticBlocks collects the repo's static-kind blocks in a stable order
@@ -246,7 +301,8 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 			return err
 		}
 	}
-	p := &vmProvisioner{ctx: ctx, d: d, target: target, n: namingFromProject(target.Project, bin, staticBlocks(target.Binary))}
+		p := &vmProvisioner{ctx: ctx, d: d, target: target,
+		n: namingFromProject(target.Project, bin, staticBlocks(target.Binary), target.UnitEnvs)}
 
 	// --- 0. connectivity ------------------------------------------------------
 	p.say("waiting for ssh on %s…", target.HostSpec.Host)

@@ -57,6 +57,7 @@ type Naming struct {
 	// ADDITION to the pinned block's mount/override.
 	StaticMounts []string // each "-v <dir>:<dir>" (already-rendered mount args)
 	StaticEnvs   []string // each "-e NAME=<dir>" (the app's read-through env)
+	UnitEnvs     []string // each "-e K=V" (repo-owned via the manifest's unit.env)
 }
 
 // RegistriesConfPath / SysctlConfPath / SSHDHardeningPath / AnchorScriptPath

@@ -91,6 +91,9 @@ func (n Naming) runArgs() string {
 	for _, e := range n.StaticEnvs {
 		args += " " + e
 	}
+	for _, e := range n.UnitEnvs {
+		args += " " + e
+	}
 	args += " --env-file " + n.EnvFile + " " + n.ImageRef
 	if n.BinaryCmdOverride != "" {
 		args += " " + n.BinaryCmdOverride

@@ -69,6 +69,9 @@ func (p *vmProvisioner) ubuntuSystemdUnits() error {
 	}
 	p.say("installing systemd units %s + %s (podman run under Restart=always)…", n.Container, vmbootstrap.ProxyContainer)
 	apiUnit := vmbootstrap.APIUnitPath(n)
+	if err := p.guardUnitEnvDrop(apiUnit, vmbootstrap.RenderAPIUnit(n)); err != nil {
+		return err
+	}
 	if err := p.upload(apiUnit, vmbootstrap.RenderAPIUnit(n)); err != nil {
 		return err
 	}

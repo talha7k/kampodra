@@ -118,6 +118,18 @@
       "type": "string",
       "description": "Repo-relative path of the app's db migrate script (migrate runs it on the VM)."
     },
+    "unit": {
+      "type": "object",
+      "description": "Repo-owned app-unit surface. `env` renders as -e K=V into the app unit (later-wins over renderer clear-env defaults) \u2014 the committed home for read-through envs like LIBSQL_TENANT_DIR. Secrets stay in the env file.",
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "type": "object",
+          "description": "Each key renders as -e KEY=<value> on the app container's podman run.",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
     "binary": {
       "type": "object",
       "description": "Deploy --binary artifacts, keyed by name (a repo ships one per stack \u2014 e.g. the Go api AND the TS api during a cutover). `deploy --binary <name>` fast-pushes one: local build \u2192 atomic remote swap \u2192 restart \u2192 the same identity gates. The app unit bind-mounts each declared dir and execs the block's entry; vm-prepare --binary pins which one a VM serves. Code-only: dependency changes redeploy the image.",

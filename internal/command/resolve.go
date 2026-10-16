@@ -22,6 +22,7 @@ type Target struct {
 	ProfileInit     string // cached init verdict from the profile (probe skip)
 	Project         project.Config
 	Cloud           json.RawMessage                   // raw profile "cloud" block (provider-CLI auth overrides)
+	UnitEnvs        map[string]string                 // repo-owned unit -e flags (kampodra.json "unit"."env")
 	Binary          map[string]project.ManifestBinary // the repo's deploy --binary artifacts (kampodra.json "binary")
 }
 
@@ -74,8 +75,12 @@ func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, man
 	key := firstNonEmpty(flagKey, profile.SSHKey, envValue(lookup, "KAMPODRA_SSH_KEY"))
 
 	binaryBlocks := map[string]project.ManifestBinary{}
+	unitEnvs := map[string]string{}
 	if manifest != nil {
 		binaryBlocks = manifest.Fields.Binary
+		if manifest.Fields.Unit != nil {
+			unitEnvs = manifest.Fields.Unit.Env
+		}
 	}
 	return Target{
 		HostSpec:        transport.HostSpec{Host: host, SSHKey: key},
@@ -85,6 +90,7 @@ func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, man
 		ProfileInit:     profile.Init,
 		Project:         pc,
 		Cloud:           profile.Cloud,
+		UnitEnvs:        unitEnvs,
 		Binary:          binaryBlocks,
 	}, nil
 }
