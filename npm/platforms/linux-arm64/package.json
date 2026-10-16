@@ -1,6 +1,6 @@
 {
   "name": "@talha7k/linux-arm64",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "kampodra native binary for linux-arm64 (placeholder — make release fills bin/kampodra from dist/)",
   "license": "AGPL-3.0",
   "os": [

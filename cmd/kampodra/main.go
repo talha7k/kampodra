@@ -12,7 +12,7 @@ import (
 
 // version is stamped at release time via -ldflags "-X main.version=…"; the
 // npm package.json version is pinned to the same value.
-var version = "0.8.0"
+var version = "0.8.1"
 
 func main() {
 	os.Exit(command.Execute(version, command.Deps{}, os.Args[1:]))
