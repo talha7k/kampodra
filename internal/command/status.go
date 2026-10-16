@@ -90,6 +90,7 @@ func runStatus(d Deps, cmd *cobra.Command) error {
 		if err != nil {
 			return err
 		}
+		sayProvenance(d, "status", target)
 		if name != "" {
 			fmt.Fprintf(d.Stdout, "== profile: %s ==\n", name)
 		}

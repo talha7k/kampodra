@@ -38,6 +38,13 @@ func runConfigInit(d Deps, c *cobra.Command) error {
 	if _, exists := cfg.Profiles[name]; exists && !force {
 		return fmt.Errorf("profile '%s' already exists — pass --force to overwrite (re-init also refreshes fields; the cached init field is kept unless you change host/ssh-key)", name)
 	}
+	// Fail closed BEFORE any mutation: moving an existing default to a
+	// different profile via --set-default is a confirmation-worthy move
+	// (the 2026-10-16 incident: an automation's --set-default silently
+	// re-pointed every no-flag command at a test instance).
+	if setDefault && !force && cfg.DefaultProfile != "" && cfg.DefaultProfile != name {
+		return fmt.Errorf("refusing to move the default from %s to %s — pass --force to confirm", cfg.DefaultProfile, name)
+	}
 	if err := state.RejectConfigValue(host, "--host"); err != nil {
 		return err
 	}
@@ -78,6 +85,7 @@ func runConfigInit(d Deps, c *cobra.Command) error {
 		Project:   prev.Project,
 		Cloud:     prev.Cloud,
 	}
+	oldDefault := cfg.DefaultProfile
 	if setDefault || cfg.DefaultProfile == "" {
 		cfg.DefaultProfile = name
 	}
@@ -91,7 +99,19 @@ func runConfigInit(d Deps, c *cobra.Command) error {
 		fmt.Fprintf(d.Stdout, "[config] saved profile '%s' -> %s (0600)\n", name, path)
 		fmt.Fprintf(d.Stdout, "[config] make default later: kampodra config set-default %s\n", name)
 	}
+	// The first-profile auto-adopt and a confirmed --set-default move are
+	// LOUD: the banner rides after the saved line (the incident's quiet
+	// "(0600) — default" footnote is exactly what failed).
+	if cfg.DefaultProfile == name && oldDefault != name {
+		sayDefaultBanner(d, name, host)
+	}
 	return nil
+}
+
+// sayDefaultBanner announces a default-profile change in no uncertain
+// terms: every command without --profile now targets <name> (<host>).
+func sayDefaultBanner(d Deps, name, host string) {
+	fmt.Fprintf(d.Stdout, "[config] DEFAULT PROFILE IS NOW %s (%s) — every command without --profile targets it (override: --profile or KAMPODRA_PROFILE)\n", name, host)
 }
 
 func runConfigList(d Deps, c *cobra.Command) error {
@@ -198,11 +218,15 @@ func runConfigSetDefault(d Deps, args []string) error {
 	if _, err := cfg.Profile(target); err != nil {
 		return fmt.Errorf("unknown profile '%s' — known: %s", target, strings.Join(sortedProfileNames(cfg), " "))
 	}
+	oldDefault := cfg.DefaultProfile
 	cfg.DefaultProfile = target
 	if err := state.SaveConfig(d.Home, cfg); err != nil {
 		return err
 	}
 	fmt.Fprintf(d.Stdout, "[config] default profile: %s\n", target)
+	if target != oldDefault {
+		sayDefaultBanner(d, target, cfg.Profiles[target].Host)
+	}
 	return nil
 }
 
@@ -243,6 +267,7 @@ func runConfigRemove(d Deps, c *cobra.Command, args []string) error {
 	fmt.Fprintf(d.Stdout, "[config] removed profile '%s' (%d remaining)\n", target, len(cfg.Profiles))
 	if cfg.DefaultProfile != "" && cfg.DefaultProfile != target {
 		fmt.Fprintf(d.Stdout, "[config] default profile is now: %s\n", cfg.DefaultProfile)
+		sayDefaultBanner(d, cfg.DefaultProfile, cfg.Profiles[cfg.DefaultProfile].Host)
 	}
 	return nil
 }
