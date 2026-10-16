@@ -230,7 +230,8 @@ func TestBluegreenDeployBinaryHappySequencePinned(t *testing.T) {
 	p1 := indexOf(out, "bg-deploy[1/3]: building + pushing to app-green (198.51.100.7)…")
 	p2 := indexOf(out, "bg-deploy[2/3]: health gate on the standby…")
 	p3 := indexOf(out, "bg-deploy[3/3]: flip → green (health-gated)…")
-	if !(p1 < p2 && p2 < p3 && p1 >= 0) {
+	ordered := p1 >= 0 && p1 < p2 && p2 < p3
+	if !ordered {
 		t.Errorf("phase banners missing or out of order (1=%d 2=%d 3=%d):\n%s", p1, p2, p3, out)
 	}
 	if !strings.Contains(out, "FLIPPED:") {
