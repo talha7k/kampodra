@@ -15,14 +15,14 @@ import (
 // edge hostname is, the profile that contributed values, and the resolved
 // project shape (project.Config — naming never referenced directly).
 type Target struct {
-	HostSpec    transport.HostSpec
+	HostSpec        transport.HostSpec
 	ProxyHost       string
 	ProxyHostSource string // which ladder layer supplied proxyHost (smoke failures name it)
 	ProfileName     string
-	ProfileInit string // cached init verdict from the profile (probe skip)
-	Project     project.Config
-	Cloud       json.RawMessage                   // raw profile "cloud" block (provider-CLI auth overrides)
-	Binary      map[string]project.ManifestBinary // the repo's deploy --binary artifacts (kampodra.json "binary")
+	ProfileInit     string // cached init verdict from the profile (probe skip)
+	Project         project.Config
+	Cloud           json.RawMessage                   // raw profile "cloud" block (provider-CLI auth overrides)
+	Binary          map[string]project.ManifestBinary // the repo's deploy --binary artifacts (kampodra.json "binary")
 }
 
 // ResolveTarget is the pure profile_resolve port shared by every host-aware
@@ -82,10 +82,10 @@ func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, man
 		ProxyHost:       proxy,
 		ProxyHostSource: proxySource,
 		ProfileName:     name,
-		ProfileInit: profile.Init,
-		Project:     pc,
-		Cloud:       profile.Cloud,
-		Binary:      binaryBlocks,
+		ProfileInit:     profile.Init,
+		Project:         pc,
+		Cloud:           profile.Cloud,
+		Binary:          binaryBlocks,
 	}, nil
 }
 
