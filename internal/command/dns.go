@@ -241,6 +241,7 @@ func runDNSRecords(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	sayProvenance(d, "dns", target)
 	dc := &dnsContext{auth: cloudAuthFor(d, target)}
 	if err := dnsNeedProvider(d, dc.auth); err != nil {
 		return err
@@ -267,6 +268,7 @@ func runDNSAdd(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	sayProvenance(d, "dns", target)
 	dc, name, rtype, value, ttl, err := dnsPrepare(d, c, c.Context(), target, true)
 	if err != nil {
 		return err
@@ -294,6 +296,7 @@ func runDNSRm(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	sayProvenance(d, "dns", target)
 	dc, name, rtype, value, _, err := dnsPrepare(d, c, c.Context(), target, true)
 	if err != nil {
 		return err

@@ -20,6 +20,7 @@ func runBackupList(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	sayProvenance(d, "backup", target)
 	bucket := backupBucket(c, target.Project.Bucket)
 	auth := cloudAuthFor(d, target)
 	if err := cloud.CheckProvider(auth); err != nil {
@@ -71,6 +72,7 @@ func runBackupDownload(d Deps, c *cobra.Command, obj string) error {
 	if err != nil {
 		return err
 	}
+	sayProvenance(d, "backup", target)
 	bucket := backupBucket(c, target.Project.Bucket)
 	auth := cloudAuthFor(d, target)
 	if err := cloud.CheckProvider(auth); err != nil {
@@ -158,6 +160,7 @@ func runBackupVerify(d Deps, c *cobra.Command, obj string) error {
 	if err != nil {
 		return err
 	}
+	sayProvenance(d, "backup", target)
 	if err := requireHost(target); err != nil {
 		return fmt.Errorf("verify needs a VM target: --host root@<ip>, --profile <name>, KAMPODRA_PROFILE, config defaultProfile, or KAMPODRA_HOST")
 	}
@@ -215,6 +218,7 @@ func runBackupRestorePlan(d Deps, c *cobra.Command, obj string) error {
 	if err != nil {
 		return err
 	}
+	sayProvenance(d, "backup", target)
 	bucket := backupBucket(c, target.Project.Bucket)
 	// PRINT-ONLY by design: no oci, no ssh, no mutation — the plan is
 	// documentation bound to this object, never a runner.

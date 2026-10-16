@@ -139,6 +139,7 @@ func runMetrics(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	sayProvenance(d, "metrics", target)
 	if err := requireHost(target); err != nil {
 		return fmt.Errorf("target required: --host root@<ip>, --profile <name>, KAMPODRA_PROFILE, config defaultProfile, or KAMPODRA_HOST=root@<ip>")
 	}

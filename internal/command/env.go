@@ -85,6 +85,7 @@ func newEnvListSub(d Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			sayProvenance(d, "env", target)
 			if err := requireHost(target); err != nil {
 				return err
 			}
@@ -124,6 +125,7 @@ func newEnvPushSub(d Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			sayProvenance(d, "env", target)
 			if err := requireHost(target); err != nil {
 				return err
 			}
@@ -161,6 +163,9 @@ func newEnvPullSub(d Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// stdout IS the payload here (`env pull | wc -l`), so the
+			// provenance line rides stderr with the masked summary.
+			sayProvenance(Deps{Stdout: d.Stderr}, "env", target)
 			if err := requireHost(target); err != nil {
 				return err
 			}
@@ -239,6 +244,7 @@ func newEnvDiffSub(d Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			sayProvenance(d, "env", target)
 			if err := requireHost(target); err != nil {
 				return err
 			}
@@ -327,6 +333,7 @@ func runEnvFromSchema(d Deps, c *cobra.Command) error {
 		if err := requireHost(target); err != nil {
 			return err
 		}
+		sayProvenance(d, "env", target)
 	}
 
 	fmt.Fprintf(d.Stdout, "[env] generating from %s in %s (committed schema; secrets resolve from the pass store — never echoed)\n", schema, repoRoot)

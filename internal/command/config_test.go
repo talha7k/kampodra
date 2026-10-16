@@ -95,7 +95,9 @@ func TestConfigInitSecondProfileDoesNotStealDefault(t *testing.T) {
 func TestConfigInitSetDefaultFlagTakesDefault(t *testing.T) {
 	deps, home, _, _ := setupConfig(t)
 	runConfig(t, deps, "init", "--name", "prod", "--host", "root@203.0.113.9", "--ssh-key", "/tmp/k")
-	runConfig(t, deps, "init", "--name", "staging", "--host", "root@203.0.113.8", "--ssh-key", "/tmp/k2", "--set-default")
+	// --force confirms the default MOVE (an existing default is never
+	// re-pointed silently — see TestConfigInitSetDefaultMoveRequiresForce).
+	runConfig(t, deps, "init", "--name", "staging", "--host", "root@203.0.113.8", "--ssh-key", "/tmp/k2", "--set-default", "--force")
 	if cfg := loadConfigFile(t, home); cfg.DefaultProfile != "staging" {
 		t.Errorf("defaultProfile = %q, want staging", cfg.DefaultProfile)
 	}
@@ -420,6 +422,97 @@ func TestConfigCloneRequiresHost(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "--host is required") {
 		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+// The 2026-10-16 incident: a first profile was silently adopted as the
+// default and every no-flag command resolved to it. Adoption is now LOUD:
+// the banner prints after the saved line, naming the profile, its host,
+// and the override hatches.
+const configDefaultBannerWant = "[config] DEFAULT PROFILE IS NOW prod (root@203.0.113.9) — every command without --profile targets it (override: --profile or KAMPODRA_PROFILE)"
+
+func TestConfigInitFirstProfilePrintsDefaultBanner(t *testing.T) {
+	deps, _, stdout, stderr := setupConfig(t)
+	code := runConfig(t, deps, "init", "--name", "prod", "--host", "root@203.0.113.9", "--ssh-key", "/tmp/k")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, configDefaultBannerWant) {
+		t.Errorf("first-profile auto-adopt must print the loud banner, stdout = %q", out)
+	}
+	saved, banner := strings.Index(out, "saved profile 'prod'"), strings.Index(out, "DEFAULT PROFILE IS NOW")
+	if saved < 0 || banner < 0 || banner < saved {
+		t.Errorf("banner must come AFTER the saved line: saved@%d banner@%d\n%s", saved, banner, out)
+	}
+}
+
+func TestConfigInitSetDefaultMoveRequiresForce(t *testing.T) {
+	deps, home, _, stderr := setupConfig(t)
+	writeTwoProfiles(t, home)
+	// A DIFFERENT default already exists: --set-default must fail closed
+	// until --force confirms the move, and the config must be untouched.
+	code := runConfig(t, deps, "init", "--name", "third", "--host", "root@203.0.113.7", "--ssh-key", "/tmp/k3", "--set-default")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (refusal)", code)
+	}
+	if !strings.Contains(stderr.String(), "refusing to move the default from prod to third — pass --force to confirm") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+	if cfg := loadConfigFile(t, home); cfg.DefaultProfile != "prod" || len(cfg.Profiles) != 2 {
+		t.Errorf("refused init must not touch the config: default=%q profiles=%d", cfg.DefaultProfile, len(cfg.Profiles))
+	}
+
+	// --force confirms the move: default moves AND the banner prints.
+	stderr.Reset()
+	code = runConfig(t, deps, "init", "--name", "third", "--host", "root@203.0.113.7", "--ssh-key", "/tmp/k3", "--set-default", "--force")
+	if code != 0 {
+		t.Fatalf("forced exit = %d, stderr: %s", code, stderr.String())
+	}
+	if cfg := loadConfigFile(t, home); cfg.DefaultProfile != "third" {
+		t.Errorf("defaultProfile = %q, want third (--force confirms the move)", cfg.DefaultProfile)
+	}
+	out := deps.Stdout.(*bytes.Buffer).String()
+	if !strings.Contains(out, "[config] DEFAULT PROFILE IS NOW third (root@203.0.113.7) — every command without --profile targets it (override: --profile or KAMPODRA_PROFILE)") {
+		t.Errorf("forced --set-default move must print the banner, stdout = %q", out)
+	}
+}
+
+func TestConfigSetDefaultPrintsBannerOnChange(t *testing.T) {
+	deps, home, stdout, stderr := setupConfig(t)
+	writeTwoProfiles(t, home)
+	if code := runConfig(t, deps, "set-default", "staging"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "default profile: staging") {
+		t.Errorf("current message must stay, stdout = %q", out)
+	}
+	if !strings.Contains(out, "[config] DEFAULT PROFILE IS NOW staging (root@203.0.113.8) — every command without --profile targets it (override: --profile or KAMPODRA_PROFILE)") {
+		t.Errorf("default CHANGE must print the banner, stdout = %q", out)
+	}
+	// Re-pointing at the CURRENT default is not a change: no banner.
+	stdout.Reset()
+	if code := runConfig(t, deps, "set-default", "staging"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "DEFAULT PROFILE IS NOW") {
+		t.Errorf("no-change set-default must not print the banner, stdout = %q", stdout.String())
+	}
+}
+
+func TestConfigRemoveReassignPrintsBanner(t *testing.T) {
+	deps, home, stdout, stderr := setupConfig(t)
+	writeTwoProfiles(t, home)
+	if code := runConfig(t, deps, "remove", "prod"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "default profile is now: staging") {
+		t.Errorf("current message must stay, stdout = %q", out)
+	}
+	if !strings.Contains(out, "[config] DEFAULT PROFILE IS NOW staging (root@203.0.113.8) — every command without --profile targets it (override: --profile or KAMPODRA_PROFILE)") {
+		t.Errorf("default reassignment must print the banner, stdout = %q", out)
 	}
 }
 
