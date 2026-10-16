@@ -198,8 +198,8 @@ func TestResolveTracedNoLayersGivesAllDefaults(t *testing.T) {
 			t.Errorf("%s rendered empty — every default must render", v.Key)
 		}
 	}
-	if len(traces) != 18 {
-		t.Errorf("traces = %d rows, want 18 (every Config field)", len(traces))
+	if len(traces) != 19 {
+		t.Errorf("traces = %d rows, want 19 (every Config field)", len(traces))
 	}
 }
 

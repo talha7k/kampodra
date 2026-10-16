@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/talha7k/kampodra/internal/adapter/probe"
+	"github.com/talha7k/kampodra/internal/command"
 )
 
 func TestDeployPipelineBuildFailureRecordsFailedLedger(t *testing.T) {
@@ -65,4 +66,60 @@ func TestDeployPipelineSkipSmoke(t *testing.T) {
 		t.Fatalf("exit = %d", code)
 	}
 	mustContain(t, stdout.String(), "--skip-smoke")
+}
+
+// --- multi-path health gate (healthPaths) ----------------------------------
+
+// gateSecondPath is the second gate route in the multi-path tests (test
+// fixture only — production code carries no literal routes).
+const gateSecondPath = "/api/catalog"
+
+// gatePathsWith routes the run through TWO health paths: the harness mux
+// serves the sha body on the second route too.
+func gatePathsWith(t *testing.T, deps command.Deps, stubDir string) {
+	t.Helper()
+	t.Setenv("KAMPODRA_HEALTH_PATHS", pipelineHealthPath+" "+gateSecondPath)
+	writeFixture(t, stubDir, "extra-health-paths", gateSecondPath)
+}
+
+// TestDeployPipelineHealthPathsBothPass: with healthPaths set, the VM-side
+// gate probes EVERY path in order (each logged with its position) and the
+// public smoke checks them all — both green = the deploy succeeds.
+func TestDeployPipelineHealthPathsBothPass(t *testing.T) {
+	deps, stubDir, stdout, stderr, _ := setupDeployPipeline(t)
+	gatePathsWith(t, deps, stubDir)
+	if code := runDeploy(t, deps, "--host", statusHost, "--in-place"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	mustContain(t, out, "health gate (path 1/2: "+pipelineHealthPath+")…")
+	mustContain(t, out, "health gate (path 2/2: "+gateSecondPath+")…")
+	if i1, i2 := indexOf(out, "health gate (path 1/2:"), indexOf(out, "health gate (path 2/2:"); i1 < 0 || i1 > i2 {
+		t.Errorf("health paths must gate in order:\n%s", out)
+	}
+	// The VM fetches hit BOTH paths, first path before second.
+	inv := invocations(t, stubDir)
+	u1, u2 := "http://127.0.0.1:8080"+pipelineHealthPath, "http://127.0.0.1:8080"+gateSecondPath
+	if indexOf(inv, u1) < 0 || indexOf(inv, u1) > indexOf(inv, u2) {
+		t.Errorf("gate must fetch path 1 before path 2:\n%s", inv)
+	}
+	mustContain(t, out, "LIVE:")
+}
+
+// TestDeployPipelineHealthPathsSecondPathFailDies: a second path that
+// never serves the sha kills the deploy and NAMES the failed path (the
+// 2026-10-16 incident: the primary route answered while every store
+// route was gone).
+func TestDeployPipelineHealthPathsSecondPathFailDies(t *testing.T) {
+	deps, stubDir, stdout, stderr, _ := setupDeployPipeline(t)
+	gatePathsWith(t, deps, stubDir)
+	writeFixture(t, stubDir, "healthfail", gateSecondPath) // the second path's VM fetch dies
+	if code := runDeploy(t, deps, "--host", statusHost, "--in-place"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	mustContain(t, stdout.String(), "health gate (path 1/2: "+pipelineHealthPath+")…")
+	mustContain(t, stdout.String(), "health gate (path 2/2: "+gateSecondPath+")…")
+	mustContain(t, stderr.String(), "health gate failed on "+gateSecondPath)
+	mustContain(t, stderr.String(), "never became healthy")
+	mustContain(t, stderr.String(), "--rollback ccc3333")
 }

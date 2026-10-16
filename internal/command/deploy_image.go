@@ -215,14 +215,35 @@ func (r *deployRun) pushEnvFile() error {
 	return nil
 }
 
-// healthGate polls the VM-side fetch of the health endpoint until the body
-// serves the deployed sha (the shell's 30 × 3s wget/curl + client-side
-// grep — remote grep quoting was fragile, the verdict stays client-side).
+// healthGate gates EVERY configured health path (kampodra.json
+// healthPaths) against the deployed sha, VM-side: each path must serve
+// the deployed sha. Unset paths = exactly [healthPath] — byte-identical
+// to the single-path history; with several paths, each gets its own gate
+// line (path i/n) and a failure NAMES the path.
 func (r *deployRun) healthGate(port, sha string) error {
+	paths := r.target.Project.HealthPathsEffective()
+	for i, hp := range paths {
+		if len(paths) > 1 {
+			r.say("health gate (path %d/%d: %s)…", i+1, len(paths), hp)
+		} else {
+			r.say("health gate (VM-side fetch of %s + served-sha verify against %s)…", hp, sha)
+		}
+		if err := r.healthGateOne(port, sha, hp); err != nil {
+			if len(paths) > 1 {
+				return fmt.Errorf("health gate failed on %s: %w", hp, err)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// healthGateOne is the single-path poll loop (the historical healthGate
+// body): VM-side wget/curl fetch until the body serves the deployed sha.
+func (r *deployRun) healthGateOne(port, sha, healthPath string) error {
 	pj := r.target.Project
-	url := fmt.Sprintf("http://127.0.0.1:%s%s", port, pj.HealthPath)
+	url := fmt.Sprintf("http://127.0.0.1:%s%s", port, healthPath)
 	fetch := fmt.Sprintf("wget -qO- -T 3 %s 2>/dev/null || curl -s -m 3 %s 2>/dev/null", url, url)
-	r.say("health gate (VM-side fetch of %s + served-sha verify against %s)…", pj.HealthPath, sha)
 	for attempt := 0; attempt < DeployGateAttempts; attempt++ {
 		if attempt > 0 {
 			time.Sleep(DeployGateSleep)
@@ -286,7 +307,9 @@ func (r *deployRun) proxyRepointForced(targetRef string) error {
 }
 
 // publicSmoke verifies the PUBLIC edge serves the deployed sha — the
-// deploy is not done when the world cannot see it.
+// deploy is not done when the world cannot see it. Every configured
+// health path (healthPaths; unset = [healthPath]) is smoked through the
+// edge, then the /up liveness leg and the build-id freshness signal.
 func (r *deployRun) publicSmoke() error {
 	if r.opts.skipSmoke {
 		r.say("--skip-smoke; run the public smoke once the proxy serves this host")
@@ -294,26 +317,10 @@ func (r *deployRun) publicSmoke() error {
 	}
 	host := r.target.ProxyHost
 	r.say("smoke (public, through the proxy)…")
-	body, ok := r.d.Prober.LiveStatus(r.ctx, host, r.target.Project.HealthPath)
-	// Every failure names the EXACT probed URL and WHERE proxyHost came
-	// from in the ladder: the smoke exercises the EDGE (proxyHost), not the
-	// VM the health gate just verified — a stale proxy project block
-	// SHADOWS kampodra.json (the 2026-10-16 incident: the profile's stale
-	// proxyHost beat the fixed manifest, so the manifest fix changed
-	// nothing). Provenance turns "why is it still the old host" into a
-	// one-glance answer.
-	src := r.target.ProxyHostSource
-	if src == "" {
-		src = "unknown"
-	}
-	if !ok {
-		return fmt.Errorf("public smoke: https://%s%s is UNREACHABLE (proxyHost source: %s) — stale proxyHost or DNS not pointing at the serving instance? a bluegreen flip de-registers the pre-flip host: update the profile's project.proxyHost AND kampodra.json post-flip", host, r.target.Project.HealthPath, src)
-	}
-	if strings.TrimSpace(body) == "" {
-		return fmt.Errorf("public smoke: https://%s%s answered with an EMPTY body (proxyHost source: %s) — served no sha stamp at all: wrong host (stale proxyHost after a flip?) or the app's %s route serves nothing", host, r.target.Project.HealthPath, src, r.target.Project.HealthPath)
-	}
-	if !probe.BodyServesSha(body, r.ver) {
-		return fmt.Errorf("public smoke: served git sha %q, want %s — probed https://%s%s (proxyHost source: %s); the VM health gate PASSED, so the app is fine: the edge is stale (update the profile's project.proxyHost AND kampodra.json post-flip)", strings.TrimSpace(body), r.ver, host, r.target.Project.HealthPath, src)
+	for _, hp := range r.target.Project.HealthPathsEffective() {
+		if err := r.publicSmokePath(host, hp); err != nil {
+			return err
+		}
 	}
 	if !r.d.Prober.Up(r.ctx, host) {
 		return fmt.Errorf("/up failed on https://%s/up", host)
@@ -326,6 +333,29 @@ func (r *deployRun) publicSmoke() error {
 		r.say("WARN: /build-id.txt stale (got %q, want %s) — the web dist predates sha stamping", id, r.ver)
 	} else {
 		r.say("LIVE: git=%s, /up ok, build-id fresh", r.ver)
+	}
+	return nil
+}
+
+// publicSmokePath smokes ONE health path through the public edge: the
+// sha-identity checks with errors that name the EXACT probed URL and
+// WHERE proxyHost came from in the ladder — the smoke exercises the EDGE
+// (proxyHost), not the VM the health gate just verified (a stale proxy
+// project block SHADOWS kampodra.json — the 2026-10-16 incident).
+func (r *deployRun) publicSmokePath(host, healthPath string) error {
+	body, ok := r.d.Prober.LiveStatus(r.ctx, host, healthPath)
+	src := r.target.ProxyHostSource
+	if src == "" {
+		src = "unknown"
+	}
+	if !ok {
+		return fmt.Errorf("public smoke: https://%s%s is UNREACHABLE (proxyHost source: %s) — stale proxyHost or DNS not pointing at the serving instance? a bluegreen flip de-registers the pre-flip host: update the profile's project.proxyHost AND kampodra.json post-flip", host, healthPath, src)
+	}
+	if strings.TrimSpace(body) == "" {
+		return fmt.Errorf("public smoke: https://%s%s answered with an EMPTY body (proxyHost source: %s) — served no sha stamp at all: wrong host (stale proxyHost after a flip?) or the app's %s route serves nothing", host, healthPath, src, healthPath)
+	}
+	if !probe.BodyServesSha(body, r.ver) {
+		return fmt.Errorf("public smoke: served git sha %q, want %s — probed https://%s%s (proxyHost source: %s); the VM health gate PASSED, so the app is fine: the edge is stale (update the profile's project.proxyHost AND kampodra.json post-flip)", strings.TrimSpace(body), r.ver, host, healthPath, src)
 	}
 	return nil
 }

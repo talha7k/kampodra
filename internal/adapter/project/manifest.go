@@ -49,6 +49,7 @@ type ManifestFields struct {
 	Bucket             string                    `json:"bucket,omitempty"`
 	ObjectPrefix       string                    `json:"objectPrefix,omitempty"`
 	HealthPath         string                    `json:"healthPath,omitempty"`
+	HealthPaths        []string                  `json:"healthPaths,omitempty"`
 	ProxyHost          string                    `json:"proxyHost,omitempty"`
 	Services           []string                  `json:"services,omitempty"`
 	ImagePrefix        string                    `json:"imagePrefix,omitempty"`
@@ -387,7 +388,7 @@ var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // manifestKeyHint lists the valid kampodra.json keys for parse errors.
 // Kept in lockstep with ManifestFields by TestManifestKeyHintMatchesStruct.
 const manifestKeyHint = "container, pairInstancePrefix, shadowSuffix, envFile, dataDir, bucket, " +
-	"objectPrefix, healthPath, proxyHost, services, imagePrefix, port, " +
+	"objectPrefix, healthPath, healthPaths, proxyHost, services, imagePrefix, port, " +
 	"network, shadowProbePort, deployedShaFile, envClearKeys, dockerfile, " +
 	"migrateScript, images, binary, unit"
 
