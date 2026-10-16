@@ -494,10 +494,10 @@ func runDeployGroup(d Deps, c *cobra.Command, group string) error {
 		fmt.Fprintf(d.Stdout, "[group %s] %d/%d → %s\n", group, i+1, len(members), member)
 		target, opts, err := assembleDeployRun(d, c, member)
 		if err != nil {
-			return d.groupSummary(group, ver, members, deployed, member, err)
+			return d.groupSummary(group, members, deployed, member, err)
 		}
 		if err := runDeployPipeline(d, c.Context(), target, ver, "deploy", opts); err != nil {
-			return d.groupSummary(group, ver, members, deployed, member, err)
+			return d.groupSummary(group, members, deployed, member, err)
 		}
 		deployed = append(deployed, member)
 	}
@@ -506,7 +506,7 @@ func runDeployGroup(d Deps, c *cobra.Command, group string) error {
 }
 
 // groupSummary renders the fail-fast verdict and returns the run's error.
-func (d Deps) groupSummary(group, ver string, members, deployed []string, failed string, cause error) error {
+func (d Deps) groupSummary(group string, members, deployed []string, failed string, cause error) error {
 	var remaining []string
 	past := false
 	for _, m := range members {
