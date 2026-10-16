@@ -19,3 +19,6 @@ coverage.out
 
 # npm packaging: skill copied in at cross-compile (never committed)
 /npm/skills/
+
+# internal publish runbook (varlock/npm mechanics — local only)
+/docs/publish.md
