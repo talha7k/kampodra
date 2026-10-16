@@ -301,7 +301,7 @@ func runVMPrepare(d Deps, c *cobra.Command) error {
 			return err
 		}
 	}
-		p := &vmProvisioner{ctx: ctx, d: d, target: target,
+	p := &vmProvisioner{ctx: ctx, d: d, target: target,
 		n: namingFromProject(target.Project, bin, staticBlocks(target.Binary), target.UnitEnvs)}
 
 	// --- 0. connectivity ------------------------------------------------------
