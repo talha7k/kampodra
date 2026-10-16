@@ -414,3 +414,35 @@ func TestGateCommands(t *testing.T) {
 		t.Errorf("registries gate wrong: %s", RegistriesGate(n))
 	}
 }
+
+// The GCE watcher variant: an OBSERVER (metadata external-ip transitions),
+// never an actor — no ip addr work, no anchor.conf. The fresh-vm idle gate
+// greps the SAME "no anchor conf" phrase, which the gce script emits on
+// startup.
+func TestRenderAnchorWatcherGCEVariant(t *testing.T) {
+	n := testNaming()
+	n.Provider = "gcp"
+	got := RenderAnchorScript(n)
+	for _, want := range []string{
+		"metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip",
+		"Metadata-Flavor: Google",
+		"external-ip",
+		"no anchor conf", // the fresh-vm idle gate's phrase
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("gce anchor script missing %q:\n%s", want, got)
+		}
+	}
+	for _, forbidden := range []string{"ip addr add", "ANCHOR_ADDR=", "$CONF"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("gce variant must not carry oci-watcher mechanics (%q):\n%s", forbidden, got)
+		}
+	}
+	// The oci variant (empty provider) keeps every classic mechanic.
+	oci := RenderAnchorScript(testNaming())
+	for _, want := range []string{"ip addr add", `CONF="`, "no anchor conf"} {
+		if !strings.Contains(oci, want) {
+			t.Errorf("oci variant lost %q:\n%s", want, oci)
+		}
+	}
+}

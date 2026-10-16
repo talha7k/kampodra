@@ -1,6 +1,7 @@
 package command_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -31,5 +32,29 @@ func TestDroppedUnitEnvKeys(t *testing.T) {
 	grown := strings.Replace(oldUnit, "-e NODE_ENV=production", "-e NODE_ENV=production -e EXTRA=1", 1)
 	if got := command.DroppedUnitEnvKeys(oldUnit, grown); len(got) != 0 {
 		t.Errorf("dropped = %v, want none (added keys are not drops)", got)
+	}
+}
+
+// The anchor watcher variant rides the profile cloud block's provider:
+// gcp gets the metadata OBSERVER (no ip addr, no anchor.conf), oci/empty
+// gets the classic add-only watcher.
+func TestCloudProviderOf(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{`{"provider":"gcp","project":"p1"}`, "gcp"},
+		{`{"compartment":"ocid1..."}`, ""}, // legacy block, no provider key
+		{``, ""},                           // no cloud block
+		{`not-json`, ""},                   // malformed fails later at CheckProvider
+	}
+	for _, tc := range cases {
+		var raw json.RawMessage
+		if tc.raw != "" {
+			raw = json.RawMessage(tc.raw)
+		}
+		if got := command.CloudProviderOf(raw); got != tc.want {
+			t.Errorf("cloudProviderOf(%s) = %q, want %q", tc.raw, got, tc.want)
+		}
 	}
 }
