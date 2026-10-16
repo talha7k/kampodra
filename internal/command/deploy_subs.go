@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -212,7 +213,19 @@ func runDeployRoot(d Deps, c *cobra.Command, args []string) error {
 	}
 	rollbackSet := c.Flags().Changed("rollback")
 	shaArg, _ := c.Flags().GetString("sha")
-	target, opts, err := assembleDeployRun(d, c)
+	group, _ := c.Flags().GetString("group")
+	if group != "" {
+		for _, conflicting := range []string{"host", "profile"} {
+			if c.Flags().Changed(conflicting) {
+				return fmt.Errorf("--group and --%s are mutually exclusive — a group names its own targets", conflicting)
+			}
+		}
+		if rollbackSet || shaArg != "" {
+			return fmt.Errorf("--group deploys HEAD only — --rollback/--sha target one VM and cannot fan out")
+		}
+		return runDeployGroup(d, c, group)
+	}
+	target, opts, err := assembleDeployRun(d, c, "")
 	if err != nil {
 		return err
 	}
@@ -443,4 +456,73 @@ func shQuoteArgs(argv []string) string {
 		quoted = append(quoted, "'"+strings.ReplaceAll(arg, "'", `'\''`)+"'")
 	}
 	return strings.Join(quoted, " ")
+}
+
+// runDeployGroup fans a deploy out to EVERY profile in a group,
+// sequentially, fail-fast: the first failed member stops the run with a
+// summary naming what deployed and what remains (re-run resumes by
+// repeating the group — already-deployed members just deploy again).
+// All members ship the SAME HEAD (the sha resolves once, up front — the
+// clean-tree gate inside each pipeline run re-verifies per member).
+func runDeployGroup(d Deps, c *cobra.Command, group string) error {
+	cfg, err := state.LoadConfig(d.Home)
+	if err != nil {
+		return err
+	}
+	var members []string
+	for name, prof := range cfg.Profiles {
+		if prof.Group == group {
+			members = append(members, name)
+		}
+	}
+	if len(members) == 0 {
+		return fmt.Errorf("no profiles in group %q — assign one via config init --group / the profile's group field, or check: config list --group %s", group, group)
+	}
+	sort.Strings(members)
+
+	ver := ""
+	if out, err := localOutput(c.Context(), "", "git", "rev-parse", "--short", "HEAD"); err == nil {
+		ver = strings.TrimSpace(out)
+	} else {
+		return fmt.Errorf("cannot resolve HEAD (not a git repository?) — group deploys ship HEAD")
+	}
+
+	fmt.Fprintf(d.Stdout, "[group %s] deploying %s to %d profile(s): %s\n",
+		group, ver, len(members), strings.Join(members, ", "))
+	deployed := []string{}
+	for i, member := range members {
+		fmt.Fprintf(d.Stdout, "[group %s] %d/%d → %s\n", group, i+1, len(members), member)
+		target, opts, err := assembleDeployRun(d, c, member)
+		if err != nil {
+			return d.groupSummary(group, ver, members, deployed, member, err)
+		}
+		if err := runDeployPipeline(d, c.Context(), target, ver, "deploy", opts); err != nil {
+			return d.groupSummary(group, ver, members, deployed, member, err)
+		}
+		deployed = append(deployed, member)
+	}
+	fmt.Fprintf(d.Stdout, "[group %s] ✓ %d/%d deployed %s\n", group, len(deployed), len(members), ver)
+	return nil
+}
+
+// groupSummary renders the fail-fast verdict and returns the run's error.
+func (d Deps) groupSummary(group, ver string, members, deployed []string, failed string, cause error) error {
+	var remaining []string
+	past := false
+	for _, m := range members {
+		if past {
+			remaining = append(remaining, m)
+		}
+		if m == failed {
+			past = true
+		}
+	}
+	fmt.Fprintf(d.Stdout, "[group %s] ✗ %d/%d deployed (%s) — stopped at %s: %v",
+		group, len(deployed), len(members), strings.Join(deployed, ", "), failed, cause)
+	if len(remaining) > 0 {
+		fmt.Fprintf(d.Stdout, " — not attempted: %s (re-run the group; deployed members redeploy harmlessly)\n", strings.Join(remaining, ", "))
+	} else {
+		fmt.Fprintln(d.Stdout)
+	}
+	return &exitError{code: 1}
 }

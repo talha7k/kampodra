@@ -142,6 +142,7 @@ func newDeployCommand(d Deps) *cobra.Command {
 	cmd.Flags().Lookup("rollback").NoOptDefVal = "-" // bare --rollback = stamp-resolved
 	cmd.Flags().Bool("rolling", true, "zero-downtime: shadow container double re-point — the DEFAULT since the 2026-10-10 promotion (OCI live-fire drill + two clean prod rolling deploys)")
 	cmd.Flags().Bool("in-place", false, "restart-in-place deploy (the pre-promotion default) — beats --rolling")
+	cmd.Flags().String("group", "", "deploy to EVERY profile in this group sequentially, fail-fast (mutually exclusive with --host/--profile/--sha/--rollback)")
 	cmd.Flags().Int("drain-timeout", deployRollingDrainTimeout, "seconds to wait for the proxy switch to confirm before continuing (rolling mode only)")
 	cmd.Flags().String("disk-threshold", "", "fail closed when VM disk usage >= pct (pipeline)")
 	cmd.Flags().String("env-file", "", "push this env file (0600 + atomic mv, API_GIT_SHA stamped) before restart (pipeline)")
