@@ -261,8 +261,10 @@ func TestBGReservedIPAssignGCPOrdering(t *testing.T) {
 }
 
 // Failure-rollback reverse: re-attaching to the old holder detaches the
-// flip target first (the holder IS the assign target here, so no detach
-// of it — the reserved address rides to the old holder in one add).
+// flip target first (users[0]), then the restore target drops ITS stale
+// access config (the one-access-config rule hits every assign target —
+// live-fire 2026-10-16), then the reserved address rides to the old
+// holder in one add.
 func TestBGReservedIPAssignGCPRestoreOldHolder(t *testing.T) {
 	shim := setupBGGCPShim(t, map[string]string{
 		"addr-list": `[{"name":"kampodra-active","address":"203.0.113.50","status":"IN_USE","users":["https://www.googleapis.com/compute/v1/projects/p1/zones/europe-west1-b/instances/app-green"]}]`,
@@ -275,11 +277,14 @@ func TestBGReservedIPAssignGCPRestoreOldHolder(t *testing.T) {
 	if !strings.Contains(joined, "delete-access-config app-green --zone=europe-west1-b") {
 		t.Errorf("the failed target must be detached first:\n%s", joined)
 	}
+	if !strings.Contains(joined, "delete-access-config app-blue --zone=europe-west1-b") {
+		t.Errorf("the restore target's stale access config must drop before the attach (one-config rule):\n%s", joined)
+	}
 	if !strings.Contains(joined, "add-access-config app-blue --zone=europe-west1-b --address=203.0.113.50") {
 		t.Errorf("the old holder must be re-attached:\n%s", joined)
 	}
-	if strings.Contains(joined, "delete-access-config app-blue") {
-		t.Errorf("the restore target must not be detached:\n%s", joined)
+	if strings.Index(joined, "delete-access-config app-blue") > strings.Index(joined, "add-access-config app-blue") {
+		t.Errorf("the stale-config drop must precede the attach:\n%s", joined)
 	}
 }
 
