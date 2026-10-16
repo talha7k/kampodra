@@ -235,7 +235,7 @@ func TestBGReservedIPAssignGCPOrdering(t *testing.T) {
 		"addr-list":  `[{"name":"kampodra-active","address":"203.0.113.50","status":"IN_USE","users":["` + bgGCPUser + `"]}]`,
 		"inst-green": `[{"name":"app-green","zone":"` + bgGCPZone + `","status":"RUNNING"}]`,
 	})
-	err := BGReservedIPAssign(context.Background(), CloudAuth{Provider: "gcp", Project: "p1"}, "kampodra-active", "app-green", "ASSIGNED")
+	err := BGReservedIPAssign(context.Background(), CloudAuth{Provider: "gcp", Project: "p1"}, "kampodra-active", "app-green", "203.0.113.50", "ASSIGNED")
 	if err != nil {
 		t.Fatalf("BGReservedIPAssign: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestBGReservedIPAssignGCPRestoreOldHolder(t *testing.T) {
 		"addr-list": `[{"name":"kampodra-active","address":"203.0.113.50","status":"IN_USE","users":["https://www.googleapis.com/compute/v1/projects/p1/zones/europe-west1-b/instances/app-green"]}]`,
 		"inst-blue": `[{"name":"app-blue","zone":"` + bgGCPZone + `","status":"RUNNING"}]`,
 	})
-	if err := BGReservedIPAssign(context.Background(), CloudAuth{Provider: "gcp", Project: "p1"}, "kampodra-active", "app-blue", ""); err != nil {
+	if err := BGReservedIPAssign(context.Background(), CloudAuth{Provider: "gcp", Project: "p1"}, "kampodra-active", "app-blue", "203.0.113.50", ""); err != nil {
 		t.Fatalf("BGReservedIPAssign(rollback): %v", err)
 	}
 	joined := strings.Join(bgOpShimCalls(t, shim.log), "\n")

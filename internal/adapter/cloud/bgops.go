@@ -90,17 +90,22 @@ func BGReservedIPCreate(ctx context.Context, auth CloudAuth, compOCID, displayNa
 	return bgReservedIPCreateOCI(ctx, auth, compOCID, displayName)
 }
 
-// BGReservedIPAssign attaches privateIPID to the reserved IP; waitState is
-// the provider's settle target ("" = fire-and-forget, the failure-rollback
+// BGReservedIPAssign attaches the reserved IP to TARGETHANDLE: on oci the
+// anchor private-ip ocid implies the instance (targetHandle is accepted and
+// ignored — the attach rides privateIPID); on gcp the attach is an
+// access-config on the target instance itself, so the target must be named
+// explicitly (live-fire 2026-10-16: the oci-shaped signature made the gcp
+// leg look the anchor handle up as an instance). waitState is the
+// provider's settle target ("" = fire-and-forget, the failure-rollback
 // reassign never waits).
-func BGReservedIPAssign(ctx context.Context, auth CloudAuth, ripOCID, privateIPID, waitState string) error {
+func BGReservedIPAssign(ctx context.Context, auth CloudAuth, ripHandle, targetHandle, anchorHandle, waitState string) error {
 	if err := CheckProvider(auth); err != nil {
 		return err
 	}
 	if auth.Provider == "gcp" {
-		return bgReservedIPAssignGCP(ctx, auth, ripOCID, privateIPID)
+		return bgReservedIPAssignGCP(ctx, auth, ripHandle, targetHandle)
 	}
-	return bgReservedIPAssignOCI(ctx, auth, ripOCID, privateIPID, waitState)
+	return bgReservedIPAssignOCI(ctx, auth, ripHandle, anchorHandle, waitState)
 }
 
 // BGReservedIPRelease unassigns the reserved IP back to DORMANT (the

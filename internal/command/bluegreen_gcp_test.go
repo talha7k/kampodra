@@ -2,11 +2,13 @@ package command_test
 
 import (
 	"bytes"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/talha7k/kampodra/internal/adapter/probe"
 	"github.com/talha7k/kampodra/internal/command"
 )
 
@@ -142,6 +144,7 @@ func setupBGCP(t *testing.T, fixtures map[string]string) *bgGCPHarness {
 			Stdout: stdout,
 			Stderr: stderr,
 			Stdin:  strings.NewReader(""),
+			Prober: &probe.Prober{HTTPClient: &http.Client{Transport: bgRoundTripper{body: `{"git":"abc1234"}`}}},
 		},
 		stdout: stdout, stderr: stderr, ociLog: gcpLog, sshLog: sshLog,
 	}
@@ -271,34 +274,54 @@ func TestBluegreenGCPRollbackDetachesHolder(t *testing.T) {
 	}
 }
 
-// flip fail-closed on gcp: the reserved-address handle is not an
-// ocid-shaped anchor, so the command layer's anchor gate refuses BEFORE
-// any write — the guest anchor watcher contract (GCE metadata external-IP
-// poll) is a follow-up, and until it lands the flip must not touch the
-// pair.
-func TestBluegreenGCPFlipFailsClosedBeforeAnyWrite(t *testing.T) {
+// flip on gcp assigns the reserved address to the target: the anchor IS
+// the reserved external IP (dormant = its name, IN_USE = its address —
+// neither is ocid-shaped, so the command layer's anchor gate is oci-leg
+// only; live-fire 2026-10-16 caught it refusing every gcp flip). With the
+// always-healthy ssh shim the flip runs its write sequence: detach the
+// holder, attach the address to the target, in that order.
+func TestBluegreenGCPFlipAssignsReservedIPToTarget(t *testing.T) {
 	h := setupBGCP(t, map[string]string{
 		"addr-list":  bgGCPAddrList(),
 		"inst-green": bgGCPGreenRow(),
 	})
 	writeBGCPProfile(t, h)
-	if code := h.run(t, "flip", "--to", "green", "--force", "--profile", "gcp-prof"); code != 1 {
-		t.Fatalf("exit = %d, want 1 (stderr: %s)", code, h.stderr.String())
+	if code := h.run(t, "flip", "--to", "green", "--force", "--profile", "gcp-prof"); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, h.stderr.String())
 	}
-	if !strings.Contains(h.stderr.String(), "could not resolve/create the reserved-anchor secondary private ip on app-green") {
-		t.Errorf("stderr = %q", h.stderr.String())
-	}
-	if strings.Contains(h.stderr.String(), "bluegreen is OCI-only") {
-		t.Errorf("the slice-A refusal must be gone: %q", h.stderr.String())
+	if strings.Contains(h.stderr.String(), "reserved-anchor secondary private ip") {
+		t.Errorf("the ocid anchor gate must not fire on gcp: %q", h.stderr.String())
 	}
 	joined := strings.Join(h.ociCalls(t), "\n")
-	for _, write := range []string{"delete-access-config", "add-access-config", "addresses create", "instances create"} {
-		if strings.Contains(joined, write) {
-			t.Errorf("the refused flip must not write (%s):\n%s", write, joined)
+	deleteAt := strings.Index(joined, "delete-access-config")
+	addAt := strings.Index(joined, "add-access-config")
+	if deleteAt < 0 || addAt < 0 {
+		t.Errorf("flip sequence incomplete:\n%s", joined)
+	}
+	if deleteAt > addAt {
+		t.Errorf("holder detach must precede the target attach:\n%s", joined)
+	}
+	for _, want := range []string{"app-blue", "app-green", "--address=kampodra-active"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("flip sequence missing %q:\n%s", want, joined)
 		}
 	}
-	if len(h.sshCalls(t)) != 0 {
-		t.Errorf("the refused flip must not touch guests: %v", h.sshCalls(t))
+	if execs := h.ociExecs(t); len(execs) != 0 {
+		t.Errorf("a gcp profile must never exec oci: %v", execs)
+	}
+}
+
+// The guest anchor watcher contract (GCE metadata external-IP poll) is a
+// vmbootstrap follow-up — the flip's cloud leg is independent of it.
+func TestBluegreenGCPFlipStillNeverExecsOCI(t *testing.T) {
+	h := setupBGCP(t, map[string]string{
+		"addr-list":  bgGCPAddrList(),
+		"inst-green": bgGCPGreenRow(),
+	})
+	writeBGCPProfile(t, h)
+	h.run(t, "flip", "--to", "green", "--force", "--profile", "gcp-prof")
+	if execs := h.ociExecs(t); len(execs) != 0 {
+		t.Errorf("a gcp profile must never exec oci: %v", execs)
 	}
 }
 
