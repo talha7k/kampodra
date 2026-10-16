@@ -247,7 +247,7 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 	}
 
 	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
-	for _, k := range []string{"KAMPODRA_HOST", "KAMPODRA_SSH_KEY", "KAMPODRA_PROFILE", "KAMPODRA_PROXY_HOST",
+	for _, k := range []string{"KAMPODRA_HOST", "KAMPODRA_SSH_KEY", "KAMPODRA_PROFILE", "KAMPODRA_PROXY_HOST", "KAMPODRA_PROXY_HOSTS",
 		"KAMPODRA_CONTAINER", "KAMPODRA_IMAGE_PREFIX", "KAMPODRA_HEALTH_PATH", "KAMPODRA_HEALTH_PATHS", "KAMPODRA_PORT",
 		"KAMPODRA_NETWORK", "KAMPODRA_SHADOW_PROBE_PORT", "KAMPODRA_DEPLOYED_SHA_FILE", "KAMPODRA_ENV_FILE"} {
 		t.Setenv(k, "")

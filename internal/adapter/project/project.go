@@ -16,25 +16,26 @@ import (
 
 // Config is the resolved project shape for one run.
 type Config struct {
-	Container          string   `json:"container"`          // the api container / service name
-	PairInstancePrefix string   `json:"pairInstancePrefix"` // blue/green pair instance display-name prefix ("" = container)
-	ShadowSuffix       string   `json:"shadowSuffix"`       // blue/green shadow container suffix
-	EnvFile            string   `json:"envFile"`            // remote env file (0600)
-	DataDir            string   `json:"dataDir"`            // tenant/app data dir on the VM
-	Bucket             string   `json:"bucket"`             // object-storage backup bucket
-	ObjectPrefix       string   `json:"objectPrefix"`       // backup object prefix
-	HealthPath         string   `json:"healthPath"`         // app health endpoint behind the proxy
-	HealthPaths        []string `json:"healthPaths"`        // EXTRA health-gate routes; empty = [HealthPath]
-	ProxyHost          string   `json:"proxyHost"`          // public TLS edge hostname
-	Services           []string `json:"services"`           // the service roll call
-	ImagePrefix        string   `json:"imagePrefix"`        // VM-local registry path for deploy images
-	Port               string   `json:"port"`               // the container's published/listening port (health gate + proxy target)
-	Network            string   `json:"network"`            // the podman network shared with kamal-proxy
-	ShadowProbePort    string   `json:"shadowProbePort"`    // the shadow container's loopback-only probe port
-	DeployedShaFile    string   `json:"deployedShaFile"`    // the VM's deployed-sha stamp (rollback's fallback resolution)
-	EnvClearKeys       []string `json:"envClearKeys"`       // env keys OWNED by the init script — env from-schema drops them from varlock output
-	Dockerfile         string   `json:"dockerfile"`         // the Containerfile/Dockerfile deploy builds (context = the repo root)
-	MigrateScript      string   `json:"migrateScript"`      // the repo-relative db migrate script migrate runs on the VM
+	Container          string   `json:"container"`            // the api container / service name
+	PairInstancePrefix string   `json:"pairInstancePrefix"`   // blue/green pair instance display-name prefix ("" = container)
+	ShadowSuffix       string   `json:"shadowSuffix"`         // blue/green shadow container suffix
+	EnvFile            string   `json:"envFile"`              // remote env file (0600)
+	DataDir            string   `json:"dataDir"`              // tenant/app data dir on the VM
+	Bucket             string   `json:"bucket"`               // object-storage backup bucket
+	ObjectPrefix       string   `json:"objectPrefix"`         // backup object prefix
+	HealthPath         string   `json:"healthPath"`           // app health endpoint behind the proxy
+	HealthPaths        []string `json:"healthPaths"`          // EXTRA health-gate routes; empty = [HealthPath]
+	ProxyHost          string   `json:"proxyHost"`            // public TLS edge hostname
+	ProxyHosts         []string `json:"proxyHosts,omitempty"` // EXTRA edge hostnames (kamal-proxy serves the list); empty = [ProxyHost]
+	Services           []string `json:"services"`             // the service roll call
+	ImagePrefix        string   `json:"imagePrefix"`          // VM-local registry path for deploy images
+	Port               string   `json:"port"`                 // the container's published/listening port (health gate + proxy target)
+	Network            string   `json:"network"`              // the podman network shared with kamal-proxy
+	ShadowProbePort    string   `json:"shadowProbePort"`      // the shadow container's loopback-only probe port
+	DeployedShaFile    string   `json:"deployedShaFile"`      // the VM's deployed-sha stamp (rollback's fallback resolution)
+	EnvClearKeys       []string `json:"envClearKeys"`         // env keys OWNED by the init script — env from-schema drops them from varlock output
+	Dockerfile         string   `json:"dockerfile"`           // the Containerfile/Dockerfile deploy builds (context = the repo root)
+	MigrateScript      string   `json:"migrateScript"`        // the repo-relative db migrate script migrate runs on the VM
 }
 
 // LoadDefault returns today's values as NAMED DEFAULTS — the single file
@@ -74,6 +75,7 @@ type Overrides struct {
 	ObjectPrefix       string   `json:"objectPrefix,omitempty"`
 	HealthPath         string   `json:"healthPath,omitempty"`
 	ProxyHost          string   `json:"proxyHost,omitempty"`
+	ProxyHosts         []string `json:"proxyHosts,omitempty"`
 	Services           []string `json:"services,omitempty"`
 	ImagePrefix        string   `json:"imagePrefix,omitempty"`
 	Port               string   `json:"port,omitempty"`
@@ -128,6 +130,31 @@ func (c Config) HealthPathsEffective() []string {
 		return c.HealthPaths
 	}
 	return []string{c.HealthPath}
+}
+
+// EffectiveProxyHosts is the kamal-proxy host set: the configured
+// ProxyHosts wholesale (profile "project" block / KAMPODRA_PROXY_HOSTS /
+// the profile's flat list), else EXACTLY [ProxyHost] — the unset case
+// keeps every existing single-host project byte-identical. The deploy's
+// proxy re-point passes the result comma-joined: production kamal-proxy
+// edges serve SEVERAL hostnames, and re-pointing with the scalar alone
+// would silently drop the rest.
+func (c Config) EffectiveProxyHosts() []string {
+	if len(c.ProxyHosts) > 0 {
+		return c.ProxyHosts
+	}
+	return []string{c.ProxyHost}
+}
+
+// splitProxyHosts parses a proxy-hosts value: comma-separated (the
+// kamal-proxy --host wire format, what operators type), tolerating
+// whitespace separators too (the resolver's list plumbing hands apply()
+// a space-joined list). Hostnames never contain either, so a single
+// FieldsFunc covers both spellings.
+func splitProxyHosts(v string) []string {
+	return strings.FieldsFunc(v, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
 }
 
 // PairInstancePrefixEffective is the blue/green pair's instance
@@ -195,6 +222,7 @@ var fieldBindings = []fieldBinding{
 	{"healthPath", func(c Config) string { return c.HealthPath }, func(c *Config, v string) { c.HealthPath = v }, nil},
 	{"healthPaths", func(c Config) string { return strings.Join(c.HealthPathsEffective(), " ") }, func(c *Config, v string) { c.HealthPaths = strings.Fields(v) }, func(c Config) []string { return c.HealthPaths }},
 	{"proxyHost", func(c Config) string { return c.ProxyHost }, func(c *Config, v string) { c.ProxyHost = v }, nil},
+	{"proxyHosts", func(c Config) string { return strings.Join(c.EffectiveProxyHosts(), ",") }, func(c *Config, v string) { c.ProxyHosts = splitProxyHosts(v) }, func(c Config) []string { return c.ProxyHosts }},
 	{"services", func(c Config) string { return strings.Join(c.Services, " ") }, func(c *Config, v string) { c.Services = strings.Fields(v) }, func(c Config) []string { return c.Services }},
 	{"imagePrefix", func(c Config) string { return c.ImagePrefix }, func(c *Config, v string) { c.ImagePrefix = v }, nil},
 	{"port", func(c Config) string { return c.Port }, func(c *Config, v string) { c.Port = v }, nil},
@@ -228,6 +256,7 @@ var envBindingKeys = map[string]string{
 	"healthPath":         "KAMPODRA_HEALTH_PATH",
 	"healthPaths":        "KAMPODRA_HEALTH_PATHS",
 	"proxyHost":          "KAMPODRA_PROXY_HOST",
+	"proxyHosts":         "KAMPODRA_PROXY_HOSTS",
 	"services":           "KAMPODRA_SERVICES",
 	"imagePrefix":        "KAMPODRA_IMAGE_PREFIX",
 	"port":               "KAMPODRA_PORT",
@@ -464,6 +493,8 @@ func overridesListField(o Overrides, key string) []string {
 		return o.Services
 	case "envClearKeys":
 		return o.EnvClearKeys
+	case "proxyHosts":
+		return o.ProxyHosts
 	}
 	return nil
 }

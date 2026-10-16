@@ -224,7 +224,7 @@ func renderAnchorScriptGCE(n Naming) string {
 	return `#!/bin/sh
 # kampodra-anchor.sh (gce variant) — OBSERVER, not an actor: gcp attaches
 # the reserved external ip at the NIC, so unlike the oci variant this
-# script NEVER runs `+"`ip addr`"+` and reads NO anchor.conf. It polls the
+# script NEVER runs ` + "`ip addr`" + ` and reads NO anchor.conf. It polls the
 # metadata server for the instance's external ip and logs TRANSITIONS —
 # the flip's post-cutover trail (bounded: only changes log).
 

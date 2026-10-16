@@ -191,13 +191,14 @@ func jsonEscapeStr(s string) string {
 // instancePrincipal/project/account; its shape belongs to the cloud
 // adapter). Both pass through state untouched.
 type Profile struct {
-	Host      string          `json:"host"`
-	SSHKey    string          `json:"sshKey"`
-	ProxyHost string          `json:"proxyHost"`
-	Group     string          `json:"group"`
-	Init      string          `json:"init"`
-	Project   json.RawMessage `json:"project,omitempty"`
-	Cloud     json.RawMessage `json:"cloud,omitempty"`
+	Host       string          `json:"host"`
+	SSHKey     string          `json:"sshKey"`
+	ProxyHost  string          `json:"proxyHost"`
+	ProxyHosts []string        `json:"proxyHosts,omitempty"` // EXTRA kamal-proxy hosts (the flat-list form); empty = [ProxyHost]
+	Group      string          `json:"group"`
+	Init       string          `json:"init"`
+	Project    json.RawMessage `json:"project,omitempty"`
+	Cloud      json.RawMessage `json:"cloud,omitempty"`
 }
 
 // Config is ~/.kampodra/config.json. Version is the on-disk schema version:

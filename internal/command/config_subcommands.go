@@ -21,6 +21,7 @@ func runConfigInit(d Deps, c *cobra.Command) error {
 	host := flagString(c, "host")
 	key := flagString(c, "ssh-key")
 	proxy := flagString(c, "proxy-host")
+	proxyHostsRaw := flagString(c, "proxy-hosts")
 	group := flagString(c, "group")
 	setDefault := flagBool(c, "set-default")
 	force := flagBool(c, "force")
@@ -47,6 +48,14 @@ func runConfigInit(d Deps, c *cobra.Command) error {
 	if err := rejectProfileInputs(host, key, proxy, group); err != nil {
 		return err
 	}
+	// The proxy-hosts list: validated per entry, comma-separated (the
+	// kamal-proxy --host wire format). An OMITTED flag keeps the profile's
+	// existing list — the list is exactly the hand-extended data a casual
+	// re-init must never silently drop.
+	proxyHosts, err := parseProxyHostsInput(proxyHostsRaw, cfg.Profiles[name].ProxyHosts)
+	if err != nil {
+		return err
+	}
 	keyAbs := state.ExpandTilde(key, d.Home)
 	if _, err := os.Stat(keyAbs); err != nil {
 		fmt.Fprintf(d.Stdout, "[config] note: ssh key file does not exist (yet): %s — stored as a path, deploy will fail until it does\n", keyAbs)
@@ -55,21 +64,23 @@ func runConfigInit(d Deps, c *cobra.Command) error {
 	// Upsert + default rules: explicit --set-default wins; a config without
 	// any default adopts this profile. The tooling-owned fields survive:
 	// the cached init verdict stays while host/ssh-key are unchanged (it
-	// names the host it was detected on), and the project block always
-	// survives (config init never manages it).
+	// names the host it was detected on), the proxy-hosts list stays unless
+	// --proxy-hosts is passed, and the project block always survives
+	// (config init never manages it).
 	prev := cfg.Profiles[name]
 	initCached := prev.Init
 	if prev.Host != host || prev.SSHKey != keyAbs {
 		initCached = ""
 	}
 	cfg.Profiles[name] = state.Profile{
-		Host:      host,
-		SSHKey:    keyAbs,
-		ProxyHost: proxy,
-		Group:     group,
-		Init:      initCached,
-		Project:   prev.Project,
-		Cloud:     prev.Cloud,
+		Host:       host,
+		SSHKey:     keyAbs,
+		ProxyHost:  proxy,
+		ProxyHosts: proxyHosts,
+		Group:      group,
+		Init:       initCached,
+		Project:    prev.Project,
+		Cloud:      prev.Cloud,
 	}
 	oldDefault := cfg.DefaultProfile
 	if setDefault || cfg.DefaultProfile == "" {
@@ -92,6 +103,23 @@ func runConfigInit(d Deps, c *cobra.Command) error {
 		sayDefaultBanner(d, name, host)
 	}
 	return nil
+}
+
+// parseProxyHostsInput turns the --proxy-hosts comma-separated flag into
+// the stored list: every entry passes the same credential-free guard as
+// the scalar fields (which also rejects empty entries). An empty flag
+// means "not provided" and returns keep (the profile's existing list).
+func parseProxyHostsInput(raw string, keep []string) ([]string, error) {
+	if raw == "" {
+		return keep, nil
+	}
+	entries := strings.Split(raw, ",")
+	for _, e := range entries {
+		if err := state.RejectConfigValue(e, "--proxy-hosts"); err != nil {
+			return nil, err
+		}
+	}
+	return entries, nil
 }
 
 // sayDefaultBanner announces a default-profile change in no uncertain
@@ -201,6 +229,9 @@ func runConfigShow(d Deps, c *cobra.Command) error {
 	fmt.Fprintf(d.Stdout, "host      : %s\n", p.Host)
 	fmt.Fprintf(d.Stdout, "sshKey    : %s   # path only — secrets never live in the config\n", p.SSHKey)
 	fmt.Fprintf(d.Stdout, "proxyHost : %s\n", p.ProxyHost)
+	if len(p.ProxyHosts) > 0 {
+		fmt.Fprintf(d.Stdout, "proxyHosts: %s   # every host the kamal-proxy edge serves\n", strings.Join(p.ProxyHosts, ","))
+	}
 	fmt.Fprintf(d.Stdout, "group     : %s\n", p.Group)
 	if len(p.Cloud) > 0 {
 		fmt.Fprintf(d.Stdout, "cloud     : configured (provider-CLI auth overrides)\n")
@@ -347,12 +378,13 @@ func runConfigClone(d Deps, c *cobra.Command, args []string) error {
 		group = prevSrc.Group
 	}
 	cfg.Profiles[name] = state.Profile{
-		Host:      host,
-		SSHKey:    keyAbs,
-		ProxyHost: proxy,
-		Group:     group,
-		Project:   prevSrc.Project,
-		Cloud:     prevSrc.Cloud,
+		Host:       host,
+		SSHKey:     keyAbs,
+		ProxyHost:  proxy,
+		ProxyHosts: prevSrc.ProxyHosts, // the edge's host list serves the clone too (a flip updates it, never drops it)
+		Group:      group,
+		Project:    prevSrc.Project,
+		Cloud:      prevSrc.Cloud,
 	}
 	if setDefault || cfg.DefaultProfile == "" {
 		cfg.DefaultProfile = name

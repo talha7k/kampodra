@@ -34,6 +34,9 @@ type Target struct {
 //	key:   --ssh-key flag > profile sshKey > KAMPODRA_SSH_KEY
 //	proxy: profile project.proxyHost > KAMPODRA_PROXY_HOST > project default
 //	       (the profile's legacy flat proxyHost field still wins when set)
+//	hosts: the same ladder for the proxyHosts LIST (+ the legacy flat
+//	       proxyHosts field, which wins); a list with no explicit scalar
+//	       makes its FIRST host the edge — the public smoke's target
 //	project: flags > KAMPODRA_* env > profile "project" block >
 //	         kampodra.json manifest (nil = none) > project defaults
 //
@@ -55,6 +58,7 @@ func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, man
 
 	pc, traces := project.ResolveTraced(nil, lookup, profile.Project, manifest)
 	proxy := pc.ProxyHost
+	proxyHosts := pc.ProxyHosts
 	proxySource := ""
 	for _, t := range traces {
 		if t.Field == "proxyHost" {
@@ -64,12 +68,27 @@ func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, man
 			}
 		}
 	}
+	if len(profile.ProxyHosts) > 0 {
+		// The legacy flat list wins over the project block (the flat
+		// field predates the block, mirroring the scalar rule below).
+		proxyHosts = profile.ProxyHosts
+	}
+	if len(proxyHosts) > 0 && proxySource == string(project.SourceDefault) {
+		// A host list with no explicit scalar makes its FIRST host the
+		// edge: the public smoke probes it, so the default placeholder
+		// must not survive a list-only config.
+		proxy = proxyHosts[0]
+		proxySource = "project (proxyHosts[0])"
+	}
 	if profile.ProxyHost != "" {
 		// The legacy flat field predates the project block; explicit config
 		// wins over the default either way.
 		proxy = profile.ProxyHost
 		proxySource = "profile (legacy flat field)"
 	}
+	// The effective list rides the resolved project config: the deploy's
+	// proxy re-point renders it via EffectiveProxyHosts (flat list wins).
+	pc.ProxyHosts = proxyHosts
 
 	host := firstNonEmpty(flagHost, profile.Host, envValue(lookup, "KAMPODRA_HOST"))
 	key := firstNonEmpty(flagKey, profile.SSHKey, envValue(lookup, "KAMPODRA_SSH_KEY"))

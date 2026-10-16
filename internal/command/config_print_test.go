@@ -64,7 +64,7 @@ func TestConfigPrintRendersEveryFieldWithProvenance(t *testing.T) {
 	// Every Config field renders (the print is the WHOLE effective config).
 	for _, field := range []string{
 		"container", "shadowSuffix", "envFile", "dataDir", "bucket", "objectPrefix",
-		"healthPath", "proxyHost", "services", "imagePrefix", "port", "network",
+		"healthPath", "proxyHost", "proxyHosts", "services", "imagePrefix", "port", "network",
 		"shadowProbePort", "deployedShaFile", "envClearKeys", "dockerfile",
 		"migrateScript",
 	} {

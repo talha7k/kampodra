@@ -198,8 +198,8 @@ func TestResolveTracedNoLayersGivesAllDefaults(t *testing.T) {
 			t.Errorf("%s rendered empty — every default must render", v.Key)
 		}
 	}
-	if len(traces) != 19 {
-		t.Errorf("traces = %d rows, want 19 (every Config field)", len(traces))
+	if len(traces) != 20 {
+		t.Errorf("traces = %d rows, want 20 (every Config field)", len(traces))
 	}
 }
 
@@ -213,7 +213,7 @@ func TestTracesCoverEveryConfigField(t *testing.T) {
 	}
 	for _, key := range []string{
 		"container", "shadowSuffix", "envFile", "dataDir", "bucket", "objectPrefix",
-		"healthPath", "proxyHost", "services", "imagePrefix", "port", "network",
+		"healthPath", "proxyHost", "proxyHosts", "services", "imagePrefix", "port", "network",
 		"shadowProbePort", "deployedShaFile", "envClearKeys", "dockerfile",
 		"migrateScript",
 	} {

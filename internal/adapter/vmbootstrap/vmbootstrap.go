@@ -55,7 +55,7 @@ type Naming struct {
 	// mount + env passthrough — they carry no exec override (the image's
 	// entrypoint serves the mounted dist per-request). Rendered in
 	// ADDITION to the pinned block's mount/override.
-	Provider     string // "" | "oci" (default) | "gcp" — selects the anchor watcher variant
+	Provider     string   // "" | "oci" (default) | "gcp" — selects the anchor watcher variant
 	StaticMounts []string // each "-v <dir>:<dir>" (already-rendered mount args)
 	StaticEnvs   []string // each "-e NAME=<dir>" (the app's read-through env)
 	UnitEnvs     []string // each "-e K=V" (repo-owned via the manifest's unit.env)

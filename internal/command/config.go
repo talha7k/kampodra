@@ -10,7 +10,7 @@ import (
 
 // configHelp is the shell config.sh usage heredoc, kampodra-fied.
 const configHelp = `Usage:
-  kampodra config init --name <name> --host <user@ip> --ssh-key <path> [--proxy-host <host>] [--group <g>] [--set-default] [--force]
+  kampodra config init --name <name> --host <user@ip> --ssh-key <path> [--proxy-host <host>] [--proxy-hosts <h1,h2,...>] [--group <g>] [--set-default] [--force]
   kampodra config list [--group <g>]
   kampodra config show [--profile <name>]
   kampodra config print [--profile <name>]
@@ -24,7 +24,9 @@ explicit flag > KAMPODRA_PROFILE env > defaultProfile. The first profile
 auto-becomes the default; removing the LAST profile requires --force.
 Re-init (--force) refreshes the flat fields and keeps the tooling-owned
 cached init verdict unless host/ssh-key changed (the project block always
-survives — config init never manages it).
+survives — config init never manages it). --proxy-hosts is kept too when
+the flag is omitted: the list names every host the proxy serves, and a
+casual re-init must never silently drop them.
 
 Project shape resolution (the FULL ladder, every command):
 
@@ -40,6 +42,7 @@ per-field provenance — the debugging tool for the ladder.
 
 Examples:
   kampodra config init --name prod --host root@203.0.113.10 --ssh-key ~/.ssh/id_ed25519 --proxy-host app.example.com --set-default
+  kampodra config init --name prod --host root@203.0.113.10 --ssh-key ~/.ssh/id_ed25519 --proxy-host app.example.com --proxy-hosts app.example.com,www.app.example.com,api.app.example.com
   kampodra config init --name staging --host root@203.0.113.8 --ssh-key ~/.ssh/id_ed25519 --group preview
   kampodra config list                 # all profiles (default marked *)
   kampodra config list --group main    # cosmetic group filter
@@ -70,6 +73,7 @@ func newConfigCommand(d Deps) *cobra.Command {
 	pf.String("host", "", "target VM (user@ip or ssh-config alias) for init")
 	pf.String("ssh-key", "", "identity file PATH for init (tilde expanded; secrets never live in the config)")
 	pf.String("proxy-host", "", "public TLS edge hostname for init")
+	pf.String("proxy-hosts", "", "comma-separated list of every host the kamal-proxy edge serves (omitted = keep the profile's existing list)")
 	pf.String("group", "", "group label — filters config list / status / deploy list --group")
 	pf.String("profile", "", "profile to show")
 	pf.Bool("set-default", false, "make this profile the default at init")
