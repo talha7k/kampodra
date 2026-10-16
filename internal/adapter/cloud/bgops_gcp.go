@@ -31,15 +31,40 @@ const gcpReservedIPName = "kampodra-active"
 
 // gcpInstanceRow is one `compute instances list --format=json(...)` row
 // (aggregated across zones — the zone rides as a full URL whose last
-// segment is the zone gcloud's --zone flag takes). Superset struct: each
-// leg projects only the fields it needs; JSON leaves the rest zero.
+// segment is the zone gcloud's --zone flag takes). The projection syntax
+// KEEPS its nesting: `networkInterfaces[0].natIP` arrives as
+// networkInterfaces:[{accessConfigs:[{natIP}]}] — decoding those flat
+// zeroed every row live (live-fire 2026-10-16: status showed ip=none,
+// provision could not resolve the subnet). Superset struct: each leg
+// projects only the fields it needs; JSON leaves the rest zero.
 type gcpInstanceRow struct {
-	Name       string `json:"name"`
-	Zone       string `json:"zone"`
-	Created    string `json:"creationTimestamp"`
-	NatIP      string `json:"natIP"`
-	Status     string `json:"status"`
-	Subnetwork string `json:"subnetwork"`
+	Name              string `json:"name"`
+	Zone              string `json:"zone"`
+	Created           string `json:"creationTimestamp"`
+	Status            string `json:"status"`
+	NetworkInterfaces []struct {
+		Subnetwork     string `json:"subnetwork"`
+		AccessConfigs  []struct {
+			NatIP string `json:"natIP"`
+		} `json:"accessConfigs"`
+	} `json:"networkInterfaces"`
+}
+
+// natIP is the primary access config's external IP ("" when ephemeral-less).
+func (r gcpInstanceRow) natIP() string {
+	if len(r.NetworkInterfaces) == 0 || len(r.NetworkInterfaces[0].AccessConfigs) == 0 {
+		return ""
+	}
+	return r.NetworkInterfaces[0].AccessConfigs[0].NatIP
+}
+
+// subnet is the primary NIC's subnetwork (full URL; callers take the last
+// segment).
+func (r gcpInstanceRow) subnet() string {
+	if len(r.NetworkInterfaces) == 0 {
+		return ""
+	}
+	return r.NetworkInterfaces[0].Subnetwork
 }
 
 func gcpInstanceListGCP(ctx context.Context, auth CloudAuth, filter, format string) ([]gcpInstanceRow, error) {
@@ -160,7 +185,7 @@ func bgColorInstanceGCP(ctx context.Context, auth CloudAuth, displayName string)
 	if best < 0 {
 		return BGInstance{}, nil
 	}
-	return BGInstance{OCID: rows[best].Name, PublicIP: rows[best].NatIP, AD: gcpLastSeg(rows[best].Zone)}, nil
+	return BGInstance{OCID: rows[best].Name, PublicIP: rows[best].natIP(), AD: gcpLastSeg(rows[best].Zone)}, nil
 }
 
 // bgPrimaryVnicGCP: gcp has no vnic-attachment dance — the instance IS
@@ -172,10 +197,10 @@ func bgPrimaryVnicGCP(ctx context.Context, auth CloudAuth, inst string) (vnicID,
 	if err != nil {
 		return "", "", false, err
 	}
-	if len(rows) == 0 || rows[0].Subnetwork == "" {
+	if len(rows) == 0 || rows[0].subnet() == "" {
 		return "", "", false, nil
 	}
-	return rows[0].Name, gcpLastSeg(rows[0].Subnetwork), true, nil
+	return rows[0].Name, gcpLastSeg(rows[0].subnet()), true, nil
 }
 
 // bgAnchorIPGCP: the anchor concept IS the reserved external IP (OCI's

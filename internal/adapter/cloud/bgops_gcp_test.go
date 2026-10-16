@@ -93,8 +93,8 @@ func TestBGResolveScopeGCPNative(t *testing.T) {
 func TestBGColorInstanceGCPArgvAndMapping(t *testing.T) {
 	shim := setupBGGCPShim(t, map[string]string{
 		"inst-green": `[
-			{"name":"app-green","zone":"` + bgGCPZone + `","creationTimestamp":"2026-10-01T00:00:00Z","natIP":"203.0.113.1","status":"RUNNING"},
-			{"name":"app-green","zone":"` + bgGCPZone + `","creationTimestamp":"2026-10-02T00:00:00Z","natIP":"203.0.113.9","status":"RUNNING"}
+			{"name":"app-green","zone":"` + bgGCPZone + `","creationTimestamp":"2026-10-01T00:00:00Z","status":"RUNNING","networkInterfaces":[{"accessConfigs":[{"natIP":"203.0.113.1"}]}]},
+			{"name":"app-green","zone":"` + bgGCPZone + `","creationTimestamp":"2026-10-02T00:00:00Z","status":"RUNNING","networkInterfaces":[{"accessConfigs":[{"natIP":"203.0.113.9"}]}]}
 		]`,
 	})
 	inst, err := BGColorInstance(context.Background(), CloudAuth{Provider: "gcp", Project: "p1"}, "", "app-green")
@@ -132,7 +132,7 @@ func TestBGColorInstanceGCPNotProvisioned(t *testing.T) {
 
 func TestBGPrimaryVnicGCPDerivesFromInstance(t *testing.T) {
 	shim := setupBGGCPShim(t, map[string]string{
-		"inst-green": `[{"name":"app-green","zone":"` + bgGCPZone + `","subnetwork":"https://www.googleapis.com/compute/v1/projects/p1/regions/europe-west1/subnetworks/kampodra"}]`,
+		"inst-green": `[{"name":"app-green","zone":"` + bgGCPZone + `","networkInterfaces":[{"subnetwork":"https://www.googleapis.com/compute/v1/projects/p1/regions/europe-west1/subnetworks/kampodra"}]}]`,
 	})
 	vnic, subnet, ok, err := BGPrimaryVnic(context.Background(), CloudAuth{Provider: "gcp", Project: "p1"}, "", "app-green")
 	if err != nil || !ok {
