@@ -55,14 +55,25 @@ func runBluegreenFlip(d Deps, c *cobra.Command) error {
 		ob = "blue"
 	}
 	rhost := strings.ReplaceAll(rip.Address, ".", "-") + ".sslip.io"
-	taddr, err := bgFlipAnchor(ctx, d, pair, to, trow, tpip)
-	if err != nil {
-		return err
+	// The anchor-conf stage is oci-leg only: on oci the guest watcher
+	// configures the secondary private IP from anchor.conf; on gcp the
+	// reserved address attaches at the NIC (access-config) and the guest
+	// sees it via the metadata server — the watcher's metadata poll is a
+	// vmbootstrap follow-up, nothing to write here (live-fire 2026-10-16:
+	// the stage's subnet/cidr ocid gates refused every gcp flip).
+	taddr := ""
+	if pair.auth.Provider != "gcp" {
+		taddr, err = bgFlipAnchor(ctx, d, pair, to, trow, tpip)
+		if err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintln(d.Stdout, "flip[1/4]: gcp — reserved address attaches at the NIC (no guest conf stage)")
 	}
 	fmt.Fprintf(d.Stdout, "flip[2/4]: guest answers on %s — reserved %s -> %s (anchor %s)\n", taddr, rip.Address, pair.colorName(to), tpip)
-	if err := cloud.BGReservedIPAssign(ctx, pair.auth, rip.OCID, tpip, "ASSIGNED"); err != nil {
+	if err := cloud.BGReservedIPAssign(ctx, pair.auth, rip.OCID, trow.OCID, tpip, "ASSIGNED"); err != nil {
 		bgCleanupTargetAnchor(ctx, d, trow.PublicIP, pair.sshKey, pair.anchorConf, taddr)
-		return fmt.Errorf("OCI flip call failed — guest conf removed; run 'kampodra bluegreen status': %w", err)
+		return fmt.Errorf("flip call failed — guest conf removed; run 'kampodra bluegreen status': %w", err)
 	}
 	fmt.Fprintf(d.Stdout, "flip[3/4]: reserved IP ASSIGNED — registering %s on %s's kamal-proxy (ACME HTTP-01 through the reserved ip)…\n", rhost, pair.colorName(to))
 	acme := fmt.Sprintf("podman exec kamal-proxy kamal-proxy deploy %s --host=%s --target=%s:%s --tls --health-check-path=%s",
@@ -134,7 +145,11 @@ func bgFlipResolveTarget(ctx context.Context, d Deps, pair bgPair, to string, fo
 			return ft, fmt.Errorf("could not create the reserved-anchor secondary private ip on %s: %w", pair.colorName(to), err)
 		}
 	}
-	if !cloud.IsOCID(tpip, "privateip") {
+	// The anchor handle is ocid-shaped ONLY on oci (a private-ip ocid);
+	// gcp's anchor is the reserved external IP itself — its name while
+	// dormant, its address while IN_USE (live-fire 2026-10-16: this gate
+	// refused every gcp flip).
+	if !cloud.IsOCID(tpip, "privateip") && pair.auth.Provider != "gcp" {
 		return ft, fmt.Errorf("could not resolve/create the reserved-anchor secondary private ip on %s", pair.colorName(to))
 	}
 	if instanceHealthy(ctx, d, trow.PublicIP, pair.sshKey, pair.container, pair.port, pair.healthPath) {
@@ -257,8 +272,8 @@ func bgFlipFailureRollback(ctx context.Context, d Deps, pair bgPair, to, ob, roc
 	recovered := false
 	if brow, err := bgInstance(ctx, pair, ob); err == nil && brow.OCID != "" {
 		if bnic, _, ok, err := cloud.BGPrimaryVnic(ctx, pair.auth, pair.compOCID, brow.OCID); err == nil && ok && bnic != "" {
-			if bpip, err := bgAnchorIP(ctx, pair, bnic); err == nil && cloud.IsOCID(bpip, "privateip") {
-				if err := cloud.BGReservedIPAssign(ctx, pair.auth, rocid, bpip, ""); err == nil {
+			if bpip, err := bgAnchorIP(ctx, pair, bnic); err == nil && bpip != "" && (pair.auth.Provider == "gcp" || cloud.IsOCID(bpip, "privateip")) {
+				if err := cloud.BGReservedIPAssign(ctx, pair.auth, rocid, brow.OCID, bpip, ""); err == nil {
 					fmt.Fprintf(d.Stderr, "rolled back to %s (existing anchor %s)\n", pair.colorName(ob), bpip)
 					recovered = true
 				}

@@ -86,6 +86,8 @@ func bgReservedIPCreateOCI(ctx context.Context, auth CloudAuth, compOCID, displa
 }
 
 func bgReservedIPAssignOCI(ctx context.Context, auth CloudAuth, ripOCID, privateIPID, waitState string) error {
+	_ = ripOCID // the attach rides privateIPID; the target is implied by it
+
 	_, err := RunOCI(ctx, PublicIPUpdateArgs(auth, ripOCID, privateIPID, waitState))
 	return err
 }

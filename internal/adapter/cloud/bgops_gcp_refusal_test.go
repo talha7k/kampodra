@@ -88,7 +88,7 @@ func bgOpsAll() map[string]func(context.Context, CloudAuth) error {
 			return err
 		},
 		"BGReservedIPAssign": func(ctx context.Context, a CloudAuth) error {
-			return BGReservedIPAssign(ctx, a, "ocid1.publicip.r1", "ocid1.privateip.p", "ASSIGNED")
+			return BGReservedIPAssign(ctx, a, "ocid1.publicip.r1", "app-green", "ocid1.privateip.p", "ASSIGNED")
 		},
 		"BGReservedIPRelease": func(ctx context.Context, a CloudAuth) error {
 			return BGReservedIPRelease(ctx, a, "ocid1.publicip.r1")
