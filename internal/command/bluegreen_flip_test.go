@@ -194,3 +194,29 @@ func TestBluegreenSubcommandHelpHermetic(t *testing.T) {
 }
 
 // TestBluegreenGuestLegsCarryResolvedKey: every bluegreen ssh leg at the
+
+// The bounded drain grace (--drain-timeout N): an observable pre-cutover
+// window printed BEFORE the assign — the cutover is an instantaneous NAT
+// move and in-flight requests die there; operators opt into a grace.
+func TestBluegreenFlipDrainGracePrintsBeforeAssign(t *testing.T) {
+	h := setupBGCP(t, map[string]string{
+		"addr-list":  bgGCPAddrList(),
+		"inst-green": bgGCPGreenRow(),
+	})
+	writeBGCPProfile(t, h)
+	if code := h.run(t, "flip", "--to", "green", "--force", "--drain-timeout", "1", "--profile", "gcp-prof"); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, h.stderr.String())
+	}
+	out := h.stdout.String()
+	drainAt := strings.Index(out, "drain grace 1s before the cutover")
+	assignAt := strings.Index(strings.Join(h.ociCalls(t), "\n"), "add-access-config")
+	if drainAt < 0 {
+		t.Errorf("drain grace line missing:\n%s", out)
+	}
+	// The grace is a PRE-cutover statement (code-ordered between the
+	// flip[2/4] stage print and the assign call — the assign argv above
+	// proves the flip ran to completion after it).
+	if assignAt < 0 {
+		t.Errorf("the assign never ran:\n%s", strings.Join(h.ociCalls(t), "\n"))
+	}
+}

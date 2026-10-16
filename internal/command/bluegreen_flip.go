@@ -63,6 +63,7 @@ func runBluegreenFlip(d Deps, c *cobra.Command) error {
 		!instanceHealthy(ctx, d, brow.PublicIP, pair.sshKey, pair.container, pair.port, pair.healthPath) {
 		fmt.Fprintf(d.Stderr, "WARN: %s is UNHEALTHY — after this flip there is NO healthy fallback (rollback would restore a dead instance)\n", pair.colorName(ob))
 	}
+	drain, _ := c.Flags().GetInt("drain-timeout")
 	rhost := strings.ReplaceAll(rip.Address, ".", "-") + ".sslip.io"
 	// The anchor-conf stage is oci-leg only: on oci the guest watcher
 	// configures the secondary private IP from anchor.conf; on gcp the
@@ -80,6 +81,19 @@ func runBluegreenFlip(d Deps, c *cobra.Command) error {
 		fmt.Fprintln(d.Stdout, "flip[1/4]: gcp — reserved address attaches at the NIC (no guest conf stage)")
 	}
 	fmt.Fprintf(d.Stdout, "flip[2/4]: guest answers on %s — reserved %s -> %s (anchor %s)\n", taddr, rip.Address, pair.colorName(to), tpip)
+	// The bounded drain grace (opt-in --drain-timeout): the cutover is an
+	// instantaneous NAT move — established connections through the
+	// reserved IP die at the assign without the holder's app ever being
+	// signaled. Operators who want a grace window get one, observably,
+	// before the cut.
+	if drain > 0 {
+		fmt.Fprintf(d.Stdout, "flip[2/4]: drain grace %ds before the cutover — in-flight requests through the reserved IP will be cut\n", drain)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(drain) * time.Second):
+		}
+	}
 	if err := cloud.BGReservedIPAssign(ctx, pair.auth, rip.OCID, trow.OCID, tpip, "ASSIGNED"); err != nil {
 		bgCleanupTargetAnchor(ctx, d, trow.PublicIP, pair.sshKey, pair.anchorConf, taddr)
 		return fmt.Errorf("flip call failed — guest conf removed; run 'kampodra bluegreen status': %w", err)
