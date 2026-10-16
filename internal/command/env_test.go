@@ -37,7 +37,10 @@ func setupEnv(t *testing.T) (deps command.Deps, stubDir string, stdout, stderr *
 		"cmd=\"${*: -1}\"\n" +
 		"case \"$cmd\" in\n" +
 		"  \"cat /etc/kampodra/env\") cat '" + fixture + "'; exit 0 ;;\n" +
+		"  *\"if [ -f /etc/kampodra/env\"*) cat '" + fixture + "'; exit 0 ;;\n" +
 		"  \"umask 077; cat >\"*) cat > '" + uploaded + "'; exit 0 ;;\n" +
+		"  *\"command -v rc-service\"*) printf 'openrc\\nhttpc=wget\\n'; exit 0 ;;\n" +
+		"  *\"rc-service \"*) exit 0 ;;\n" +
 		"  \"chmod 600\"*) exit 0 ;;\n" +
 		"  *) exit 0 ;;\n" +
 		"esac\n"

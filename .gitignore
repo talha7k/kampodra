@@ -22,3 +22,7 @@ coverage.out
 
 # internal publish runbook (varlock/npm mechanics — local only)
 /docs/publish.md
+
+# articles / drafts
+/article.md
+/article*.html
