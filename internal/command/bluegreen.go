@@ -30,17 +30,29 @@ const bluegreenHelp = `Usage:
   kampodra bluegreen status                  # pair view: instances, IP holder, health
   kampodra bluegreen init                    # create the reserved public IP (dormant, unassigned)
   kampodra bluegreen provision <color>       # launch the second instance (golden image; see below)
+  kampodra bluegreen deploy --to <color>     # update the STANDBY (build+push+gate on its own ip), then the health-gated flip
   kampodra bluegreen flip --to <color>       # ACME-first health-gated flip (see below)
   kampodra bluegreen rollback                # unassign to DORMANT + holder guest cleanup
 
-Each sub-step has its own --help: status | init | provision | flip | rollback.
+Each sub-step has its own --help: status | init | provision | deploy | flip | rollback.
 Cloud auth rides the instance profile's cloud block (or OCI_PROFILE /
 OCI_COMPARTMENT env); the oci CLI resolves natively otherwise.
+
+bluegreen deploy (the standby-update composite — "blue-green always up"):
+  deploys onto the NON-serving color on its own public ip (the deploy
+  pipeline: build → push → restart → served-sha health gate) and — only
+  after that gate passes — runs the same ACME-first flip. Any pipeline
+  failure returns before the flip: the holder keeps serving.
+  v1 boundaries: image deploys + binary fast-push (the pipeline's native
+  paths); rolling is NOT composed (the flip IS the cutover); no --env-file
+  (the standby keeps its installed env); --force-flip forwards to the
+  flip's --force.
 
 Examples:
   kampodra bluegreen status
   kampodra bluegreen init
   kampodra bluegreen provision green
+  kampodra bluegreen deploy --to green
   kampodra bluegreen flip --to green
   kampodra bluegreen rollback
 `
@@ -48,7 +60,7 @@ Examples:
 func newBluegreenCommand(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bluegreen",
-		Short: "OCI reserved-IP blue/green pair: status | init | provision | flip | rollback",
+		Short: "OCI reserved-IP blue/green pair: status | init | provision | deploy | flip | rollback",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			fmt.Fprint(c.OutOrStdout(), bluegreenHelp)
@@ -88,6 +100,7 @@ func newBluegreenCommand(d Deps) *cobra.Command {
 				return runBluegreenProvision(d, c, args[0])
 			},
 		},
+		newBluegreenDeploySub(d),
 		&cobra.Command{
 			Use:   "flip",
 			Short: "ACME-first health-gated cutover (--to <blue|green>; --force overrides an unhealthy target)",
@@ -114,8 +127,25 @@ func newBluegreenCommand(d Deps) *cobra.Command {
 	pf.String("qcow2", "", "provision inject route: golden qcow2 path (ALPINE_QCOW2 env, else error)")
 	pf.String("platform-key", "", "provision inject route: ssh public key FILE for the platform-image first boot (OPS_SSH_PUBKEY env, else error)")
 	pf.String("platform-user", "", "provision inject route: platform-image ssh user (PLATFORM_SSH_USER env, default ubuntu)")
-	pf.String("to", "", "flip: target color (blue|green)")
+	pf.String("to", "", "flip/deploy: target color (blue|green)")
 	pf.Bool("force", false, "flip: cut over even when the target app is unhealthy")
+	return cmd
+}
+
+// newBluegreenDeploySub wires the standby-update composite: the RunE body
+// (runBluegreenDeploy) lives in bluegreen_deploy.go. --to rides the shared
+// persistent flag; --force-flip is the composite's own (it forwards to the
+// flip's --force).
+func newBluegreenDeploySub(d Deps) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "deploy",
+		Short: "update the STANDBY <color> in place (build+push+gate on its own ip), then the health-gated flip — one command, zero-dark",
+		Args:  cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			return runBluegreenDeploy(d, c)
+		},
+	}
+	cmd.Flags().Bool("force-flip", false, "cut over even when the standby is unhealthy (forwards to flip --force)")
 	return cmd
 }
 
