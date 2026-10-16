@@ -20,14 +20,16 @@ import (
 
 // CloudAuth is the instance profile's `cloud` block: kampodra's ONLY
 // cloud-auth surface. It names overrides for the provider CLI's own config
-// (provider, profile, compartment, auth mode, gcp project/account) — never
-// credentials. Empty block = the provider CLI resolves everything natively
-// (its default profile / active config, its env, its own precedence).
+// (provider, profile, compartment, dnsCompartment, auth mode, gcp
+// project/account) — never credentials. Empty block = the provider CLI
+// resolves everything natively (its default profile / active config, its
+// env, its own precedence).
 type CloudAuth struct {
 	Provider          string `json:"provider"`
 	Profile           string `json:"profile"`           // oci-leg only
 	Compartment       string `json:"compartment"`       // oci-leg only
 	Namespace         string `json:"namespace"`         // oci-leg only
+	DnsCompartment    string `json:"dnsCompartment"`    // oci-leg only: DNS zone scope — empty = fall back to Compartment
 	InstancePrincipal bool   `json:"instancePrincipal"` // oci-leg only
 	Project           string `json:"project"`           // gcp-only; empty = gcloud's active config
 	Account           string `json:"account"`           // gcp-only; empty = gcloud's active config

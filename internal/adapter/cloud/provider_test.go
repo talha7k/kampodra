@@ -60,6 +60,25 @@ func TestParseCloudAuthGCPIdentity(t *testing.T) {
 	}
 }
 
+// The cloud block's dnsCompartment pins the DNS zone scope: multi-compartment
+// tenancies keep zones outside the compute compartment, so the parse must
+// carry it — and stay empty when unset (the compartment fallback is the
+// byte-identical default).
+func TestParseCloudAuthDNSCompartment(t *testing.T) {
+	got := ParseCloudAuth(json.RawMessage(`{"compartment":"compute-comp","dnsCompartment":"dns-comp"}`))
+	if got.Compartment != "compute-comp" || got.DnsCompartment != "dns-comp" {
+		t.Errorf("parsed = %+v", got)
+	}
+	got = ParseCloudAuth(json.RawMessage(`{"compartment":"compute-comp"}`))
+	if got.Compartment != "compute-comp" || got.DnsCompartment != "" {
+		t.Errorf("unset dnsCompartment must stay empty: %+v", got)
+	}
+	got = ParseCloudAuth(json.RawMessage(`{}`))
+	if got.DnsCompartment != "" {
+		t.Errorf("empty block must stay zero: %+v", got)
+	}
+}
+
 // withGCPAuth mirrors withProfile: the cloud block's identity names ride as
 // gcloud's own config overrides, ONLY when set.
 func TestWithGCPAuthOnlyWhenSet(t *testing.T) {

@@ -26,12 +26,16 @@ const dnsHelp = `Usage:
 
 Auth is the provider CLI's own — kampodra passes no auth flags unless the
 instance profile's "cloud" block overrides it:
-  oci: {"profile": "…", "instancePrincipal": true, "compartment": "…"} —
+  oci: {"profile": "…", "instancePrincipal": true, "compartment": "…",
+       "dnsCompartment": "…"} —
        OCI_PROFILE / OCI_COMPARTMENT env are the escape hatch.
   gcp: {"provider": "gcp", "project": "…", "account": "…"} — an empty
        project/account = gcloud's active config; CLOUDSDK_CORE_PROJECT /
        CLOUDSDK_CORE_ACCOUNT / CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT
        are gcloud's own env escape hatch (kampodra never reads them).
+DNS zones in their own compartment? --dns-compartment <name|ocid> (or the
+cloud block's "dnsCompartment") scopes dns alone, falling back to
+"compartment" when unset. gcp has no compartments and ignores it.
 Identity names only: access-token flags, key files, credential env vars,
 and client secrets are never accepted, stored, or logged. Types are pinned
 to A | AAAA | CNAME. ` + "`add`" + ` merges into the existing RRSet (round-robin
@@ -61,6 +65,7 @@ func newDNSCommand(d Deps) *cobra.Command {
 	pf := cmd.PersistentFlags()
 	pf.String("profile", "", "kampodra instance profile — carries the cloud block (provider CLI auth overrides: profile/compartment/project/account)")
 	pf.String("zone", "", "zone id or name (default: the compartment's ONLY zone — several require this flag)")
+	pf.String("dns-compartment", "", "OCI compartment (name or ocid) hosting the DNS zones — overrides the cloud block's dnsCompartment, else compartment, for dns only (gcp ignores it)")
 	pf.String("name", "", "record name: a DNS label (app) or an fqdn inside the zone")
 	pf.String("type", "", "record type: A, AAAA, or CNAME")
 	pf.String("value", "", "record target (type-shaped: IPv4 / IPv6 / hostname)")
@@ -96,8 +101,9 @@ func newDNSCommand(d Deps) *cobra.Command {
 }
 
 // dnsContext bundles the resolved provider inputs (the shell's need_provider
-// + resolve_zone sequence). The compartment's resolved ocid rides back on
-// auth.Compartment — the neutral ops read it from there.
+// + resolve_zone sequence). The DNS scope's resolved ocid rides back on
+// auth.DnsCompartment (when a dedicated scope is set) or auth.Compartment
+// (the fallback) — the neutral ops read the effective one from there.
 type dnsContext struct {
 	auth     cloud.CloudAuth
 	zoneName string
@@ -152,18 +158,37 @@ func dnsResolveZone(d Deps, c *cobra.Command, dc *dnsContext) error {
 	return nil
 }
 
-func dnsResolveCompartment(d Deps, ctx context.Context, target Target, dc *dnsContext) error {
+func dnsResolveCompartment(d Deps, c *cobra.Command, ctx context.Context, target Target, dc *dnsContext) error {
 	dc.auth = cloudAuthFor(d, target)
+	// --dns-compartment outranks the cloud block's "dnsCompartment" (already
+	// parsed into auth by cloudAuthFor): the DNS zones may live outside the
+	// compute compartment (incident 2026-10-16).
+	if v := flagString(c, "dns-compartment"); v != "" {
+		dc.auth.DnsCompartment = v
+	}
 	if err := cloud.CheckProvider(dc.auth); err != nil {
 		return err
 	}
 	if dc.auth.Provider == "gcp" {
 		// gcp has no compartments: scope is the block's project (the legs
 		// read it directly); carrying one is a config error the neutral op
-		// refuses.
+		// refuses. dnsCompartment is meaningless under gcp — ignored.
 		if dc.auth.Compartment != "" {
 			_, err := cloud.DNSResolveScope(ctx, dc.auth, dc.auth.Compartment)
 			return err
+		}
+		return nil
+	}
+	// A dedicated DNS scope wins over the compute compartment; either way a
+	// name (not an ocid) resolves through the neutral scope op and the ocid
+	// rides back on the same field for the ops downstream.
+	if scope := dc.auth.DnsCompartment; scope != "" {
+		if !strings.HasPrefix(scope, "ocid1.") {
+			ocid, err := cloud.DNSResolveScope(ctx, dc.auth, scope)
+			if err != nil {
+				return fmt.Errorf("compartment '%s' not found (auth profile: %s)", scope, profileLabel(dc.auth))
+			}
+			dc.auth.DnsCompartment = ocid
 		}
 		return nil
 	}
@@ -224,7 +249,7 @@ func dnsPrepare(d Deps, c *cobra.Command, ctx context.Context, target Target, ne
 	if err = dnsNeedProvider(d, dc.auth); err != nil {
 		return nil, "", "", "", "", err
 	}
-	if err = dnsResolveCompartment(d, ctx, target, dc); err != nil {
+	if err = dnsResolveCompartment(d, c, ctx, target, dc); err != nil {
 		return nil, "", "", "", "", err
 	}
 	if err = dnsResolveZone(d, c, dc); err != nil {
@@ -246,7 +271,7 @@ func runDNSRecords(d Deps, c *cobra.Command) error {
 	if err := dnsNeedProvider(d, dc.auth); err != nil {
 		return err
 	}
-	if err := dnsResolveCompartment(d, c.Context(), target, dc); err != nil {
+	if err := dnsResolveCompartment(d, c, c.Context(), target, dc); err != nil {
 		return err
 	}
 	if err := dnsResolveZone(d, c, dc); err != nil {
