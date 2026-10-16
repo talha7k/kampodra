@@ -34,7 +34,7 @@ func setupDNS(t *testing.T, opts map[string]string) *dnsHarness {
 	rrsetFixture := filepath.Join(stub, "rrset.json")
 	updateFixture := filepath.Join(stub, "update.json")
 
-	os.WriteFile(compartmentFixture, []byte(`{"data":[{"id":"ocid1.compartment.oc1..aaa","name":"test-compartment"}]}`), 0o600)
+	os.WriteFile(compartmentFixture, []byte(compartmentData(opts)), 0o600)
 	os.WriteFile(zonesFixture, []byte(opts["zones"]), 0o600)
 	if opts["zones"] == "" {
 		os.WriteFile(zonesFixture, []byte(`{"data":{"items":[{"name":"example.com","id":"ocid1.dns-zone.oc1..z1"}]}}`), 0o600)
@@ -116,6 +116,16 @@ func (h *dnsHarness) ociCalls(t *testing.T) []string {
 }
 
 const dnsExistingRRSet = `{"data":{"items":[{"domain":"app.example.com","rtype":"A","ttl":300,"rdata":"203.0.113.9"}]}}`
+
+// compartmentData builds the `iam compartment list` fixture: the default
+// single compute compartment, or the opts["compartments"] override for the
+// split compute/DNS-scope cases.
+func compartmentData(opts map[string]string) string {
+	if v := opts["compartments"]; v != "" {
+		return v
+	}
+	return `{"data":[{"id":"ocid1.compartment.oc1..aaa","name":"test-compartment"}]}`
+}
 
 func TestDNSRecordsRendersTable(t *testing.T) {
 	h := setupDNS(t, map[string]string{
@@ -665,5 +675,122 @@ func TestDNSGCPCompartmentIsRefused(t *testing.T) {
 	}
 	if calls := h.gcpCalls(t); len(calls) != 0 {
 		t.Errorf("the refusal must not exec gcloud: %v", calls)
+	}
+}
+
+// --- dns compartment scoping (incident 2026-10-16): the DNS zones may live
+// --- in a different OCI compartment than compute. Order: --dns-compartment
+// --- flag > the cloud block's "dnsCompartment" > compartment (byte-identical
+// --- default); gcp ignores the whole thing.
+
+const dnsTwoCompartments = `{"data":[
+	{"id":"ocid1.compartment.oc1..aaa","name":"test-compartment"},
+	{"id":"ocid1.compartment.oc1..bbb","name":"dns-zone-comp"}]}`
+
+// --dns-compartment reaches the scope resolution: every dns argv searches the
+// flag's compartment ocid, and the compute compartment never appears.
+func TestDNSDNSCompartmentFlagReachesArgv(t *testing.T) {
+	h := setupDNS(t, map[string]string{"compartments": dnsTwoCompartments})
+	writeDNSProfile(t, h.deps.Home, "split", `{"host": "root@198.51.100.7", "cloud": {"compartment": "test-compartment"}}`)
+	if code := h.run(t, "records", "--profile", "split", "--dns-compartment", "dns-zone-comp"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	calls := h.ociCalls(t)
+	want := []string{
+		"iam compartment list --all",
+		"dns zone list --all -c ocid1.compartment.oc1..bbb",
+		"dns record zone get -c ocid1.compartment.oc1..bbb --zone-name-or-id ocid1.dns-zone.oc1..z1",
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("argv drift:\n got: %q\nwant: %q", calls, want)
+	}
+}
+
+// The cloud block's "dnsCompartment" alone (no flag) scopes dns the same way.
+func TestDNSCloudBlockDNSCompartment(t *testing.T) {
+	h := setupDNS(t, map[string]string{"compartments": dnsTwoCompartments})
+	writeDNSProfile(t, h.deps.Home, "split", `{"host": "root@198.51.100.7", "cloud": {"compartment": "test-compartment", "dnsCompartment": "dns-zone-comp"}}`)
+	if code := h.run(t, "records", "--profile", "split"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	calls := h.ociCalls(t)
+	want := []string{
+		"iam compartment list --all",
+		"dns zone list --all -c ocid1.compartment.oc1..bbb",
+		"dns record zone get -c ocid1.compartment.oc1..bbb --zone-name-or-id ocid1.dns-zone.oc1..z1",
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("argv drift:\n got: %q\nwant: %q", calls, want)
+	}
+}
+
+// The flag outranks the cloud block's dnsCompartment.
+func TestDNSDNSCompartmentFlagBeatsBlock(t *testing.T) {
+	h := setupDNS(t, map[string]string{"compartments": `{"data":[
+		{"id":"ocid1.compartment.oc1..aaa","name":"test-compartment"},
+		{"id":"ocid1.compartment.oc1..bbb","name":"block-comp"},
+		{"id":"ocid1.compartment.oc1..ccc","name":"flag-comp"}]}`})
+	writeDNSProfile(t, h.deps.Home, "split", `{"host": "root@198.51.100.7", "cloud": {"compartment": "test-compartment", "dnsCompartment": "block-comp"}}`)
+	if code := h.run(t, "records", "--profile", "split", "--dns-compartment", "flag-comp"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	joined := strings.Join(h.ociCalls(t), "\n")
+	if !strings.Contains(joined, "dns zone list --all -c ocid1.compartment.oc1..ccc") {
+		t.Errorf("the flag must outrank the block's dnsCompartment:\n%s", joined)
+	}
+	if strings.Contains(joined, "ocid1.compartment.oc1..bbb") {
+		t.Errorf("the block's dnsCompartment must lose to the flag:\n%s", joined)
+	}
+}
+
+// Unset flag + unset block: today's behavior, byte-identical — the compute
+// compartment resolves exactly as before.
+func TestDNSDNSCompartmentUnsetArgvByteIdentical(t *testing.T) {
+	h := setupDNS(t, map[string]string{})
+	if code := h.run(t, "records"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	calls := h.ociCalls(t)
+	want := []string{
+		"iam compartment list --all",
+		"dns zone list --all -c ocid1.compartment.oc1..aaa",
+		"dns record zone get -c ocid1.compartment.oc1..aaa --zone-name-or-id ocid1.dns-zone.oc1..z1",
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("unset scope must stay byte-identical:\n got: %q\nwant: %q", calls, want)
+	}
+}
+
+// The no-zones failure names the compartment it searched and hints the
+// override — the incident's "no managed zones" dead end must not repeat.
+func TestDNSNoZonesNamesCompartmentAndHintsOverride(t *testing.T) {
+	h := setupDNS(t, map[string]string{"zones": `{"data":{"items":[]}}`})
+	if code := h.run(t, "records"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	for _, want := range []string{
+		"no managed zones in compartment ocid1.compartment.oc1..aaa",
+		"is your DNS zone in another compartment?",
+		"--dns-compartment",
+		`"dnsCompartment"`,
+	} {
+		if !strings.Contains(h.stderr.String(), want) {
+			t.Errorf("stderr missing %q:\n%s", want, h.stderr.String())
+		}
+	}
+}
+
+// gcp has no compartments: DnsCompartment (block or flag) is meaningless —
+// ignored, failing nothing.
+func TestDNSGCPDNSCompartmentIgnored(t *testing.T) {
+	h := setupDNSGCP(t, map[string]string{})
+	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp", "dnsCompartment": "some-comp"}}`)
+	if code := h.run(t, "records", "--dns-compartment", "flag-comp", "--profile", "gcp-prof"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	for _, call := range h.gcpCalls(t) {
+		if strings.Contains(call, "some-comp") || strings.Contains(call, "flag-comp") {
+			t.Errorf("dnsCompartment values must never reach a gcp argv: %s", call)
+		}
 	}
 }
