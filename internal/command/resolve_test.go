@@ -125,6 +125,96 @@ func TestResolveTarget(t *testing.T) {
 	}
 }
 
+func TestResolveTargetProxyHosts(t *testing.T) {
+	// proxyHosts (the optional host LIST) rides the same precedence as the
+	// scalar: the profile's legacy flat field wins over the project block,
+	// and a list with no explicit scalar makes its FIRST host the edge
+	// (the public smoke probes the first host).
+	cfg := mustCfg(t, `{
+	  "defaultProfile": "def",
+	  "profiles": {
+	    "def": {},
+	    "listonly": {"proxyHosts": ["first.example.com", "second.example.com"]},
+	    "block": {"project": {"proxyHosts": ["block-a.example.com", "block-b.example.com"]}},
+	    "flat": {"proxyHost": "flat.example.com", "proxyHosts": ["flat-a.example.com", "flat-b.example.com"]},
+	    "both": {"proxyHosts": ["flat-wins.example.com"], "project": {"proxyHosts": ["block-loses.example.com"]}}
+	  }
+	}`)
+	noEnv := func(string) (string, bool) { return "", false }
+	hosts := func(got Target) string {
+		return strings.Join(got.Project.EffectiveProxyHosts(), ",")
+	}
+
+	t.Run("no list anywhere: effective hosts stay exactly [scalar]", func(t *testing.T) {
+		got, err := ResolveTarget(cfg, "", "", "def", nil, noEnv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hosts(got) != "app.example.com" || got.ProxyHost != "app.example.com" {
+			t.Errorf("hosts = %q, scalar = %q — the unset list must fall back to the scalar alone", hosts(got), got.ProxyHost)
+		}
+	})
+	t.Run("profile block list resolves through the project ladder; first host becomes the edge", func(t *testing.T) {
+		got, err := ResolveTarget(cfg, "", "", "block", nil, noEnv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hosts(got) != "block-a.example.com,block-b.example.com" {
+			t.Errorf("hosts = %q, want the block list", hosts(got))
+		}
+		if got.ProxyHost != "block-a.example.com" || got.ProxyHostSource != "project (proxyHosts[0])" {
+			t.Errorf("scalar = %q (source %q), want the list's first host (the smoke probes it)", got.ProxyHost, got.ProxyHostSource)
+		}
+	})
+	t.Run("list-only profile: scalar derives from the list, flat field absent", func(t *testing.T) {
+		got, err := ResolveTarget(cfg, "", "", "listonly", nil, noEnv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ProxyHost != "first.example.com" || hosts(got) != "first.example.com,second.example.com" {
+			t.Errorf("scalar = %q, hosts = %q, want the first host + the full list", got.ProxyHost, hosts(got))
+		}
+	})
+	t.Run("flat list wins over the block list", func(t *testing.T) {
+		got, err := ResolveTarget(cfg, "", "", "both", nil, noEnv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hosts(got) != "flat-wins.example.com" {
+			t.Errorf("hosts = %q, want the flat profile list (legacy flat field wins)", hosts(got))
+		}
+	})
+	t.Run("flat scalar keeps winning the scalar while the flat list feeds the re-point", func(t *testing.T) {
+		got, err := ResolveTarget(cfg, "", "", "flat", nil, noEnv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ProxyHost != "flat.example.com" || got.ProxyHostSource != "profile (legacy flat field)" {
+			t.Errorf("scalar = %q (source %q), want the flat scalar (byte-compat with today)", got.ProxyHost, got.ProxyHostSource)
+		}
+		if hosts(got) != "flat-a.example.com,flat-b.example.com" {
+			t.Errorf("hosts = %q, want the flat list", hosts(got))
+		}
+	})
+	t.Run("an explicit scalar beats the derived first host", func(t *testing.T) {
+		got, err := ResolveTarget(cfg, "", "", "block", nil, func(key string) (string, bool) {
+			if key == "KAMPODRA_PROXY_HOST" {
+				return "explicit.example.com", true
+			}
+			return "", false
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ProxyHost != "explicit.example.com" {
+			t.Errorf("scalar = %q, want the explicit env scalar over the derived first host", got.ProxyHost)
+		}
+		if hosts(got) != "block-a.example.com,block-b.example.com" {
+			t.Errorf("hosts = %q, want the block list untouched", hosts(got))
+		}
+	})
+}
+
 func TestResolveTargetManifestShapesProject(t *testing.T) {
 	// The repo manifest slots into the ladder between the defaults and the
 	// profile block: profile project block > manifest > defaults.

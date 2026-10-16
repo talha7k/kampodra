@@ -270,19 +270,34 @@ func (r *deployRun) healthGateOne(port, sha, healthPath string) error {
 	return fmt.Errorf("container never became healthy — rollback: kampodra deploy --rollback <sha7> (see: kampodra deploy list)")
 }
 
+// proxyHostListArg renders the re-point's --host value: the comma-separated
+// EFFECTIVE host list (kamal-proxy accepts a comma-separated list — the
+// production edge serves several hostnames). Re-pointing with the scalar
+// alone would silently DROP every other host the proxy serves.
+func (r *deployRun) proxyHostListArg() string {
+	return strings.Join(r.target.Project.EffectiveProxyHosts(), ",")
+}
+
+// proxyDeployCmd is the kamal-proxy re-point invocation (the same podman-exec
+// form kamal used) — shared by the in-place and rolling variants so the
+// --host list can never drift between them.
+func (r *deployRun) proxyDeployCmd(targetRef string) string {
+	pj := r.target.Project
+	return fmt.Sprintf("podman exec kamal-proxy kamal-proxy deploy %s --host %s --target %s --tls --health-check-path %s",
+		pj.Container, r.proxyHostListArg(), targetRef, pj.HealthPath)
+}
+
 // proxyRepoint points kamal-proxy at targetRef (container:port or
 // shadow:port) — the same podman-exec invocation kamal used. A host without
 // a running kamal-proxy skips the re-point (single-host dev shapes).
 func (r *deployRun) proxyRepoint(targetRef string) error {
-	pj := r.target.Project
 	names := r.vmTolerant("podman ps --format '{{.Names}}'")
 	if !hasExactLine(names, "kamal-proxy") {
 		r.say("kamal-proxy not running — skipping re-point")
 		return nil
 	}
 	r.say("kamal-proxy re-point (podman exec — the same invocation kamal used)…")
-	cmd := fmt.Sprintf("podman exec kamal-proxy kamal-proxy deploy %s --host %s --target %s --tls --health-check-path %s",
-		pj.Container, r.target.ProxyHost, targetRef, pj.HealthPath)
+	cmd := r.proxyDeployCmd(targetRef)
 	if _, err := r.vm(cmd); err != nil {
 		return fmt.Errorf("proxy re-point failed (podman logs kamal-proxy): %w", err)
 	}
@@ -292,14 +307,12 @@ func (r *deployRun) proxyRepoint(targetRef string) error {
 // proxyRepointForced is the rolling variant: the proxy switch IS the
 // mechanism, so a missing kamal-proxy is fatal there.
 func (r *deployRun) proxyRepointForced(targetRef string) error {
-	pj := r.target.Project
 	names := r.vmTolerant("podman ps --format '{{.Names}}'")
 	if !hasExactLine(names, "kamal-proxy") {
 		return fmt.Errorf("kamal-proxy not running on %s — the rolling deploy's zero-downtime switch needs it (start kamal-proxy, or deploy without --rolling)", r.target.HostSpec.Host)
 	}
 	r.say("kamal-proxy re-point (podman exec)…")
-	cmd := fmt.Sprintf("podman exec kamal-proxy kamal-proxy deploy %s --host %s --target %s --tls --health-check-path %s",
-		pj.Container, r.target.ProxyHost, targetRef, pj.HealthPath)
+	cmd := r.proxyDeployCmd(targetRef)
 	if _, err := r.vm(cmd); err != nil {
 		return fmt.Errorf("proxy re-point failed (podman logs kamal-proxy): %w", err)
 	}
