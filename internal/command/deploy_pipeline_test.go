@@ -124,14 +124,22 @@ func setupDeployPipeline(t *testing.T) (deps command.Deps, stubDir string, stdou
 	})
 
 	sshShim := "#!/bin/bash\n" +
+
 		"printf '%s\\n' \"$*\" >> '" + inv + "'\n" +
 		"cmd=\"${*: -1}\"\n" +
+
 		"failon=\"$(cat '" + filepath.Join(stubDir, "failon") + "' 2>/dev/null)\"\n" +
 		"failonce=\"$(cat '" + filepath.Join(stubDir, "failonce") + "' 2>/dev/null)\"\n" +
 		"if [ -n \"$failonce\" ] && [[ \"$cmd\" == *\"$failonce\"* ]]; then rm -f '" + filepath.Join(stubDir, "failonce") + "'; exit 1; fi\n" +
 		"if [ -n \"$failon\" ] && [[ \"$cmd\" == *\"$failon\"* ]]; then exit 1; fi\n" +
 		"case \"$cmd\" in\n" +
 		"  *\"cat > \"*) cat > '" + filepath.Join(stubDir, "stdin-capture") + "'; exit 0 ;;\n" +
+		// The byte-verify gate fingerprints the upload; the shim answers
+		// with the REAL hash of the bytes it just captured — a drifted
+		// upload fails here exactly like a drifted host file would.
+		// sha256sum exists on the Alpine/Ubuntu VMs; macOS test hosts only
+		// ship shasum — the fallback keeps the harness honest everywhere.
+		"  *sha256sum*) { sha256sum '" + filepath.Join(stubDir, "stdin-capture") + "' 2>/dev/null || shasum -a 256 '" + filepath.Join(stubDir, "stdin-capture") + "'; } | cut -d' ' -f1; exit 0 ;;\n" +
 		"  *\"readlink \"*\"current\"*) cat '" + filepath.Join(stubDir, "currentlink") + "' 2>/dev/null; exit $? ;;\n" +
 		"  *\".prev.sha\"*) cat '" + filepath.Join(stubDir, "prevsha") + "' 2>/dev/null; exit $? ;;\n" +
 		"  *\".deps-sha\"*) cat '" + filepath.Join(stubDir, "depssha") + "' 2>/dev/null; exit $? ;;\n" +

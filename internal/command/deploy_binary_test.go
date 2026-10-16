@@ -2,6 +2,7 @@ package command_test
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -406,5 +407,41 @@ func TestDeployBinaryFailedPushLeavesMarkersUntouched(t *testing.T) {
 	}
 	if strings.Contains(inv, "mv "+binaryRunPath+".sha "+binaryMarkerPrev) {
 		t.Error("the failed push rotated .prev.sha")
+	}
+}
+
+// The rebuild-didnt-happen catch (live-fire 2026-10-16: a stale worktree
+// binary shipped twice under two different sha labels — identity rode the
+// pushed API_GIT_SHA env, so nothing noticed): artifact bytes IDENTICAL to
+// the previous push while the stamped sha moved → WARN loudly, deploy
+// proceeds (re-pushing the same bytes deliberately is legitimate).
+func TestDeployBinaryStaleBytesWarnsLoudly(t *testing.T) {
+	deps, _, stdout, _, reporoot := setupDeployPipeline(t)
+	writeBinaryManifest(t, reporoot, binaryGoManifest)
+	deps.Dir = reporoot
+	writeTree(t, reporoot, "apps/api-go/main.go", "package main\n")
+	// The go shim always writes "fake-go-binary\n" — seed the ledger with
+	// the SAME artifact fingerprint under an OLDER sha.
+	sum := sha256.Sum256([]byte("fake-go-binary\n"))
+	ledger := filepath.Join(deps.Home, ".kampodra", "deployments.jsonl")
+	prev := `{"ts":"2026-10-08T10:05:00Z","host":"` + statusHost + `","sha":"bbb2222","tag":"bbb2222","result":"success","duration_ms":90000,"artifact_sha256":"` + hex.EncodeToString(sum[:]) + `"}` + "\n"
+	if err := os.WriteFile(ledger, []byte(prev), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := runDeploy(t, deps, "--host", statusHost, "--binary"); code != 0 {
+		t.Fatalf("exit = %d, stdout:\n%s", code, stdout.String())
+	}
+	mustContain(t, stdout.String(), "WARN: artifact bytes are IDENTICAL")
+	mustContain(t, stdout.String(), "bbb2222")
+	// The push itself still verified byte-for-byte before the swap.
+	mustContain(t, stdout.String(), "verified on VM")
+	// The ledger now carries the fingerprint for the NEXT deploy's check.
+	last := ledgerLines(readLedgerFile(t, deps.Home))
+	if len(last) < 2 {
+		t.Fatalf("ledger missing the new entry:\n%s", readLedgerFile(t, deps.Home))
+	}
+	if !strings.Contains(last[len(last)-1], `"artifact_sha256":"`+hex.EncodeToString(sum[:])+`"`) {
+		t.Errorf("ledger entry missing the artifact fingerprint:\n%s", last[len(last)-1])
 	}
 }

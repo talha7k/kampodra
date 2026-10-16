@@ -33,7 +33,7 @@ func TestAppendEntryWritesOneJSONLLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.TrimSuffix(string(data), "\n")
-	want := `{"ts":"2026-10-08T12:00:00Z","host":"root@203.0.113.9","sha":"abc1234","tag":"abc1234","result":"success","duration_ms":182000,"subject":"feat: deploy pipeline"}`
+	want := `{"ts":"2026-10-08T12:00:00Z","host":"root@203.0.113.9","sha":"abc1234","tag":"abc1234","result":"success","duration_ms":182000,"subject":"feat: deploy pipeline","artifact_sha256":""}`
 	if got != want {
 		t.Errorf("AppendEntry() line =\n  %s\nwant\n  %s", got, want)
 	}
@@ -98,7 +98,7 @@ func TestAppendEntryFlattensAndEscapesTheSubject(t *testing.T) {
 	// The STORED line carries the shell-escaped wire shape (the seam
 	// contract); the READER unescapes it back to the original.
 	line := readFileLine(t, path)
-	if !strings.Contains(line, `subject":"fix: \"tls\" edge\\case wrapped line"}`) {
+	if !strings.Contains(line, `subject":"fix: \"tls\" edge\\case wrapped line","artifact_sha256":""}`) {
 		t.Errorf("stored subject = %s, want the shell-escaped shape with control chars flattened", line)
 	}
 	entries := LedgerEntries(path, "")
