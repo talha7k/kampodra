@@ -295,8 +295,25 @@ func (r *deployRun) publicSmoke() error {
 	host := r.target.ProxyHost
 	r.say("smoke (public, through the proxy)…")
 	body, ok := r.d.Prober.LiveStatus(r.ctx, host, r.target.Project.HealthPath)
-	if !ok || !probe.BodyServesSha(body, r.ver) {
-		return fmt.Errorf("served git sha mismatch: %s (proxy still pointing at the old version?)", strings.TrimSpace(body))
+	// Every failure names the EXACT probed URL and WHERE proxyHost came
+	// from in the ladder: the smoke exercises the EDGE (proxyHost), not the
+	// VM the health gate just verified — a stale proxy project block
+	// SHADOWS kampodra.json (the 2026-10-16 incident: the profile's stale
+	// proxyHost beat the fixed manifest, so the manifest fix changed
+	// nothing). Provenance turns "why is it still the old host" into a
+	// one-glance answer.
+	src := r.target.ProxyHostSource
+	if src == "" {
+		src = "unknown"
+	}
+	if !ok {
+		return fmt.Errorf("public smoke: https://%s%s is UNREACHABLE (proxyHost source: %s) — stale proxyHost or DNS not pointing at the serving instance? a bluegreen flip de-registers the pre-flip host: update the profile's project.proxyHost AND kampodra.json post-flip", host, r.target.Project.HealthPath, src)
+	}
+	if strings.TrimSpace(body) == "" {
+		return fmt.Errorf("public smoke: https://%s%s answered with an EMPTY body (proxyHost source: %s) — served no sha stamp at all: wrong host (stale proxyHost after a flip?) or the app's %s route serves nothing", host, r.target.Project.HealthPath, src, r.target.Project.HealthPath)
+	}
+	if !probe.BodyServesSha(body, r.ver) {
+		return fmt.Errorf("public smoke: served git sha %q, want %s — probed https://%s%s (proxyHost source: %s); the VM health gate PASSED, so the app is fine: the edge is stale (update the profile's project.proxyHost AND kampodra.json post-flip)", strings.TrimSpace(body), r.ver, host, r.target.Project.HealthPath, src)
 	}
 	if !r.d.Prober.Up(r.ctx, host) {
 		return fmt.Errorf("/up failed on https://%s/up", host)

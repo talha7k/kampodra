@@ -104,6 +104,11 @@ func runBluegreenFlip(d Deps, c *cobra.Command) error {
 	}
 	fmt.Fprintf(d.Stdout, "flip[4/4]: cert for %s VALID + serving through %s\n", rhost, rip.Address)
 	fmt.Fprintf(d.Stdout, "FLIPPED: https://%s/ (https://%s/) now serves from %s\n", rip.Address, rhost, pair.colorName(to))
+	// The pre-flip host is DE-REGISTERED by this flip — every proxyHost
+	// referencing it (the profile's project block SHADOWS kampodra.json in
+	// the ladder; update both) now probes a dead edge and fails deploys
+	// with a served-sha mismatch (live-fire 2026-10-16 incident).
+	fmt.Fprintf(d.Stdout, "post-flip: update proxyHost to %s (or point DNS at %s) in the profile's project block AND kampodra.json — the pre-flip host no longer serves\n", rhost, rip.Address)
 	fmt.Fprintf(d.Stdout, "served %s: %s\n", pair.healthPath, orAngle(served))
 	return nil
 }
