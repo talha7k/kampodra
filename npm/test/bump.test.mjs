@@ -40,7 +40,7 @@ function fixture(t, mainGo) {
   const pkg = {
     name: "kampodra",
     version: "0.7.0-beta.9",
-    optionalDependencies: { "@talha7k/kampodra-darwin-arm64": "0.7.0-beta.9" },
+    optionalDependencies: { "@kampodra/darwin-arm64": "0.7.0-beta.9" },
   };
   writeFileSync(join(root, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
   writeFileSync(join(root, "main.go"), mainGo);
@@ -127,7 +127,7 @@ test("bumpFiles: rewrites both files; JSON bytes stay in the cross-compile conve
   // bump edits ONLY the "version" field — the optionalDependencies pins keep
   // the old version until `make cross-compile` stamps them (its job, not
   // ours; the pin test proves the stamp happened).
-  assert.equal(pkg.optionalDependencies["@talha7k/kampodra-darwin-arm64"], "0.7.0-beta.9");
+  assert.equal(pkg.optionalDependencies["@kampodra/darwin-arm64"], "0.7.0-beta.9");
   // Byte-identity: re-serializing what was written reproduces the file
   // exactly — this is the convention `make cross-compile` stamps with, so
   // the later stamping pass is a no-op on these bytes.
