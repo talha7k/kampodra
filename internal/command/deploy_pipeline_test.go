@@ -298,7 +298,7 @@ func TestDeployPipelineHappyPathSequencePinned(t *testing.T) {
 	mustContain(t, inv, "git rev-parse --show-toplevel")
 	mustContain(t, inv, "git status --porcelain")
 	mustContain(t, inv, "podman info")
-	mustContain(t, inv, "podman build --platform linux/arm64 -f Dockerfile --build-arg GIT_SHA="+pipelineVer+" -t "+pipelineImageTag+" "+reporoot)
+	mustContain(t, inv, "podman build --platform linux/arm64 -f "+filepath.Join(reporoot, "Dockerfile")+" --build-arg GIT_SHA="+pipelineVer+" -t "+pipelineImageTag+" "+reporoot)
 	mustContain(t, inv, "podman save --format docker-archive "+pipelineImageTag)
 	mustContain(t, inv, "podman load")
 	mustContain(t, inv, "podman tag "+pipelineImageTag+" "+deployImageRepo+":latest")

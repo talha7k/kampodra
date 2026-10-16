@@ -18,7 +18,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -123,6 +125,27 @@ func (r *deployRun) banner() {
 	r.say("── target %s · profile %s · container %s · port %s",
 		r.target.HostSpec.Host, displayProfile(r.target.ProfileName), pj.Container, pj.Port)
 	r.say("── mode   %s", mode)
+	// WHICH tree is shipping: a wrong-checkout deploy (worktree vs shared
+	// checkout) otherwise only surfaces as a confusing health-gate failure
+	// long after the fact (2026-10-16 complaint).
+	if r.repoRoot != "" {
+		r.say("── build root %s @ %s (clean-tree gate passed)", r.repoRoot, r.ver)
+	}
+	if r.opts.binary != "" && r.bin != nil && r.repoRoot != "" {
+		// Staleness heuristic: an artifact older than HEAD was probably not
+		// built from this tree (the other-checkout mistake). mtime lies
+		// across copies — WARN, never fail; the served-sha gate stays the
+		// identity check.
+		art := filepath.Join(r.repoRoot, r.bin.BuildDir, r.bin.Artifact)
+		if fi, err := os.Stat(art); err == nil {
+			if out, err := localOutput(r.ctx, r.repoRoot, "git", "log", "-1", "--format=%ct"); err == nil {
+				if commitAt, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64); err == nil && fi.ModTime().Unix() < commitAt {
+					r.say("WARN: artifact %s (mtime %s) predates HEAD %s — was it built from THIS tree? the served-sha gate will catch a stale build, after the push",
+						art, fi.ModTime().Format(time.RFC3339), r.ver)
+				}
+			}
+		}
+	}
 	if r.opts.binary != "" {
 		r.say("── artifact %s (%s) → %s", r.binName, r.bin.Kind, r.bin.Dir)
 	} else {
@@ -318,6 +341,22 @@ func (r *deployRun) preflight() error {
 		}
 		if strings.TrimSpace(dirty) != "" {
 			err = fmt.Errorf("dirty tree — deploys must ship COMMITTED files (build identity stamps the git sha); commit first, or stream an existing build with --sha <sha7>")
+			done(err)
+			return err
+		}
+		// The Dockerfile ladder resolves relative to the PROCESS CWD, but
+		// the build context is repoRoot — a CWD != repoRoot (subdir, or a
+		// sibling checkout) would build THIS tree's files with ANOTHER
+		// tree's recipe. Anchor -f to repoRoot; refuse anything that
+		// escapes it: the build must ship what HEAD names, recipe included
+		// (live-fire 2026-10-16 complaint: a stale shared checkout fed the
+		// build while the worktree's sha got stamped).
+		if !filepath.IsAbs(r.opts.dockerfile) {
+			r.opts.dockerfile = filepath.Join(r.repoRoot, r.opts.dockerfile)
+		}
+		rel, err := filepath.Rel(r.repoRoot, r.opts.dockerfile)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			err = fmt.Errorf("--dockerfile %s lives OUTSIDE the deploy root %s — the stamped sha would not describe the recipe that built the image; run from the tree you mean to ship", r.opts.dockerfile, r.repoRoot)
 			done(err)
 			return err
 		}
