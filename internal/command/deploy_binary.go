@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,7 @@ import (
 
 	initadapter "github.com/talha7k/kampodra/internal/adapter/init"
 	"github.com/talha7k/kampodra/internal/adapter/project"
+	"github.com/talha7k/kampodra/internal/adapter/state"
 )
 
 // The image deploy's small sibling: the repo's declared artifact
@@ -221,18 +223,70 @@ func shortSha(sha string) string {
 func (r *deployRun) pushArtifact() error {
 	bin := r.bin
 	if bin.IsDirShape() {
+		// Dir shapes stream a tar (non-deterministic bytes) — the
+		// fingerprint gate below is single-file only for now.
 		return r.pushArtifactDir()
 	}
 	f, err := os.Open(r.localArtifact)
 	if err != nil {
 		return fmt.Errorf("cannot read the built artifact: %w", err)
 	}
-	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		f.Close()
+		return fmt.Errorf("cannot hash the built artifact: %w", err)
+	}
+	localSum := hex.EncodeToString(h.Sum(nil))
+	// The rebuild-didnt-happen catch (live-fire 2026-10-16: a stale
+	// worktree binary shipped twice under two different sha labels —
+	// identity rode the pushed API_GIT_SHA env, so nothing noticed): bytes
+	// IDENTICAL to the last push while the stamped sha MOVED means the
+	// build didn't pick up new code. WARN loudly; the deploy proceeds (a
+	// deliberate re-push of the same bytes is legitimate).
+	for _, e := range state.LedgerEntries(state.LedgerPath(r.d.Home), r.target.HostSpec.Host) {
+		if e.Result != "success" && e.Result != "rollback" {
+			continue
+		}
+		if e.ArtifactSHA256 != "" && e.ArtifactSHA256 == localSum && e.Sha != r.ver {
+			r.say("WARN: artifact bytes are IDENTICAL to the %s push of %s — the build didn't change across a sha move to %s (stale build dir? wrong checkout?)",
+				e.Result, e.Sha, r.ver)
+			break
+		}
+	}
+	r.artifactSHA256 = localSum
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		f.Close()
+		return fmt.Errorf("cannot rewind the artifact: %w", err)
+	}
 	tmp := filepath.Join(bin.Dir, "."+bin.Entry+".new")
 	if _, err := r.d.Runner.RunWithStdin(r.ctx, r.target.HostSpec, "umask 077; cat > "+tmp, f); err != nil {
+		f.Close()
 		return fmt.Errorf("artifact upload failed: %w", err)
 	}
+	f.Close()
+	// Byte-verify the VM copy BEFORE the swap: what landed must equal what
+	// was read — a drifting host artifact (the mystery probe caught: the
+	// on-disk binary was an OLD worktree commit while the process served
+	// the fresh env-stamped sha) can never masquerade as this push.
+	sumOut, err := r.d.Runner.Run(r.ctx, r.target.HostSpec, "sha256sum "+tmp)
+	if err != nil {
+		return fmt.Errorf("cannot fingerprint the uploaded artifact: %w", err)
+	}
+	remoteSum := strings.Fields(sumOut)
+	if len(remoteSum) == 0 || remoteSum[0] != localSum {
+		return fmt.Errorf("uploaded artifact DOES NOT match the local bytes (local sha256 %s, VM reports %s) — refusing the swap; the host artifact is unreliable",
+			localSum, strings.TrimSpace(sumOut))
+	}
+	r.say("artifact %d bytes, sha256 %s… verified on VM", r.artifactBytes(localSum), localSum[:12])
 	return r.binarySwap(tmp, filepath.Join(bin.Dir, bin.Entry), "chmod 755 "+filepath.Join(bin.Dir, bin.Entry))
+}
+
+// artifactBytes reports the pushed size for the status line (0 = unknown).
+func (r *deployRun) artifactBytes(_ string) int64 {
+	if fi, err := os.Stat(r.localArtifact); err == nil {
+		return fi.Size()
+	}
+	return 0
 }
 
 // pushArtifactDir tars the source tree (deps excluded — the image has

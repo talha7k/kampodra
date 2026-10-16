@@ -62,20 +62,21 @@ type deployOpts struct {
 // resolved sha, and the mode. The finalizer implements the ledger EXIT
 // trap: once recording, any exit without a success append records failed.
 type deployRun struct {
-	d          Deps
-	ctx        context.Context
-	target     Target
-	ver        string
-	mode       string // deploy | version | rollback
-	opts       deployOpts
-	started    time.Time
-	recording  bool
-	appended   bool
-	skipStream bool // rollback fast path: the tag is already on the VM
-	initSys    initadapter.System
-	repoRoot   string
-	bin        *project.ManifestBinary // the fast-path artifact (binary mode only)
-	binName    string                  // the winning "binary" block name (banner/rollback text)
+	d              Deps
+	ctx            context.Context
+	target         Target
+	ver            string
+	mode           string // deploy | version | rollback
+	opts           deployOpts
+	started        time.Time
+	recording      bool
+	appended       bool
+	skipStream     bool // rollback fast path: the tag is already on the VM
+	initSys        initadapter.System
+	repoRoot       string
+	bin            *project.ManifestBinary // the fast-path artifact (binary mode only)
+	binName        string                  // the winning "binary" block name (banner/rollback text)
+	artifactSHA256 string                  // binary fast-push: the pushed artifact's sha256 (ledger + rebuild-didnt-happen warn)
 	// local build outputs (binary mode): a single file (go/rust) or the
 	// source tree (node).
 	localArtifact    string
@@ -234,6 +235,7 @@ func (r *deployRun) appendLedger(result, subject string) error {
 	err := state.AppendEntry(state.LedgerPath(r.d.Home), state.LedgerEntry{
 		Host: r.target.HostSpec.Host, Sha: r.ver, Tag: r.ver,
 		Result: result, DurationMs: int(duration), Subject: subject,
+		ArtifactSHA256: r.artifactSHA256,
 	})
 	r.appended = true
 	return err

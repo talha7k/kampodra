@@ -70,6 +70,10 @@ type LedgerEntry struct {
 	Result     string `json:"result"`
 	DurationMs int    `json:"duration_ms"`
 	Subject    string `json:"subject"`
+	// ArtifactSHA256 is the sha256 of the binary fast-push artifact, set on
+	// binary deploys: identical bytes across a sha MOVE mean the build
+	// didn't pick up new code (the stale-bytes-with-fresh-label class).
+	ArtifactSHA256 string `json:"artifact_sha256,omitempty"`
 }
 
 // LedgerEntries parses the ledger into entries, optionally fixed-string
@@ -149,8 +153,8 @@ func AppendEntry(path string, e LedgerEntry) error {
 	if ts == "" {
 		ts = time.Now().UTC().Format("2006-01-02T15:04:05Z")
 	}
-	line := fmt.Sprintf(`{"ts":"%s","host":"%s","sha":"%s","tag":"%s","result":"%s","duration_ms":%d,"subject":"%s"}`+"\n",
-		ts, jsonEscapeStr(e.Host), e.Sha, e.Tag, e.Result, e.DurationMs, jsonEscapeStr(e.Subject))
+	line := fmt.Sprintf(`{"ts":"%s","host":"%s","sha":"%s","tag":"%s","result":"%s","duration_ms":%d,"subject":"%s","artifact_sha256":"%s"}`+"\n",
+		ts, jsonEscapeStr(e.Host), e.Sha, e.Tag, e.Result, e.DurationMs, jsonEscapeStr(e.Subject), jsonEscapeStr(e.ArtifactSHA256))
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("ledger: %w", err)
 	}
