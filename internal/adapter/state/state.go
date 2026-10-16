@@ -200,8 +200,12 @@ type Profile struct {
 	Cloud     json.RawMessage `json:"cloud,omitempty"`
 }
 
-// Config is ~/.kampodra/config.json.
+// Config is ~/.kampodra/config.json. Version is the on-disk schema version:
+// 0/absent is the legacy pre-versioning layout, 1 is current — anything
+// newer fails closed at load (an older CLI must not guess at unknown
+// fields).
 type Config struct {
+	Version        int                `json:"version"`
 	DefaultProfile string             `json:"defaultProfile"`
 	Profiles       map[string]Profile `json:"profiles"`
 }
@@ -224,6 +228,9 @@ func LoadConfig(home string) (*Config, error) {
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("%s: %w", ConfigPath(home), err)
+	}
+	if cfg.Version > configSchemaVersion {
+		return nil, fmt.Errorf("%s: config schema v%d is newer than this kampodra supports — upgrade the CLI", ConfigPath(home), cfg.Version)
 	}
 	if cfg.Profiles == nil {
 		cfg.Profiles = map[string]Profile{}
