@@ -102,7 +102,13 @@ func SSHPassthroughArgs(host HostSpec, cmdAndArgs []string) []string {
 }
 
 func sshBaseArgs(host HostSpec, remoteCmd string, extra []string) []string {
-	args := []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes"}
+	// ServerAlive keepalives: long artifact uploads stream for minutes with
+	// no output — NAT mappings drop and dead peers go unnoticed mid-stream
+	// (2026-10-16: 26.8MB uploads truncated/corrupted while small commands
+	// passed). 15s interval x4 missed acks = dead in ~1min, held alive
+	// otherwise.
+	args := []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes",
+		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"}
 	if host.AcceptNewHostKey {
 		args = append(args, "-o", "StrictHostKeyChecking=accept-new")
 	}

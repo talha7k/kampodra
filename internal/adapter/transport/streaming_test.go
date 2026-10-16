@@ -20,13 +20,13 @@ func TestSSHInteractiveArgs(t *testing.T) {
 			name: "forced tty before the host, composed remote after",
 			host: HostSpec{Host: "root@203.0.113.9"},
 			cmd:  "podman exec -it kampodine-api sh",
-			want: []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-t", "root@203.0.113.9", "podman exec -it kampodine-api sh"},
+			want: []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-t", "root@203.0.113.9", "podman exec -it kampodine-api sh"},
 		},
 		{
 			name: "identity file still leads",
 			host: HostSpec{Host: "root@x", SSHKey: "/tmp/id"},
 			cmd:  "podman exec -it c sh",
-			want: []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-i", "/tmp/id", "-t", "root@x", "podman exec -it c sh"},
+			want: []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-i", "/tmp/id", "-t", "root@x", "podman exec -it c sh"},
 		},
 	}
 	for _, tt := range tests {
@@ -43,7 +43,7 @@ func TestSSHLoginArgs(t *testing.T) {
 	// kampodra ssh (no command): interactive login shell through the
 	// profile's host/key — no remote command vector at all.
 	got := SSHLoginArgs(HostSpec{Host: "root@203.0.113.9", SSHKey: "/tmp/id"})
-	want := []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-i", "/tmp/id", "-t", "root@203.0.113.9"}
+	want := []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-i", "/tmp/id", "-t", "root@203.0.113.9"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Errorf("SSHLoginArgs() = %v, want %v", got, want)
 	}
@@ -53,7 +53,7 @@ func TestSSHPassthroughArgs(t *testing.T) {
 	// kampodra ssh <cmd...>: the argv passes through verbatim — ssh composes
 	// it remotely, kampodra never joins it into one string.
 	got := SSHPassthroughArgs(HostSpec{Host: "root@x"}, []string{"df", "-h", "/var/lib/containers"})
-	want := []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "root@x", "df", "-h", "/var/lib/containers"}
+	want := []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "root@x", "df", "-h", "/var/lib/containers"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Errorf("SSHPassthroughArgs() = %v, want %v", got, want)
 	}
@@ -83,7 +83,7 @@ func TestStreamPropagatesExitCode(t *testing.T) {
 		t.Fatalf("Stream() code = %d, want 7 (ssh's exit code propagates)", code)
 	}
 	recorded, _ := os.ReadFile(invocations)
-	if got, want := strings.TrimSpace(string(recorded)), "-o ConnectTimeout=10 -o BatchMode=yes -t root@x podman exec -it c sh"; got != want {
+	if got, want := strings.TrimSpace(string(recorded)), "-o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -t root@x podman exec -it c sh"; got != want {
 		t.Errorf("shim recorded %q, want %q", got, want)
 	}
 }
@@ -114,7 +114,7 @@ func TestRunWithStdinPipesStdinAndCaptures(t *testing.T) {
 		t.Errorf("shim received stdin %q (err=%v), want the verbatim upload stream", string(data), err)
 	}
 	recorded, _ := os.ReadFile(invocations)
-	if got, want := strings.TrimSpace(string(recorded)), "-o ConnectTimeout=10 -o BatchMode=yes -i /tmp/id root@x umask 077; cat > /etc/kampodine/env.tmp.42"; got != want {
+	if got, want := strings.TrimSpace(string(recorded)), "-o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i /tmp/id root@x umask 077; cat > /etc/kampodine/env.tmp.42"; got != want {
 		t.Errorf("shim recorded %q, want %q", got, want)
 	}
 }

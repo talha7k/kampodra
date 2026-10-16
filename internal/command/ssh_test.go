@@ -49,7 +49,7 @@ func TestSSHNoCommandIsInteractiveLogin(t *testing.T) {
 	}
 	inv := invocations(t, stubDir)
 	// Login shell: forced tty, host, NO remote command vector.
-	want := "-o ConnectTimeout=10 -o BatchMode=yes -t " + statusHost
+	want := "-o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -t " + statusHost
 	if !strings.Contains(inv, want) {
 		t.Errorf("interactive login argv missing %q:\n%s", want, inv)
 	}
@@ -66,7 +66,7 @@ func TestSSHPassthroughArgvVerbatim(t *testing.T) {
 		t.Fatalf("exit = %d, want 7 (ssh's exit code propagates)", code)
 	}
 	inv := invocations(t, stubDir)
-	want := "-o ConnectTimeout=10 -o BatchMode=yes " + statusHost + " df -h /var/lib/containers"
+	want := "-o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 " + statusHost + " df -h /var/lib/containers"
 	if !strings.Contains(inv, want) {
 		t.Errorf("passthrough argv missing %q:\n%s", want, inv)
 	}

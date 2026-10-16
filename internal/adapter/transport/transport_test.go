@@ -97,19 +97,19 @@ func TestSSHArgs(t *testing.T) {
 			name: "matches the shell vm() helper exactly",
 			host: HostSpec{Host: "root@203.0.113.9"},
 			cmd:  "df -P /var/lib/containers",
-			want: []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "root@203.0.113.9", "df -P /var/lib/containers"},
+			want: []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "root@203.0.113.9", "df -P /var/lib/containers"},
 		},
 		{
 			name: "identity file inserted before the host",
 			host: HostSpec{Host: "root@203.0.113.9", SSHKey: "/tmp/id_ed25519"},
 			cmd:  "podman ps",
-			want: []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-i", "/tmp/id_ed25519", "root@203.0.113.9", "podman ps"},
+			want: []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-i", "/tmp/id_ed25519", "root@203.0.113.9", "podman ps"},
 		},
 		{
 			name: "throwaway known-hosts file for re-keyed hosts (provision inject)",
 			host: HostSpec{Host: "ubuntu@203.0.113.9", AcceptNewHostKey: true, KnownHostsFile: "/tmp/inject-kh.XXXXXX"},
 			cmd:  "true",
-			want: []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/tmp/inject-kh.XXXXXX", "ubuntu@203.0.113.9", "true"},
+			want: []string{"-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/tmp/inject-kh.XXXXXX", "ubuntu@203.0.113.9", "true"},
 		},
 	}
 	for _, tt := range tests {
@@ -149,7 +149,7 @@ func TestSSHRunnerExecutesShimmedSSH(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shim was not invoked: %v", err)
 	}
-	want := "-o ConnectTimeout=10 -o BatchMode=yes -i /tmp/id_ed25519 root@203.0.113.9 podman ps --format '{{.Image}}'"
+	want := "-o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i /tmp/id_ed25519 root@203.0.113.9 podman ps --format '{{.Image}}'"
 	if got := strings.TrimSpace(string(recorded)); got != want {
 		t.Errorf("shim recorded args %q, want %q", got, want)
 	}
