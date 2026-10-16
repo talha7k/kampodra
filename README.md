@@ -75,6 +75,16 @@ value and the winning source of every field.
 - [docs/cli.md](docs/cli.md) — full command reference
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — internal layout and design
 
+## Agent skill
+
+kampodra ships an [Agent Skill](https://agentskills.io) so coding agents operate it correctly (deploy models, resolution ladders, guard rails, exit codes):
+
+```bash
+npx skills add talha7k/kampodra        # from this repo (installs ~/.agents/skills/kampodra)
+```
+
+or from the npm package — the skill lives at `node_modules/kampodra/skills/kampodra/` after `npm i kampodra`; copy it into your agent's skills directory (`~/.agents/skills/`, `.claude/skills/`, …).
+
 ## Status
 
 Run `kampodra --version` for the installed version. Includes the OCI
