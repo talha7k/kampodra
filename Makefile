@@ -21,7 +21,7 @@ VERSION   := $(shell node -p "require('./npm/package.json').version")
 NPM_TAG   := $(if $(findstring -,$(VERSION)),beta,latest)
 PLATFORMS := darwin-arm64 darwin-x64 linux-x64 linux-arm64
 
-.PHONY: all test vet lint build bump cross-compile version-check npm-test publish clean
+.PHONY: all test vet lint build bump cross-compile version-check npm-test publish publish-tagged hooks clean
 
 all: test build
 
@@ -98,15 +98,45 @@ release-check:
 	test "$$got" = "$(VERSION)" || { echo "FAIL: shipped binary reports $$got — check the -X main.version ldflag"; exit 1; }
 
 # version-check: the release gate — HEAD must carry the git tag matching the
-# npm package version (v<version>).
+# npm package version (v<version>). Two distinct failure shapes, named
+# separately: HEAD UNTAGGED (tag the release commit) vs TAG BEHIND HEAD
+# (normal trunk development after a release — publish from the pinned
+# worktree via `make publish-tagged`, or cut the next release with
+# `make bump`).
 version-check:
 	@test -n "$(VERSION)" || { echo "cannot read npm/package.json version"; exit 1; }
 	@tag=$$(git tag --points-at HEAD | grep -E '^v' | head -n1); \
 	echo "package version: $(VERSION)"; \
 	echo "HEAD tag:        $${tag:-<none>}"; \
-	test "$$tag" = "v$(VERSION)" || { \
-		echo "FAIL: tag v$(VERSION) is not on HEAD — tag the release commit first (git tag v$(VERSION))"; exit 1; \
-	}
+	if [ "$$tag" = "v$(VERSION)" ]; then exit 0; fi; \
+	if git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null 2>&1; then \
+		behind=$$(git rev-list "v$(VERSION)"..HEAD --count); \
+		echo "FAIL: tag v$(VERSION) exists but is $$behind commit(s) behind HEAD — normal trunk development after a release."; \
+		echo "  republish THIS release:  make publish-tagged   (runs publish from a worktree pinned at the tag)"; \
+		echo "  ship the new commits:    make bump VERSION=x.y.z && git push origin main v<version> && make publish"; \
+	else \
+		echo "FAIL: tag v$(VERSION) is not on HEAD — tag the release commit first (git tag v$(VERSION))"; \
+	fi; \
+	exit 1
+
+# publish-tagged: republish an EXISTING release without disturbing trunk.
+# Runs the full publish flow from a throwaway worktree pinned at the
+# version's tag — version-check sees tag==HEAD there. The worktree is
+# removed on success AND failure.
+publish-tagged:
+	@test -n "$(VERSION)" || { echo "cannot read npm/package.json version"; exit 1; }
+	@git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null 2>&1 || { echo "no tag v$(VERSION) — nothing to republish"; exit 1; }
+	@test -z "$$(git worktree list --porcelain | grep 'refs/tags/v$(VERSION)')" || { echo "a worktree for v$(VERSION) already exists — remove it first"; exit 1; }
+	git worktree add .worktrees/publish-v$(VERSION) "v$(VERSION)"
+	@status=0; $(MAKE) -C .worktrees/publish-v$(VERSION) publish || status=$$?; \
+	git worktree remove --force .worktrees/publish-v$(VERSION) || true; \
+	exit $$status
+
+# hooks: install the git pre-commit hook (idempotent — sets core.hooksPath).
+hooks:
+	git config core.hooksPath .githooks
+	@echo "git hooks installed (.githooks) — pre-commit now guards release-tag drift + staged-Go gofmt"
+
 
 # publish: test → version-check → cross-compile → release-check → npm
 # publish (per-platform packages first, then the root that

@@ -1,0 +1,26 @@
+#!/bin/bash
+# kampodra pre-commit: two cheap, targeted guards.
+# Installed via `make hooks` (git config core.hooksPath .githooks).
+
+# 1) Release-tag drift: committing ON a tagged HEAD moves HEAD past the
+# release — the exact accident that made beta.8/beta.9 publishes fail
+# version-check (tag exists, but N commits behind). Warn loudly; proceed
+# (trunk development after a release is normal) unless silenced.
+tag=$(git tag --points-at HEAD | grep -E '^v' | head -n1)
+if [ -n "$tag" ] && [ -z "$KAMPODRA_ALLOW_POST_TAG" ]; then
+  echo "⚠ HEAD carries release tag $tag — this commit moves HEAD past it." >&2
+  echo "  publishing THIS release later needs: make publish-tagged" >&2
+  echo "  (silence: KAMPODRA_ALLOW_POST_TAG=1, or cut the next release: make bump VERSION=...)" >&2
+fi
+
+# 2) gofmt on staged Go files (fast; the linter runs the full gate in CI).
+if git diff --cached --name-only | grep -q '\.go$'; then
+  unformatted=$(git diff --cached --name-only | grep '\.go$' | xargs gofmt -l 2>/dev/null)
+  if [ -n "$unformatted" ]; then
+    echo "✗ gofmt needed on staged files:" >&2
+    echo "$unformatted" >&2
+    echo "  run: gofmt -w <files> (skip: --no-verify)" >&2
+    exit 1
+  fi
+fi
+exit 0
