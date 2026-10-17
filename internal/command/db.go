@@ -27,8 +27,7 @@ const dbHelp = `Usage:
   kampodra db snapshot --db <sqlite-path-on-vm | mariadb-schema> [--out <local-path>]
                        [--engine auto|sqlite|mariadb] [--profile <name>] [--host <user@ip>] [--ssh-key <path>]
 
-Read-only database access over SSH — the kampodra-owned surface for the
-"hand-rolled read-only query binary over ssh" habit. Two engines:
+Read-only database access over SSH — the kampodra-owned surface for the\n"hand-rolled read-only query binary over ssh" habit. Two engines:
 
 sqlite (a FILE on the VM):
   query runs ONE statement through a small static-linux helper
@@ -197,6 +196,14 @@ func runDBGrantRO(d Deps, c *cobra.Command) error {
 	sql := dbq.MariaGrantROSQL(role, pw, dbName)
 	runSQL := "mariadb"
 	if mode == "container" {
+		if _, err := d.Runner.RunWithStdin(c.Context(), dbTarget.HostSpec, dbq.MariaContainerCredsStageCommand(dbTarget.Project.EnvFile, container, true), strings.NewReader("")); err != nil {
+			return fmt.Errorf("cannot stage root credentials inside %s (set KAMPODRA_DB_ROOT_PASSWORD via kampodra env set): %w", container, err)
+		}
+		defer func() {
+			if _, err := d.Runner.Run(context.Background(), dbTarget.HostSpec, dbq.MariaContainerCredsCleanupCommand(container)); err != nil {
+				fmt.Fprintf(d.Stderr, "[db] WARNING: cnf cleanup failed on %s: %v\n", dbTarget.HostSpec.Host, err)
+			}
+		}()
 		runSQL = dbq.MariaContainerQueryCommand(container)
 	}
 	if _, err := d.Runner.RunWithStdin(c.Context(), dbTarget.HostSpec, runSQL, strings.NewReader(sql)); err != nil {
@@ -397,7 +404,7 @@ func runDBQuery(d Deps, c *cobra.Command) error {
 	case engineMaria:
 		return runMariaQuery(d, ctx, dbTarget, dbModeFlag, dbPath, stmt)
 	case enginePg:
-		return runEngineQuery(d, ctx, dbTarget, dbq.PostgresEngine(dbTarget.Project.EnvFile), enginePg, dbPath, stmt)
+		return runPgQuery(d, ctx, dbTarget, dbModeFlag, dbPath, stmt)
 	case engineLibsql:
 		return runEngineQuery(d, ctx, target, dbq.LibsqlEngine(target.Project.EnvFile), engineLibsql, dbPath, stmt)
 	}
@@ -439,15 +446,8 @@ func runEngineQuery(d Deps, ctx context.Context, target Target, eng dbq.Engine, 
 	if err != nil {
 		return fmt.Errorf("query failed on %s (target %q): %w", target.HostSpec.Host, dbTarget, err)
 	}
-	switch {
-	case engine == engineLibsql:
-		flat, nerr := dbq.NormalizeHranaResponse(out)
-		if nerr != nil {
-			return fmt.Errorf("query failed on %s: %w", target.HostSpec.Host, nerr)
-		}
-		out = flat + "\n"
-	case eng.OutputIsTSV:
-		flat, nerr := dbq.NormalizeTSV(out)
+	if eng.Normalize != nil {
+		flat, nerr := eng.Normalize(out)
 		if nerr != nil {
 			return fmt.Errorf("query failed on %s: %w", target.HostSpec.Host, nerr)
 		}
@@ -526,7 +526,7 @@ func runDBSnapshot(d Deps, c *cobra.Command) error {
 		return runMariaSnapshot(d, ctx, dbTarget, dbModeFlag, dbPath, out)
 	}
 	if engine == enginePg {
-		return runPgSnapshot(d, ctx, dbTarget, dbq.PostgresEngine(dbTarget.Project.EnvFile), dbPath, out)
+		return runPgSnapshot(d, ctx, dbTarget, dbModeFlag, dbPath, out)
 	}
 	if engine == engineLibsql {
 		return runLibsqlSnapshot(d, ctx, target, target.Project.EnvFile, out)
@@ -760,6 +760,14 @@ func runMariaQuery(d Deps, ctx context.Context, target Target, dbModeFlag, dbNam
 	}
 	switch mode {
 	case "container":
+		if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, dbq.MariaContainerCredsStageCommand(target.Project.EnvFile, container, false), strings.NewReader("")); err != nil {
+			return fmt.Errorf("cannot stage the mariadb credentials inside %s (set KAMPODRA_DB_* via kampodra env set): %w", container, err)
+		}
+		defer func() {
+			if _, err := d.Runner.Run(context.Background(), target.HostSpec, dbq.MariaContainerCredsCleanupCommand(container)); err != nil {
+				fmt.Fprintf(d.Stderr, "[db] WARNING: cnf cleanup failed on %s: %v\n", target.HostSpec.Host, err)
+			}
+		}()
 		out, err := d.Runner.RunWithStdin(ctx, target.HostSpec, dbq.MariaContainerQueryCommand(container), strings.NewReader(stmt))
 		if err != nil {
 			return fmt.Errorf("query failed on %s (container %s): %w", target.HostSpec.Host, container, err)
@@ -812,10 +820,15 @@ func runMariaContainerSnapshot(d Deps, ctx context.Context, target Target, conta
 	dir := dbq.MariaContainerBackupDir()
 	tar := dir + ".tar"
 	defer func() {
-		if _, err := d.Runner.Run(context.Background(), target.HostSpec, dbq.MariaContainerCleanupCommand(dir, tar)); err != nil {
-			fmt.Fprintf(d.Stderr, "[db] WARNING: cleanup failed on %s: %v\n", target.HostSpec.Host, err)
+		for _, remote := range []string{dbq.MariaContainerCredsCleanupCommand(container), dbq.MariaContainerCleanupCommand(dir, tar)} {
+			if _, err := d.Runner.Run(context.Background(), target.HostSpec, remote); err != nil {
+				fmt.Fprintf(d.Stderr, "[db] WARNING: cleanup failed on %s: %v\n", target.HostSpec.Host, err)
+			}
 		}
 	}()
+	if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, dbq.MariaContainerCredsStageCommand(target.Project.EnvFile, container, true), strings.NewReader("")); err != nil {
+		return fmt.Errorf("cannot stage root credentials inside %s (physical backup needs KAMPODRA_DB_ROOT_PASSWORD via kampodra env set): %w", container, err)
+	}
 	fmt.Fprintf(d.Stderr, "[db] physical backup via in-container mariabackup → %s:%s\n", target.HostSpec.Host, dir)
 	if _, err := d.Runner.Run(ctx, target.HostSpec, dbq.MariaContainerBackupCommand(container, dir)); err != nil {
 		return fmt.Errorf("mariabackup failed for container %s on %s: %w", container, target.HostSpec.Host, err)
@@ -840,11 +853,93 @@ func runMariaContainerSnapshot(d Deps, ctx context.Context, target Target, conta
 	return nil
 }
 
+// postgresMode: the mirror of mariaMode for the postgres leg (same
+// choice ladder; auto prefers the running container).
+func postgresMode(d Deps, ctx context.Context, target Target, modeFlag string) (string, string, error) {
+	choice := modeFlag
+	if v, ok := d.Env(dbq.MariaModeEnvKey); ok && v != "" {
+		choice = v
+	}
+	switch choice {
+	case "ssh", "host":
+		return "host", "", nil
+	case "pod", "container":
+		out, err := d.Runner.Run(ctx, target.HostSpec, dbq.PostgresContainerResolveCommand(target.Project.EnvFile))
+		if err != nil {
+			return "", "", fmt.Errorf("cannot reach VM %s (ssh failed)", target.HostSpec.Host)
+		}
+		fields := strings.Fields(strings.TrimSpace(out))
+		if len(fields) == 2 && fields[0] == "container" {
+			return "container", fields[1], nil
+		}
+		return "", "", fmt.Errorf("--db-mode pod: no postgres container is running on %s (name it via KAMPODRA_DB_CONTAINER in the env file)", target.HostSpec.Host)
+	}
+	out, err := d.Runner.Run(ctx, target.HostSpec, dbq.PostgresModeProbeCommand(target.Project.EnvFile))
+	if err != nil {
+		return "", "", fmt.Errorf("cannot reach VM %s (ssh failed)", target.HostSpec.Host)
+	}
+	fields := strings.Fields(strings.TrimSpace(out))
+	switch {
+	case len(fields) == 2 && fields[0] == "container":
+		return "container", fields[1], nil
+	case len(fields) >= 1 && fields[0] == "host":
+		return "host", "", nil
+	default:
+		return "", "", nil
+	}
+}
+
+// runPgQuery: container = podman exec psql; host = the ro-role engine
+// flow. Both normalize the TSV.
+func runPgQuery(d Deps, ctx context.Context, target Target, dbModeFlag, dbName, stmt string) error {
+	if err := dbq.ValidateMariaDbName(dbName); err != nil {
+		return err
+	}
+	mode, container, err := postgresMode(d, ctx, target, dbModeFlag)
+	if err != nil {
+		return err
+	}
+	switch mode {
+	case "container":
+		defaults := dbq.PostgresDefaultsPath()
+		if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, dbq.PostgresContainerCredsStageCommand(target.Project.EnvFile, container, defaults), strings.NewReader("")); err != nil {
+			return fmt.Errorf("cannot stage the pgpass file inside %s (set KAMPODRA_DB_* via kampodra env set): %w", container, err)
+		}
+		defer func() {
+			if _, err := d.Runner.Run(context.Background(), target.HostSpec, dbq.PostgresContainerCredsCleanupCommand(container, defaults)); err != nil {
+				fmt.Fprintf(d.Stderr, "[db] WARNING: pgpass cleanup failed on %s: %v\n", target.HostSpec.Host, err)
+			}
+		}()
+		out, err := d.Runner.RunWithStdin(ctx, target.HostSpec, dbq.PostgresContainerQueryCommand(container, defaults, dbName), strings.NewReader(stmt))
+		if err != nil {
+			return fmt.Errorf("query failed on %s (container %s): %w", target.HostSpec.Host, container, err)
+		}
+		flat, nerr := dbq.NormalizeCSV(out)
+		if nerr != nil {
+			return fmt.Errorf("query failed on %s: %w", target.HostSpec.Host, nerr)
+		}
+		fmt.Fprint(d.Stdout, flat+"\n")
+		return nil
+	case "host":
+		return runEngineQuery(d, ctx, target, dbq.PostgresEngine(target.Project.EnvFile), enginePg, dbName, stmt)
+	default:
+		return fmt.Errorf("postgres is unreachable on %s — install the host client (%s) or run the server in a podman container (or pin the shape with --db-mode ssh|pod)", target.HostSpec.Host, dbq.PostgresInstallHint)
+	}
+}
+
 // runPgSnapshot mirrors the MariaDB flow: client probe → pgpass staged
 // from the env file → MVCC-consistent plain dump to a random scratch →
 // "dump complete" tail-stamp gate → fetch → 0600 → Background cleanup of
 // creds + scratch.
-func runPgSnapshot(d Deps, ctx context.Context, target Target, eng dbq.Engine, dbName, out string) error {
+func runPgSnapshot(d Deps, ctx context.Context, target Target, dbModeFlag, dbName, out string) error {
+	eng := dbq.PostgresEngine(target.Project.EnvFile)
+	mode, container, err := postgresMode(d, ctx, target, dbModeFlag)
+	if err != nil {
+		return err
+	}
+	if mode == "container" {
+		return runPgContainerSnapshot(d, ctx, target, container, dbName, out)
+	}
 	if err := eng.Validate(dbName); err != nil {
 		return err
 	}
@@ -878,6 +973,49 @@ func runPgSnapshot(d Deps, ctx context.Context, target Target, eng dbq.Engine, d
 		return fmt.Errorf("pg_dump failed for %q on %s: %w", dbName, target.HostSpec.Host, err)
 	}
 	if verify, err := d.Runner.Run(ctx, target.HostSpec, dbq.PostgresVerifyDumpCommand(scratch)); err != nil || strings.TrimSpace(verify) == "" {
+		return fmt.Errorf("the dump of %q on %s is INCOMPLETE (no '%s' tail stamp) — refusing to fetch a partial copy", dbName, target.HostSpec.Host, dbq.PgDumpCompleteStamp)
+	}
+	data, err := d.Runner.Run(ctx, target.HostSpec, dbq.SnapshotFetchCommand(scratch))
+	if err != nil {
+		return fmt.Errorf("cannot fetch the dump from %s: %w", target.HostSpec.Host, err)
+	}
+	if err := writeFile0600(out, []byte(data)); err != nil {
+		return err
+	}
+	fmt.Fprintf(d.Stdout, "[db] wrote %s (0600) — %d bytes\n", out, len(data))
+	return nil
+}
+
+// runPgContainerSnapshot: physical path for the container shape —
+// in-container pgpass staged, MVCC dump via in-container pg_dump, tail
+// stamp gate, fetch 0600, cnf cleanup riding Background.
+func runPgContainerSnapshot(d Deps, ctx context.Context, target Target, container, dbName, out string) error {
+	if err := dbq.ValidateMariaDbName(dbName); err != nil {
+		return err
+	}
+	if out == "" {
+		out = dbName + ".sql"
+	}
+	if _, err := os.Stat(out); err == nil {
+		return fmt.Errorf("refusing to overwrite %s — remove it or pass --out <path>", out)
+	}
+	defaults := dbq.PostgresDefaultsPath()
+	scratch := dbq.MariaScratchPath()
+	defer func() {
+		for _, remote := range []string{dbq.PostgresContainerCredsCleanupCommand(container, defaults), dbq.SnapshotCleanupCommand(scratch)} {
+			if _, err := d.Runner.Run(context.Background(), target.HostSpec, remote); err != nil {
+				fmt.Fprintf(d.Stderr, "[db] WARNING: cleanup failed on %s: %v\n", target.HostSpec.Host, err)
+			}
+		}
+	}()
+	if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, dbq.PostgresContainerCredsStageCommand(target.Project.EnvFile, container, defaults), strings.NewReader("")); err != nil {
+		return fmt.Errorf("cannot stage the pgpass file inside %s: %w", container, err)
+	}
+	fmt.Fprintf(d.Stderr, "[db] consistent dump via in-container pg_dump → %s:%s\n", target.HostSpec.Host, scratch)
+	if _, err := d.Runner.Run(ctx, target.HostSpec, dbq.PostgresContainerDumpCommand(container, defaults, dbName, scratch)); err != nil {
+		return fmt.Errorf("pg_dump failed for %q on %s: %w", dbName, target.HostSpec.Host, err)
+	}
+	if v, err := d.Runner.Run(ctx, target.HostSpec, dbq.PostgresVerifyDumpCommand(scratch)); err != nil || strings.TrimSpace(v) == "" {
 		return fmt.Errorf("the dump of %q on %s is INCOMPLETE (no '%s' tail stamp) — refusing to fetch a partial copy", dbName, target.HostSpec.Host, dbq.PgDumpCompleteStamp)
 	}
 	data, err := d.Runner.Run(ctx, target.HostSpec, dbq.SnapshotFetchCommand(scratch))

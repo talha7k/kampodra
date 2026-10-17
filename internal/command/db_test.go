@@ -107,13 +107,17 @@ func setupDb(t *testing.T) *dbHarness {
 		// scratch cleanup
 		"  \"rm -f /tmp/kampodra-snapshot-\"*) exit 0 ;;\n" +
 		// --- the mariabackup (container, physical) flow ---
-		"  *\"mariabackup --backup --target-dir=\"*) d=${cmd##*--target-dir=}; mkdir -p \"" + scratchDir + "/$d\"; : > \"" + scratchDir + "/$d/xtrabackup_checkpoints\"; printf 'backup_type = full-backuped\n' >> \"" + scratchDir + "/$d/xtrabackup_checkpoints\"; exit 0 ;;\n" +
-		"  *\"mariabackup --prepare --target-dir=\"*) exit 0 ;;\n" +
+		"  *\"mariabackup --defaults-extra-file=/tmp/kampodra-maria.cnf --backup --target-dir=\"*) d=${cmd##*--target-dir=}; mkdir -p \"" + scratchDir + "/$d\"; : > \"" + scratchDir + "/$d/xtrabackup_checkpoints\"; printf 'backup_type = full-backuped\n' >> \"" + scratchDir + "/$d/xtrabackup_checkpoints\"; exit 0 ;;\n" +
+		"  *\"mariabackup --defaults-extra-file=/tmp/kampodra-maria.cnf --prepare --target-dir=\"*) exit 0 ;;\n" +
 		"  \"tar -C /tmp/kampodra-mariabackup-\"*) t=${cmd#*-cf }; t=${t%% *}; printf '%s' '" + dbFixtureDumpBytes + "' > \"" + scratchDir + "/$(basename \"$t\")\"; exit 0 ;;\n" +
 		"  \"tar -tf /tmp/kampodra-mariabackup-\"*) echo xtrabackup_checkpoints ;;\n" +
 		"  \"cat /tmp/kampodra-mariabackup-\"*) f=${cmd#cat }; cat \"" + scratchDir + "/$(basename \"$f\")\" ;;\n" +
 		"  \"rm -rf /tmp/kampodra-mariabackup-\"*) exit 0 ;;\n" +
-		"  \"podman exec -i maria-pod mariadb --batch\"*) cat >> '" + stdinLog + "'; printf '%s\n' '" + strings.TrimSpace(dbFixtureTsvRows) + "' ;;\n" +
+		"  \"podman exec -i maria-pod mariadb --defaults-extra-file=/tmp/kampodra-maria.cnf --batch --binary-as-hex\"*) cat >> '" + stdinLog + "'; printf '%s\n' '" + strings.TrimSpace(dbFixtureTsvRows) + "' ;;\n" +
+		// the in-container cnf stage: fixture-less no-op (the -s/-f test passes)
+		"  *\"cat > /tmp/kampodra-maria.cnf\"*) exit 0 ;;\n" +
+		"  \"podman exec maria-pod sh -c 'test -f /tmp/kampodra-maria.cnf'\") exit 0 ;;\n" +
+		"  \"podman exec maria-pod rm -f /tmp/kampodra-maria.cnf\") exit 0 ;;\n" +
 		// the query itself: capture the statement stdin, emit fixture rows
 		"  *\"-db \"*) cat >> '" + stdinLog + "'; printf '%s\\n' '" + strings.TrimSpace(dbFixtureRows) + "' ;;\n" +
 		"esac\n" +
@@ -813,7 +817,7 @@ func TestDbQueryMariaContainerHappyPath(t *testing.T) {
 	if !strings.Contains(h.invocations(t, h.stdinLog), "SELECT id, total FROM pos_order") {
 		t.Errorf("the statement must ride stdin into the container:\n%s", h.invocations(t, h.stdinLog))
 	}
-	if inv := h.invocations(t, h.sshLog); !strings.Contains(inv, "podman exec -i maria-pod mariadb --batch") {
+	if inv := h.invocations(t, h.sshLog); !strings.Contains(inv, "podman exec -i maria-pod mariadb --defaults-extra-file=/tmp/kampodra-maria.cnf --batch --binary-as-hex") {
 		t.Errorf("the query must run through the container:\n%s", inv)
 	}
 }
@@ -836,8 +840,8 @@ func TestDbSnapshotMariaContainerPhysical(t *testing.T) {
 	}
 	inv := h.invocations(t, h.sshLog)
 	for _, want := range []string{
-		"mariabackup --backup --target-dir=",
-		"mariabackup --prepare --target-dir=",
+		"mariabackup --defaults-extra-file=/tmp/kampodra-maria.cnf --backup --target-dir=",
+		"mariabackup --defaults-extra-file=/tmp/kampodra-maria.cnf --prepare --target-dir=",
 		"tar -tf /tmp/kampodra-mariabackup-",
 		"rm -rf /tmp/kampodra-mariabackup-",
 	} {
@@ -890,7 +894,7 @@ func TestDbQueryMariaPodModeExplicit(t *testing.T) {
 	// auto flipped container-first: a running container answers before the
 	// host client is even considered (one round-trip decides).
 	inv := h.invocations(t, h.sshLog)
-	if !strings.Contains(inv, "podman exec -i maria-pod mariadb --batch") {
+	if !strings.Contains(inv, "podman exec -i maria-pod mariadb --defaults-extra-file=") {
 		t.Errorf("auto must prefer the running container:\n%s", inv)
 	}
 }

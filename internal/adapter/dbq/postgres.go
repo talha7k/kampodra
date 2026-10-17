@@ -47,15 +47,22 @@ func PostgresDefaultsCleanupCommand(defaults string) string {
 // tab-separated WITH header row (the MariaDB --batch contract), failing
 // closed on any server error.
 func PostgresQueryCommand(defaults, dbName string) string {
+	// --csv: proper quoting (embedded newlines/tabs/commas survive — the
+	// unaligned TSV form corrupts multi-line values); --set=null=NULL
+	// makes NULLs visible (psql renders them empty otherwise — a real
+	// trap the live smoke caught). PGPASSFILE rides as a psql variable.
 	return "psql --no-psqlrc --set=ON_ERROR_STOP=1 --set=PGPASSFILE=" + defaults +
-		" --no-align --field-separator='\t' --dbname " + dbName
+		" --set=null=NULL --csv --dbname " + dbName
 }
 
 // PostgresDumpCommand streams a consistent logical dump to the scratch:
 // plain format (restorable with psql, and its final line is the
 // completeness stamp), MVCC-consistent by construction.
 func PostgresDumpCommand(defaults, dbName, scratch string) string {
-	return "pg_dump --set=PGPASSFILE=" + defaults +
+	// PGPASSFILE is an ENV assignment — pg_dump has no --set flag (the
+	// live smoke caught this: the invalid flag failed the dump silently
+	// and the tail-stamp gate refused the empty file, exactly as designed).
+	return "PGPASSFILE=" + defaults + " pg_dump" +
 		" --no-owner --no-privileges" +
 		" --dbname " + dbName + " > " + scratch
 }
@@ -81,4 +88,63 @@ func PostgresGrantROSQL(role, password, dbName string) string {
 		" GRANT SELECT ON ALL TABLES IN SCHEMA public TO " + jsonString(role) + ";" +
 		" GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO " + jsonString(role) + ";" +
 		" ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO " + jsonString(role) + ";"
+}
+
+// --- the podman container path -------------------------------------------
+// Postgres deployed as a podman container: the client tools live IN the
+// image — psql/pg_dump run via `podman exec`, authenticating against an
+// in-container PGPASSFILE staged from the env file (the official image's
+// exec user is `postgres` = DB superuser via local trust; the pgpass
+// covers scram-configured estates).
+
+// PostgresContainerResolveCommand answers ONLY the container name (the
+// explicit pod mode's single question; empty = none running). The env
+// file is the project's — injected.
+func PostgresContainerResolveCommand(envFile string) string {
+	return `get() { grep -E "^$1=" ` + envFile + ` 2>/dev/null | head -1 | cut -d= -f2-; }; ` +
+		`c=$(get ` + MariaContainerEnvKey + `); ` +
+		`if [ -z "$c" ]; then c=$(podman ps --format '{{.Names}} {{.Image}}' 2>/dev/null | awk 'tolower($0) ~ /postgres|pgsql/ {print $1; exit}'); fi; ` +
+		`echo "container $c"`
+}
+
+// PostgresModeProbeCommand: the three-state probe (auto prefers the
+// running container — same reasoning as MariaDB's).
+func PostgresModeProbeCommand(envFile string) string {
+	return `get() { grep -E "^$1=" ` + envFile + ` 2>/dev/null | head -1 | cut -d= -f2-; }; ` +
+		`if command -v podman >/dev/null 2>&1; then ` +
+		`c=$(get ` + MariaContainerEnvKey + `); ` +
+		`if [ -z "$c" ]; then c=$(podman ps --format '{{.Names}} {{.Image}}' 2>/dev/null | awk 'tolower($0) ~ /postgres|pgsql/ {print $1; exit}'); fi; ` +
+		`if [ -n "$c" ]; then echo "container $c"; exit 0; fi; ` +
+		`fi; ` +
+		`if command -v psql >/dev/null 2>&1 && command -v pg_dump >/dev/null 2>&1; then echo host; exit 0; fi; ` +
+		`echo no`
+}
+
+// PostgresContainerCredsStageCommand stages the PGPASSFILE inside the
+// container (0600; the password transits the pipe, never argv).
+func PostgresContainerCredsStageCommand(envFile, container, defaults string) string {
+	return `get() { grep -E "^$1=" ` + envFile + ` 2>/dev/null | head -1 | cut -d= -f2-; }; ` +
+		`esc() { sed 's/\\/\\\\/g; s/:/\\:/g'; }; ` +
+		`h=$(get ` + MariaHostEnvKey + ` | esc); p=$(get ` + MariaPortEnvKey + ` | esc); ` +
+		`u=$(get ` + MariaUserEnvKey + ` | esc); w=$(get ` + MariaPasswordEnvKey + ` | esc); ` +
+		`{ printf '%s:%s:*:%s:%s\n' "${h:-localhost}" "${p:-5432}" "${u:-postgres}" "$w"; } | ` +
+		`podman exec -i ` + container + ` sh -c 'umask 077; cat > ` + defaults + ` && chmod 600 ` + defaults + `'`
+}
+
+// PostgresContainerCredsCleanupCommand removes the staged pgpass.
+func PostgresContainerCredsCleanupCommand(container, defaults string) string {
+	return "podman exec " + container + " rm -f " + defaults
+}
+
+// PostgresContainerQueryCommand / DumpCommand: the clients run in-container.
+func PostgresContainerQueryCommand(container, defaults, dbName string) string {
+	// --user postgres: the exec default is root (the official image's
+	// container user varies) and pg_dump/psql derive the DB role from the
+	// OS user — role "root" does not exist (live smoke finding).
+	return "podman exec --user postgres -i " + container + " psql --no-psqlrc --set=ON_ERROR_STOP=1 --set=PGPASSFILE=" + defaults +
+		" --set=null=NULL --csv --dbname " + dbName
+}
+
+func PostgresContainerDumpCommand(container, defaults, dbName, scratch string) string {
+	return "podman exec --user postgres " + container + " sh -c 'PGPASSFILE=" + defaults + " pg_dump --no-owner --no-privileges --dbname " + dbName + "' > " + scratch
 }
