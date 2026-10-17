@@ -66,7 +66,7 @@ func TestConfigPrintRendersEveryFieldWithProvenance(t *testing.T) {
 		"container", "shadowSuffix", "envFile", "dataDir", "bucket", "objectPrefix",
 		"healthPath", "proxyHost", "proxyHosts", "services", "imagePrefix", "port", "network",
 		"shadowProbePort", "deployedShaFile", "envClearKeys", "dockerfile",
-		"migrateScript",
+		"migrateScript", "migrateMode", "migrateDir", "serveWeb",
 	} {
 		if !strings.Contains(out, field) {
 			t.Errorf("print is missing field %q:\n%s", field, out)

@@ -34,10 +34,29 @@ func shellQuote(p string) string {
 // shell's check order. migrateScript is the project config's repo-relative
 // script path — config, never code.
 func ProbeCommand(repoRoot, migrateScript, dataDir string) string {
+	return probeCommand(repoRoot, migrateScript, dataDir, true)
+}
+
+// ProbeCommandBinary is the no-node variant of the probe: the same three
+// shapes with the pnpm check OMITTED — migrateMode "binary" runs a static
+// Go binary, and the target host is strictly no-node (no pnpm to find).
+// The binary's own presence check stays: migrateScript names the binary's
+// repo-relative path in binary mode.
+func ProbeCommandBinary(repoRoot, binaryPath, dataDir string) string {
+	return probeCommand(repoRoot, binaryPath, dataDir, false)
+}
+
+// probeCommand is the shared probe composer; checkPnpm is the only
+// difference between the script and binary shapes (the script-mode output
+// stays byte-identical).
+func probeCommand(repoRoot, migrateScript, dataDir string, checkPnpm bool) string {
 	script := shellQuote(repoRoot + "/" + migrateScript)
 	data := shellQuote(dataDir)
-	return `if [ ! -f ` + script + ` ]; then echo "ERR repo-root"; fi; ` +
-		`command -v pnpm >/dev/null 2>&1 || echo "ERR pnpm"; ` +
+	cmd := `if [ ! -f ` + script + ` ]; then echo "ERR repo-root"; fi; `
+	if checkPnpm {
+		cmd += `command -v pnpm >/dev/null 2>&1 || echo "ERR pnpm"; `
+	}
+	return cmd +
 		`if [ ! -d ` + data + ` ]; then echo "ERR tenant-dir"; fi; ` +
 		`for f in ` + data + `/*.db; do [ -f "$f" ] && printf 'db=%s\n' "$f"; done`
 }
@@ -115,4 +134,22 @@ func MigrateCommand(repoRoot, migrateScript string, j Job) string {
 		" && pnpm exec tsx " + shellQuote(migrateScript) +
 		" --db 'file:" + j.Path + "'" +
 		" --ns " + shellQuote(j.NS)
+}
+
+// MigrateCommandBinary composes one file's migrate apply via the
+// CONFIGURED GO BINARY (migrateMode "binary": migrateScript names the
+// binary's repo-relative path — the static runner streamed into the repo
+// checkout; migrateDir is the repo-relative migrations root). The
+// migrater's own pairing drives -dir: the root job reads
+// <root>/root, every tenant job <root>/tenant — one composition cannot
+// mispair the dirs. -db takes the PLAIN sqlite path (the binary opens it
+// directly; the file: URI is the tsx script's contract).
+func MigrateCommandBinary(repoRoot, binaryPath, migrationsRoot string, j Job) string {
+	sub := "tenant"
+	if j.NS == "root" {
+		sub = "root"
+	}
+	return shellQuote(repoRoot+"/"+binaryPath) +
+		" -db " + shellQuote(j.Path) +
+		" -dir " + shellQuote(repoRoot+"/"+path.Join(migrationsRoot, sub))
 }

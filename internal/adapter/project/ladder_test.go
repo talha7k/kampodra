@@ -194,12 +194,14 @@ func TestResolveTracedNoLayersGivesAllDefaults(t *testing.T) {
 		if v.Trace.Source != SourceDefault {
 			t.Errorf("%s source = %q, want default (nothing set)", v.Key, v.Trace.Source)
 		}
-		if v.Value == "" && v.Key != "" {
+		// migrateDir is the ONE field whose default is legitimately empty
+		// (script mode never reads it; binary mode fail-closes on it).
+		if v.Value == "" && v.Key != "" && v.Key != "migrateDir" {
 			t.Errorf("%s rendered empty — every default must render", v.Key)
 		}
 	}
-	if len(traces) != 20 {
-		t.Errorf("traces = %d rows, want 20 (every Config field)", len(traces))
+	if len(traces) != 23 {
+		t.Errorf("traces = %d rows, want 23 (every Config field)", len(traces))
 	}
 }
 
@@ -215,7 +217,7 @@ func TestTracesCoverEveryConfigField(t *testing.T) {
 		"container", "shadowSuffix", "envFile", "dataDir", "bucket", "objectPrefix",
 		"healthPath", "proxyHost", "proxyHosts", "services", "imagePrefix", "port", "network",
 		"shadowProbePort", "deployedShaFile", "envClearKeys", "dockerfile",
-		"migrateScript",
+		"migrateScript", "migrateMode", "migrateDir", "serveWeb",
 	} {
 		if !seen[key] {
 			t.Errorf("field catalog is missing %q — config print would drop it", key)

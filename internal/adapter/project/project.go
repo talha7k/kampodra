@@ -11,6 +11,8 @@ package project
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -36,6 +38,9 @@ type Config struct {
 	EnvClearKeys       []string `json:"envClearKeys"`         // env keys OWNED by the init script — env from-schema drops them from varlock output
 	Dockerfile         string   `json:"dockerfile"`           // the Containerfile/Dockerfile deploy builds (context = the repo root)
 	MigrateScript      string   `json:"migrateScript"`        // the repo-relative db migrate script migrate runs on the VM
+	MigrateMode        string   `json:"migrateMode"`          // the migrate runner's shape: "script" (pnpm exec tsx) | "binary" (Go binary, -db/-dir)
+	MigrateDir         string   `json:"migrateDir"`           // binary mode's repo-relative migrations root (holding the migrater's root/ + tenant/ pairing)
+	ServeWeb           *bool    `json:"serveWeb,omitempty"`   // the web-serving posture: nil = true (legacy); false drops every static-kind block from the unit render
 }
 
 // LoadDefault returns today's values as NAMED DEFAULTS — the single file
@@ -61,7 +66,33 @@ func LoadDefault() Config {
 		EnvClearKeys:    []string{"NODE_ENV", "PORT"},
 		Dockerfile:      "Dockerfile",
 		MigrateScript:   "scripts/migrate-db.ts",
+		MigrateMode:     "script",
 	}
+}
+
+// MigrateBinary reports whether migrateMode selects the Go-binary
+// migrate runner ("binary" — a static binary executed with the
+// migrater's -db/-dir pairing; the no-node estate's shape), failing
+// closed on an unknown value: a typo must stop the migrate, never
+// silently fall back to the pnpm script. "" and "script" are the
+// legacy runner.
+func (c Config) MigrateBinary() (bool, error) {
+	switch c.MigrateMode {
+	case "", "script":
+		return false, nil
+	case "binary":
+		return true, nil
+	}
+	return false, fmt.Errorf("migrateMode must be \"script\" or \"binary\" (got %q)", c.MigrateMode)
+}
+
+// ServeWebEnabled is the project's web-serving posture: TRUE unless
+// explicitly disabled (nil = the default — every existing project renders
+// byte-identically). false marks the no-web estate (web elsewhere, the VM
+// strictly api): the unit render drops every static-kind block — the -v
+// dist mount, the read-through -e, the releases layout.
+func (c Config) ServeWebEnabled() bool {
+	return c.ServeWeb == nil || *c.ServeWeb
 }
 
 // optional, empty = "not overridden".
@@ -85,6 +116,9 @@ type Overrides struct {
 	EnvClearKeys       []string `json:"envClearKeys,omitempty"`
 	Dockerfile         string   `json:"dockerfile,omitempty"`
 	MigrateScript      string   `json:"migrateScript,omitempty"`
+	MigrateMode        string   `json:"migrateMode,omitempty"`
+	MigrateDir         string   `json:"migrateDir,omitempty"`
+	ServeWeb           *bool    `json:"serveWeb,omitempty"`
 }
 
 // UnmarshalJSON accepts both env-file key spellings: `envFile` (canonical —
@@ -232,6 +266,15 @@ var fieldBindings = []fieldBinding{
 	{"envClearKeys", func(c Config) string { return strings.Join(c.EnvClearKeys, " ") }, func(c *Config, v string) { c.EnvClearKeys = strings.Fields(v) }, func(c Config) []string { return c.EnvClearKeys }},
 	{"dockerfile", func(c Config) string { return c.Dockerfile }, func(c *Config, v string) { c.Dockerfile = v }, nil},
 	{"migrateScript", func(c Config) string { return c.MigrateScript }, func(c *Config, v string) { c.MigrateScript = v }, nil},
+	{"migrateMode", func(c Config) string { return c.MigrateMode }, func(c *Config, v string) { c.MigrateMode = v }, nil},
+	{"migrateDir", func(c Config) string { return c.MigrateDir }, func(c *Config, v string) { c.MigrateDir = v }, nil},
+	{"serveWeb", func(c Config) string { return strconv.FormatBool(c.ServeWebEnabled()) }, func(c *Config, v string) {
+		// An unparseable value leaves the field standing (default true) —
+		// the relaxation direction is safe, the binding direction is not.
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.ServeWeb = &b
+		}
+	}, nil},
 }
 
 func bindingIndex(key string) int {
@@ -266,6 +309,9 @@ var envBindingKeys = map[string]string{
 	"envClearKeys":       "KAMPODRA_ENV_CLEAR_KEYS",
 	"dockerfile":         "KAMPODRA_DOCKERFILE",
 	"migrateScript":      "KAMPODRA_MIGRATE_SCRIPT",
+	"migrateMode":        "KAMPODRA_MIGRATE_MODE",
+	"migrateDir":         "KAMPODRA_MIGRATE_DIR",
+	"serveWeb":           "KAMPODRA_SERVE_WEB",
 }
 
 // ResolveTraced applies the FULL ladder with per-field provenance:
@@ -483,6 +529,16 @@ func overridesStringField(o Overrides, key string) string {
 		return o.Dockerfile
 	case "migrateScript":
 		return o.MigrateScript
+	case "migrateMode":
+		return o.MigrateMode
+	case "migrateDir":
+		return o.MigrateDir
+	case "serveWeb":
+		// The bool rides the scalar table as its spelled-out form ("true"/
+		// "false"); the binding's apply parses it back. nil = not provided.
+		if o.ServeWeb != nil {
+			return strconv.FormatBool(*o.ServeWeb)
+		}
 	}
 	return ""
 }

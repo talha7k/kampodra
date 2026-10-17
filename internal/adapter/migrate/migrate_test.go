@@ -171,3 +171,71 @@ func TestMigrateCommandUsesTheConfiguredScript(t *testing.T) {
 		t.Errorf("migrate command must run the CONFIGURED script, not a hardcoded path:\n%s", cmd)
 	}
 }
+
+// --- binary mode (migrateMode "binary"): the no-node runner -----------------
+//
+// The Go binary needs no node on the host: the probe omits the pnpm check
+// and the per-file apply executes the configured binary with the
+// migrater's -db (PLAIN sqlite path — no file: URI) / -dir pairing (root
+// job → <root>/root, tenant job → <root>/tenant).
+
+func TestProbeCommandBinaryOmitsPnpmCheck(t *testing.T) {
+	cmd := ProbeCommandBinary("/srv/app", "apps/api-go/migrater", "/data/tenants")
+	if strings.Contains(cmd, "pnpm") {
+		t.Errorf("the binary probe must not check pnpm (the VM is strictly no-node):\n%s", cmd)
+	}
+	for _, want := range []string{
+		"/srv/app/apps/api-go/migrater", // the binary's presence is still checked
+		"/data/tenants",
+		"db=",
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("binary probe command missing %q:\n%s", want, cmd)
+		}
+	}
+}
+
+func TestProbeCommandScriptModeKeepsPnpmCheck(t *testing.T) {
+	// The script-mode probe keeps its check byte-identical — the shared
+	// composer must not leak the binary mode's relaxation.
+	if cmd := ProbeCommand("/srv/app", "scripts/migrate-db.ts", "/data"); !strings.Contains(cmd, "command -v pnpm") {
+		t.Errorf("script-mode probe lost the pnpm check:\n%s", cmd)
+	}
+}
+
+func TestMigrateCommandBinaryPairsDbAndDir(t *testing.T) {
+	root := MigrateCommandBinary("/srv/app", "apps/api-go/migrater", "apps/api/drizzle",
+		Job{Path: "/data/tenants/root/root.db", NS: "root"})
+	for _, want := range []string{
+		"'/srv/app/apps/api-go/migrater'",
+		"-db '/data/tenants/root/root.db'",
+		"-dir '/srv/app/apps/api/drizzle/root'",
+	} {
+		if !strings.Contains(root, want) {
+			t.Errorf("root binary command missing %q:\n%s", want, root)
+		}
+	}
+	if strings.Contains(root, "pnpm") || strings.Contains(root, "file:") {
+		t.Errorf("the binary command must not shell pnpm or pass a file: URI:\n%s", root)
+	}
+
+	tenant := MigrateCommandBinary("/srv/app", "apps/api-go/migrater", "apps/api/drizzle",
+		Job{Path: "/data/tenants/tenant_a.db", NS: "tenant_a"})
+	if !strings.Contains(tenant, "-dir '/srv/app/apps/api/drizzle/tenant'") {
+		t.Errorf("tenant binary command must pair -dir with the tenant migrations:\n%s", tenant)
+	}
+}
+
+func TestMigrateCommandBinaryQuotesPaths(t *testing.T) {
+	cmd := MigrateCommandBinary("/srv/a pp's", "bin/x", "mi grants",
+		Job{Path: "/data/ten ants/a.db", NS: "root"})
+	if !strings.Contains(cmd, `'/srv/a pp'\''s/bin/x'`) {
+		t.Errorf("the binary path must be quote-escaped:\n%s", cmd)
+	}
+	if !strings.Contains(cmd, `-db '/data/ten ants/a.db'`) {
+		t.Errorf("the db path must stay one argument:\n%s", cmd)
+	}
+	if !strings.Contains(cmd, `-dir '/srv/a pp'\''s/mi grants/root'`) {
+		t.Errorf("the migrations dir must be quote-escaped and repo-rooted:\n%s", cmd)
+	}
+}
