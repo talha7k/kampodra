@@ -174,7 +174,7 @@ publish-verify:
 	echo "probing registry for version $(VERSION) + commit $$tagcommit"; \
 	for triple in $(PLATFORMS); do \
 		ok=""; for i in 1 2 3 4 5 6 8 10; do \
-			url=$$(npm view @kampodra/$$triple@$(VERSION) dist.tarball 2>/dev/null) || { sleep 20; continue; }; \
+			url=$$(npm view --prefer-online @kampodra/$$triple@$(VERSION) dist.tarball 2>/dev/null) || { sleep 20; continue; }; \
 			curl -sL "$$url" | tar -xz -O package/bin/kampodra > /tmp/kampodra-verify-$$triple 2>/dev/null || { sleep 20; continue; }; \
 			if strings /tmp/kampodra-verify-$$triple | grep -qF "$$tagcommit" && strings /tmp/kampodra-verify-$$triple | grep -qF "$(VERSION)"; then ok=1; break; fi; sleep 20; \
 		done; \
