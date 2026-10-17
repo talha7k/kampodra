@@ -130,7 +130,7 @@ const (
 	// GateSystemdPID1 — the Ubuntu golden image's init IS systemd (the
 	// inverse of GateNoSystemd). Runs before anything mutates: a foreign
 	// guest must fail here, never halfway through apt/systemctl steps.
-	GateSystemdPID1 = `readlink /proc/1/exe 2>/dev/null | grep -q systemd`
+	GateSystemdPID1 = `cat /proc/1/comm 2>/dev/null | grep -qx systemd` // comm is world-readable; /proc/1/exe is root-only (live smoke: non-root GCP users got EPERM)
 	// GateAptOperational — apt must be operational (mirror reachable, index
 	// refreshable) before the bootstrap mutates anything.
 	GateAptOperational = `apt-get update`
