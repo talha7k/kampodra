@@ -38,7 +38,7 @@ func assertUbuntuGateOrder(t *testing.T, calls []string) {
 			t.Errorf("UEFI gate must precede %q", mut)
 		}
 	}
-	if callIdx(calls, "readlink /proc/1/exe 2>/dev/null | grep -q systemd") > callIdx(calls, "apt-get update") && callIdx(calls, "apt-get update") >= 0 {
+	if callIdx(calls, "cat /proc/1/comm 2>/dev/null | grep -qx systemd") > callIdx(calls, "apt-get update") && callIdx(calls, "apt-get update") >= 0 {
 		t.Error("systemd-pid1 gate must precede the apt operational gate")
 	}
 	if callIdx(calls, "apt-get update") > callIdx(calls, "systemctl restart ssh") && callIdx(calls, "systemctl restart ssh") >= 0 {
@@ -85,7 +85,7 @@ func TestVMPrepareUbuntuHappyPathSequence(t *testing.T) {
 	for _, want := range []string{
 		// gates
 		"test -d /sys/firmware/efi",
-		"readlink /proc/1/exe 2>/dev/null | grep -q systemd",
+		"cat /proc/1/comm 2>/dev/null | grep -qx systemd",
 		"apt-get update",
 		// sshd hardening ensure + restart + gate (systemd's unit is `ssh`)
 		"mkdir -p /etc/ssh/sshd_config.d",
@@ -171,7 +171,7 @@ func TestVMPrepareUbuntuAptGateFailsClosed(t *testing.T) {
 func TestVMPrepareUbuntuSystemdGateFailsClosed(t *testing.T) {
 	h := setupPrepare(t)
 	os.WriteFile(filepath.Join(h.stub, "os-release"), []byte(ubuntuOSRelease), 0o600)
-	os.WriteFile(filepath.Join(h.stub, "failon"), []byte("readlink /proc/1/exe"), 0o600)
+	os.WriteFile(filepath.Join(h.stub, "failon"), []byte("cat /proc/1/comm"), 0o600)
 	if code := h.run(t, "--host", "root@203.0.113.9"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
