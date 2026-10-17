@@ -31,6 +31,13 @@ Per-file failures are COLLECTED (files are independent — one bad tenant must
 not block the others) and the command exits 1 if any failed — do NOT start
 the API on a half-migrated estate.
 
+Two runner shapes (the profile's migrateMode): "script" (default —
+pnpm exec tsx over the configured script; the host needs pnpm) and
+"binary" — migrateScript names a static Go binary in the repo checkout
+(e.g. the migrater) executed with -db/-dir; migrateDir is the
+repo-relative migrations root holding root/ + tenant/, and the pnpm
+check is skipped (the no-node estate's shape).
+
 Writing schema while the API serves risks SQLITE_BUSY on a single-writer
 engine — the stop-first guard refuses to run while the api service is up
 (init-aware: rc-service on OpenRC, systemctl on systemd). --allow-running
@@ -123,12 +130,14 @@ func migrateStopGuard(ctx context.Context, d Deps, run func(string) (string, err
 
 // checkMigrateProbe turns the one-round-trip probe verdict into the
 // actionable errors: the shell's check order — repo root, pnpm, tenant
-// dir.
-func checkMigrateProbe(probe migrateadapter.Probe, target Target, repoRoot, migrateScript, dataDir string) error {
+// dir. binaryRun (migrateMode "binary") skips the pnpm verdict — the Go
+// binary runner needs no node on the host (the VM is strictly no-node);
+// the binary's own presence check rides the repo-root probe shape.
+func checkMigrateProbe(probe migrateadapter.Probe, target Target, repoRoot, migrateScript, dataDir string, binaryRun bool) error {
 	if !probe.RepoOK {
 		return fmt.Errorf("repo root not found at %s (migrateScript %q missing — configure migrateScript in kampodra.json, the profile project block, or KAMPODRA_MIGRATE_SCRIPT)", repoRoot, migrateScript)
 	}
-	if !probe.PnpmOK {
+	if !binaryRun && !probe.PnpmOK {
 		return fmt.Errorf("pnpm not found in PATH on %s", target.HostSpec.Host)
 	}
 	if !probe.TenantDirOK {
@@ -140,8 +149,9 @@ func checkMigrateProbe(probe migrateadapter.Probe, target Target, repoRoot, migr
 // migrateRunAll executes the migration plan: root.db (auth/org plane)
 // FIRST, alone; then tenant files bounded-parallel (per-file write locks
 // are independent — one writer per file by the store model), with the
-// shared stdout writer mutex-guarded. Returns (migrated, failures).
-func migrateRunAll(d Deps, run func(string) (string, error), repoRoot string, pj project.Config, rootJob *migrateadapter.Job, tenantJobs []migrateadapter.Job, jobs int) (int, int) {
+// shared stdout writer mutex-guarded. binaryRun selects the Go-binary
+// per-file command (migrateMode "binary"). Returns (migrated, failures).
+func migrateRunAll(d Deps, run func(string) (string, error), repoRoot string, pj project.Config, binaryRun bool, rootJob *migrateadapter.Job, tenantJobs []migrateadapter.Job, jobs int) (int, int) {
 	migrated, failures := 0, 0
 	// The tenant pool calls migrateOne concurrently — the shared writers
 	// (bytes.Buffer in tests, line interleaving otherwise) need a mutex.
@@ -154,7 +164,13 @@ func migrateRunAll(d Deps, run func(string) (string, error), repoRoot string, pj
 	migrateOne := func(j migrateadapter.Job) bool {
 		rel := strings.TrimPrefix(j.Path, pj.DataDir+"/")
 		say("[migrate] migrating %s (ns: %s)\n", rel, j.NS)
-		if _, err := run(migrateadapter.MigrateCommand(repoRoot, pj.MigrateScript, j)); err != nil {
+		var cmd string
+		if binaryRun {
+			cmd = migrateadapter.MigrateCommandBinary(repoRoot, pj.MigrateScript, pj.MigrateDir, j)
+		} else {
+			cmd = migrateadapter.MigrateCommand(repoRoot, pj.MigrateScript, j)
+		}
+		if _, err := run(cmd); err != nil {
 			outMu.Lock()
 			fmt.Fprintf(d.Stderr, "[migrate][FAIL] migration failed for %s\n", j.Path)
 			outMu.Unlock()
@@ -204,6 +220,15 @@ func runMigrate(d Deps, c *cobra.Command) error {
 
 	ctx := c.Context()
 	pj := target.Project
+	// The runner's shape (fail closed on an unknown migrateMode — a typo
+	// must stop the migrate, never silently fall back to the pnpm script).
+	binaryRun, err := pj.MigrateBinary()
+	if err != nil {
+		return err
+	}
+	if binaryRun && pj.MigrateDir == "" {
+		return fmt.Errorf("migrateMode \"binary\" requires migrateDir — the repo-relative migrations root holding the root/ + tenant/ pairing (the Go binary's -dir contract)")
+	}
 	run := func(remote string) (string, error) {
 		return d.Runner.Run(ctx, target.HostSpec, remote)
 	}
@@ -213,12 +238,16 @@ func runMigrate(d Deps, c *cobra.Command) error {
 	}
 
 	// --- one-round-trip probe: preconditions + db listing ------------------
-	probeOut, err := run(migrateadapter.ProbeCommand(repoRoot, pj.MigrateScript, pj.DataDir))
+	probeCmd := migrateadapter.ProbeCommand(repoRoot, pj.MigrateScript, pj.DataDir)
+	if binaryRun {
+		probeCmd = migrateadapter.ProbeCommandBinary(repoRoot, pj.MigrateScript, pj.DataDir)
+	}
+	probeOut, err := run(probeCmd)
 	if err != nil {
 		return fmt.Errorf("cannot reach VM %s (ssh failed) — nothing to migrate", target.HostSpec.Host)
 	}
 	probe := migrateadapter.ParseProbe(probeOut)
-	if err := checkMigrateProbe(probe, target, repoRoot, pj.MigrateScript, pj.DataDir); err != nil {
+	if err := checkMigrateProbe(probe, target, repoRoot, pj.MigrateScript, pj.DataDir, binaryRun); err != nil {
 		return err
 	}
 
@@ -229,7 +258,7 @@ func runMigrate(d Deps, c *cobra.Command) error {
 		return nil
 	}
 
-	migrated, failures := migrateRunAll(d, run, repoRoot, pj, rootJob, tenantJobs, jobs)
+	migrated, failures := migrateRunAll(d, run, repoRoot, pj, binaryRun, rootJob, tenantJobs, jobs)
 	if failures > 0 {
 		fmt.Fprintf(d.Stdout, "[migrate] %d db file(s) failed to migrate (migrated: %d) — do NOT start the API on a half-migrated estate; fix and re-run\n",
 			failures, migrated)

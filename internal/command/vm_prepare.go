@@ -146,11 +146,21 @@ func newVMPrepareCommand(d Deps) *cobra.Command {
 // none — the unit renders byte-identical to the pre-binary shape).
 // statics are EVERY static-kind block's mounts/envs (a SPA dist shares the
 // unit with the exec-kind backend; the pinned block's own dir is skipped —
-// its mount already rode in via BinaryMount).
+// its mount already rode in via BinaryMount). serveWeb=false (the no-web
+// estate — web elsewhere, the VM strictly api) drops every static-kind
+// block from the render, pinned or swept: no -v dist mount, no read-through
+// -e, no releases layout.
 func namingFromProject(pj project.Config, bin *project.ManifestBinary, statics []project.ManifestBinary, unitEnvs map[string]string) vmbootstrap.Naming {
 	envDir := pj.EnvFile
 	if i := strings.LastIndex(pj.EnvFile, "/"); i > 0 {
 		envDir = pj.EnvFile[:i]
+	}
+	serveWeb := pj.ServeWebEnabled()
+	// A pinned STATIC block IS web serving — it contradicts a no-web
+	// estate and drops with the rest (the unit then serves only the
+	// image/binary entry).
+	if !serveWeb && bin != nil && bin.Kind == project.BinaryKindStatic {
+		bin = nil
 	}
 	n := vmbootstrap.Naming{
 		Container:       pj.Container,
@@ -177,14 +187,16 @@ func namingFromProject(pj project.Config, bin *project.ManifestBinary, statics [
 			n.StaticEnvs = append(n.StaticEnvs, env)
 		}
 	}
-	for _, s := range statics {
-		n.StaticReleases = true
-		if bin != nil && s.Dir == bin.Dir {
-			continue // the pinned block already rendered this dir's mount
-		}
-		n.StaticMounts = append(n.StaticMounts, s.MountArg())
-		if env := s.StaticEnvArg(); env != "" {
-			n.StaticEnvs = append(n.StaticEnvs, env)
+	if serveWeb {
+		for _, s := range statics {
+			n.StaticReleases = true
+			if bin != nil && s.Dir == bin.Dir {
+				continue // the pinned block already rendered this dir's mount
+			}
+			n.StaticMounts = append(n.StaticMounts, s.MountArg())
+			if env := s.StaticEnvArg(); env != "" {
+				n.StaticEnvs = append(n.StaticEnvs, env)
+			}
 		}
 	}
 	// Repo-owned unit envs (manifest unit.env) render LAST: -e is
