@@ -385,6 +385,67 @@ kampodra backup restore-plan tenants/20261008T050000Z.db
 - `restore-plan` only PRINTS the documented stop/snapshot/swap/start
   sequence for one object — kampodra never executes it.
 
+## db
+
+Read-only database access over SSH — query (one SELECT/WITH → data on
+stdout) and snapshot (a verified consistent copy, written 0600). Three
+engines behind one surface; the engine resolves automatically
+(`--engine auto`): an explicit `--engine` flag wins, then the VM's env
+file (`KAMPODRA_DB_ENGINE`), then the file's magic bytes.
+
+```
+kampodra db query    --db <path|schema> (--sql "SELECT ..." | --file q.sql) [--engine auto]
+kampodra db snapshot --db <path|schema> [--out <local>] [--engine auto]
+```
+
+**sqlite** (a file on the VM): `--db` is the file's path. Query streams a
+tiny read-only helper (`kampodra-sqlq`, built locally once, cached on the
+VM) and prints rows as flat JSON. Read-only is enforced twice — the gate
+rejects anything not starting with SELECT/WITH (exit 2, zero ssh
+round-trips) and the helper opens the file `mode=ro`. Snapshot uses the
+VM's `sqlite3 .backup` (consistent under concurrent writes; plain `cp`
+fallback is noted on stderr when sqlite3 is absent).
+
+**mariadb** (a schema on a server — same VM, or a db host reachable from
+the app VM): `--db` is the schema NAME. Query runs the gate-checked
+statement through the VM's `mariadb` client (TSV, header row). Snapshot
+runs `mariadb-dump --single-transaction --quick --routines --triggers`
+and refuses the copy unless the `Dump completed` tail stamp is present.
+Credentials come from the VM's env file at run time
+(`KAMPODRA_DB_NAME/HOST/USER/PASSWORD` via `kampodra env set`) and are
+staged into a 0600 defaults file for the command's duration — never
+argv, nothing in `ps` output, nothing stored by kampodra. Empty
+HOST/USER = unix_socket auth over the ssh session. For agents, provision
+a read-only role (`GRANT SELECT ON db.* TO 'kampodra_ro'@'localhost'`)
+and point `KAMPODRA_DB_USER` at it — the gate is belt, the role is the
+suspender.
+
+**libsql** (self-hosted sqld serving the db over HTTP on the same VM —
+no cloud): `--db` is unused (sqld serves one database). Query rides
+Hrana over the VM's curl — the request body is built Go-side (JSON
+escaping is the stdlib's, never a shell quoting exercise) and the token
+(`KAMPODRA_DB_TOKEN`, optional for localhost) is staged into a 0600
+header file. Rows come back in the same flat JSON shape as sqlite.
+Snapshot needs `KAMPODRA_DB_PATH` (the sqld `--db-path` on the VM; a
+URL alone cannot be snapshotted) and gates the copy on
+`PRAGMA integrity_check` before fetch. `KAMPODRA_DB_URL` defaults to
+`http://127.0.0.1:8080`.
+
+All engines: `--db` input is validated locally before any ssh (bad input
+costs zero round-trips); staged credentials and scratch files are
+cleaned up in a deferred pass that survives ctrl-C; `vm-prepare`
+installs the client stack (`mariadb-client` / `curl`) only when the unit
+env declares the engine.
+
+```
+kampodra db query --db /data/root.db --sql "SELECT count(*) FROM org" --profile prod
+kampodra env set KAMPODRA_DB_ENGINE=mariadb KAMPODRA_DB_NAME=esellar KAMPODRA_DB_USER=kampodra_ro
+kampodra db query --db esellar --sql "SELECT id, total FROM pos_order ORDER BY id DESC LIMIT 5"
+kampodra db snapshot --db esellar --out ./esellar.sql
+kampodra env set KAMPODRA_DB_ENGINE=libsql KAMPODRA_DB_URL=http://127.0.0.1:8080 KAMPODRA_DB_PATH=/var/lib/sqld/app.db
+kampodra db snapshot --out ./app.db
+```
+
 ## vm-prepare
 
 First-run bootstrap of a bare **Alpine** host (idempotent — safe to
