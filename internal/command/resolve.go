@@ -19,8 +19,9 @@ type Target struct {
 	ProxyHost       string
 	ProxyHostSource string // which ladder layer supplied proxyHost (smoke failures name it)
 	ProfileName     string
-	ProfileInit     string // cached init verdict from the profile (probe skip)
-	DbHost          string // the profile's dbHost: server-engine DBs on their own VM ("" = co-located)
+	ProfileInit     string           // cached init verdict from the profile (probe skip)
+	DbHost          string           // the profile's dbHost: server-engine DBs on their own VM ("" = co-located)
+	DB              *state.ProfileDB // the profile's non-secret db declaration (nil = none)
 	Project         project.Config
 	Cloud           json.RawMessage                   // raw profile "cloud" block (provider-CLI auth overrides)
 	UnitEnvs        map[string]string                 // repo-owned unit -e flags (kampodra.json "unit"."env")
@@ -110,6 +111,7 @@ func ResolveTarget(cfg *state.Config, flagHost, flagKey, flagProfile string, man
 		ProfileInit:     profile.Init,
 		Project:         pc,
 		DbHost:          profile.DbHost,
+		DB:              profile.DB,
 		Cloud:           profile.Cloud,
 		UnitEnvs:        unitEnvs,
 		Binary:          binaryBlocks,

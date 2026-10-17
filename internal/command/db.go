@@ -158,11 +158,12 @@ func runDBGrantRO(d Deps, c *cobra.Command) error {
 	engineFlag, _ := c.Flags().GetString("engine")
 	dbHostFlag, _ := c.Flags().GetString("db-host")
 
-	if err := dbq.ValidateMariaDbName(dbName); err != nil {
-		return err
-	}
 	target, err := resolveTargetFromFlags(d, c)
 	if err != nil {
+		return err
+	}
+	dbName = dbTargetName(target, dbName)
+	if err := dbq.ValidateMariaDbName(dbName); err != nil {
 		return err
 	}
 	sayProvenance(Deps{Stdout: d.Stderr}, "db grant-ro", target)
@@ -303,6 +304,22 @@ func resolveDBEngine(d Deps, ctx context.Context, target Target, engineFlag, dbA
 		return engineLibsql, nil
 	case "postgres":
 		return enginePg, nil
+	}
+	// the profile's declaration: the VM env file outranks it (the app
+	// reads those keys), the profile outranks guessing from file magic
+	if target.DB != nil && target.DB.Engine != "" {
+		switch target.DB.Engine {
+		case "sqlite":
+			return engineSQLite, nil
+		case "mariadb":
+			return engineMaria, nil
+		case "postgres":
+			return enginePg, nil
+		case "libsql":
+			return engineLibsql, nil
+		default:
+			return "", fmt.Errorf("profile db.engine %q is not one of sqlite|mariadb|postgres|libsql", target.DB.Engine)
+		}
 	}
 	if dbArg != "" && run(dbq.EngineMagicProbeCommand(dbArg)) == "sqlite" {
 		return engineSQLite, nil
@@ -717,19 +734,30 @@ func mariaMode(d Deps, ctx context.Context, target Target, modeFlag string) (str
 	if v, ok := d.Env(dbq.MariaModeEnvKey); ok && v != "" {
 		choice = v
 	}
+	if choice == "auto" && target.DB != nil && target.DB.Mode != "" {
+		choice = target.DB.Mode
+	}
 	switch choice {
 	case "ssh", "host":
 		return "host", "", nil
 	case "pod", "container":
-		out, err := d.Runner.Run(ctx, target.HostSpec, dbq.MariaContainerResolveCommand(target.Project.EnvFile))
-		if err != nil {
-			return "", "", fmt.Errorf("cannot reach VM %s (ssh failed)", target.HostSpec.Host)
+		container := ""
+		if target.DB != nil && target.DB.Container != "" {
+			container = target.DB.Container // the profile names it — no resolve round-trip
+		} else {
+			out, err := d.Runner.Run(ctx, target.HostSpec, dbq.MariaContainerResolveCommand(target.Project.EnvFile))
+			if err != nil {
+				return "", "", fmt.Errorf("cannot reach VM %s (ssh failed)", target.HostSpec.Host)
+			}
+			fields := strings.Fields(strings.TrimSpace(out))
+			if len(fields) == 2 && fields[0] == "container" {
+				container = fields[1]
+			}
 		}
-		fields := strings.Fields(strings.TrimSpace(out))
-		if len(fields) == 2 && fields[0] == "container" {
-			return "container", fields[1], nil
+		if container == "" {
+			return "", "", fmt.Errorf("--db-mode pod: no maria/mysql container is running on %s (name it via KAMPODRA_DB_CONTAINER in the env file or db.container in the profile)", target.HostSpec.Host)
 		}
-		return "", "", fmt.Errorf("--db-mode pod: no maria/mysql container is running on %s (name it via KAMPODRA_DB_CONTAINER in the env file)", target.HostSpec.Host)
+		return "container", container, nil
 	}
 	out, err := d.Runner.Run(ctx, target.HostSpec, dbq.MariaModeProbeCommand(target.Project.EnvFile))
 	if err != nil {
@@ -741,9 +769,13 @@ func mariaMode(d Deps, ctx context.Context, target Target, modeFlag string) (str
 		return "container", fields[1], nil
 	case len(fields) >= 1 && fields[0] == "host":
 		return "host", "", nil
-	default:
-		return "", "", nil
 	}
+	// the probe found neither — but a DECLARED container is the
+	// operator's word that it exists (declaration implies pod mode)
+	if target.DB != nil && target.DB.Container != "" {
+		return "container", target.DB.Container, nil
+	}
+	return "", "", nil
 }
 
 // runMariaQuery dispatches on the mode: the container path runs the
@@ -751,6 +783,7 @@ func mariaMode(d Deps, ctx context.Context, target Target, modeFlag string) (str
 // (in-container root — the gate is the only limiter) and normalizes the
 // TSV; the host path is the ro-role engine flow.
 func runMariaQuery(d Deps, ctx context.Context, target Target, dbModeFlag, dbName, stmt string) error {
+	dbName = dbTargetName(target, dbName)
 	if err := dbq.ValidateMariaDbName(dbName); err != nil {
 		return err
 	}
@@ -781,7 +814,7 @@ func runMariaQuery(d Deps, ctx context.Context, target Target, dbModeFlag, dbNam
 	case "host":
 		return runEngineQuery(d, ctx, target, dbq.MariaEngine(target.Project.EnvFile), engineMaria, dbName, stmt)
 	default:
-		return fmt.Errorf("mariadb is unreachable on %s — install the host client (%s) or run the server in a podman container (or pin the shape with --db-mode ssh|pod)", target.HostSpec.Host, dbq.MariaInstallHint)
+		return fmt.Errorf("mariadb is unreachable on %s — install the host client (%s), run the server in a podman container, or run kampodra vm-prepare with KAMPODRA_DB_ENGINE set (or pin the shape with --db-mode ssh|pod)", target.HostSpec.Host, dbq.MariaInstallHint)
 	}
 }
 
@@ -790,18 +823,22 @@ func runMariaQuery(d Deps, ctx context.Context, target Target, dbModeFlag, dbNam
 // mariabackup (backup → prepare → tar → control-file gate) — restorable
 // with mariabackup --copy-back, the whole-instance form.
 func runMariaSnapshot(d Deps, ctx context.Context, target Target, dbModeFlag, dbName, out string) error {
+	dbName = dbTargetName(target, dbName)
 	if err := dbq.ValidateMariaDbName(dbName); err != nil {
 		return err
-	}
-	if out == "" {
-		out = dbName + ".sql"
-	}
-	if _, err := os.Stat(out); err == nil {
-		return fmt.Errorf("refusing to overwrite %s — remove it or pass --out <path>", out)
 	}
 	mode, container, err := mariaMode(d, ctx, target, dbModeFlag)
 	if err != nil {
 		return err
+	}
+	if out == "" {
+		out = dbName + ".sql"
+		if mode == "container" {
+			out = dbName + ".tar" // the physical form's extension tells the truth
+		}
+	}
+	if _, err := os.Stat(out); err == nil {
+		return fmt.Errorf("refusing to overwrite %s — remove it or pass --out <path>", out)
 	}
 	switch mode {
 	case "container":
@@ -809,7 +846,7 @@ func runMariaSnapshot(d Deps, ctx context.Context, target Target, dbModeFlag, db
 	case "host":
 		return runMariaHostSnapshot(d, ctx, target, dbName, out)
 	default:
-		return fmt.Errorf("mariadb is unreachable on %s — install the host client (%s) or run the server in a podman container (or pin the shape with --db-mode ssh|pod)", target.HostSpec.Host, dbq.MariaInstallHint)
+		return fmt.Errorf("mariadb is unreachable on %s — install the host client (%s), run the server in a podman container, or run kampodra vm-prepare with KAMPODRA_DB_ENGINE set (or pin the shape with --db-mode ssh|pod)", target.HostSpec.Host, dbq.MariaInstallHint)
 	}
 }
 
@@ -860,19 +897,30 @@ func postgresMode(d Deps, ctx context.Context, target Target, modeFlag string) (
 	if v, ok := d.Env(dbq.MariaModeEnvKey); ok && v != "" {
 		choice = v
 	}
+	if choice == "auto" && target.DB != nil && target.DB.Mode != "" {
+		choice = target.DB.Mode
+	}
 	switch choice {
 	case "ssh", "host":
 		return "host", "", nil
 	case "pod", "container":
-		out, err := d.Runner.Run(ctx, target.HostSpec, dbq.PostgresContainerResolveCommand(target.Project.EnvFile))
-		if err != nil {
-			return "", "", fmt.Errorf("cannot reach VM %s (ssh failed)", target.HostSpec.Host)
+		container := ""
+		if target.DB != nil && target.DB.Container != "" {
+			container = target.DB.Container
+		} else {
+			out, err := d.Runner.Run(ctx, target.HostSpec, dbq.PostgresContainerResolveCommand(target.Project.EnvFile))
+			if err != nil {
+				return "", "", fmt.Errorf("cannot reach VM %s (ssh failed)", target.HostSpec.Host)
+			}
+			fields := strings.Fields(strings.TrimSpace(out))
+			if len(fields) == 2 && fields[0] == "container" {
+				container = fields[1]
+			}
 		}
-		fields := strings.Fields(strings.TrimSpace(out))
-		if len(fields) == 2 && fields[0] == "container" {
-			return "container", fields[1], nil
+		if container == "" {
+			return "", "", fmt.Errorf("--db-mode pod: no postgres container is running on %s (name it via KAMPODRA_DB_CONTAINER in the env file or db.container in the profile)", target.HostSpec.Host)
 		}
-		return "", "", fmt.Errorf("--db-mode pod: no postgres container is running on %s (name it via KAMPODRA_DB_CONTAINER in the env file)", target.HostSpec.Host)
+		return "container", container, nil
 	}
 	out, err := d.Runner.Run(ctx, target.HostSpec, dbq.PostgresModeProbeCommand(target.Project.EnvFile))
 	if err != nil {
@@ -884,14 +932,30 @@ func postgresMode(d Deps, ctx context.Context, target Target, modeFlag string) (
 		return "container", fields[1], nil
 	case len(fields) >= 1 && fields[0] == "host":
 		return "host", "", nil
-	default:
-		return "", "", nil
 	}
+	if target.DB != nil && target.DB.Container != "" {
+		return "container", target.DB.Container, nil
+	}
+	return "", "", nil
+}
+
+// dbTargetName resolves the schema NAME: the --db flag, else the
+// profile's db.name (server engines). Empty stays empty — the engine's
+// validator names what's missing.
+func dbTargetName(target Target, flag string) string {
+	if flag != "" {
+		return flag
+	}
+	if target.DB != nil {
+		return target.DB.Name
+	}
+	return ""
 }
 
 // runPgQuery: container = podman exec psql; host = the ro-role engine
 // flow. Both normalize the TSV.
 func runPgQuery(d Deps, ctx context.Context, target Target, dbModeFlag, dbName, stmt string) error {
+	dbName = dbTargetName(target, dbName)
 	if err := dbq.ValidateMariaDbName(dbName); err != nil {
 		return err
 	}
@@ -932,6 +996,7 @@ func runPgQuery(d Deps, ctx context.Context, target Target, dbModeFlag, dbName, 
 // "dump complete" tail-stamp gate → fetch → 0600 → Background cleanup of
 // creds + scratch.
 func runPgSnapshot(d Deps, ctx context.Context, target Target, dbModeFlag, dbName, out string) error {
+	dbName = dbTargetName(target, dbName)
 	eng := dbq.PostgresEngine(target.Project.EnvFile)
 	mode, container, err := postgresMode(d, ctx, target, dbModeFlag)
 	if err != nil {
