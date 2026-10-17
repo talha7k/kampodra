@@ -114,6 +114,9 @@ func TestVMGCDryRunNeverMutates(t *testing.T) {
 			t.Errorf("dry run inventory missing probe %q", probe)
 		}
 	}
+	if out := h.stdout.String(); !strings.Contains(out, "would remove") {
+		t.Error("dry run must list the exact commands --apply would run")
+	}
 	out := h.stdout.String()
 	// The typed classification table must be visible.
 	for _, want := range []string{
@@ -175,6 +178,12 @@ func TestVMGCApplyDeletesOnlyStale(t *testing.T) {
 	// The allowlisted estate is never touched, and the in-use file is
 	// blocked (reported, not deleted).
 	out := h.stdout.String()
+	if strings.Contains(out, "would remove") {
+		t.Error("apply must not print dry-run 'would remove' lines")
+	}
+	if !strings.Contains(out, "DONE") {
+		t.Error("apply must print its DONE verdict")
+	}
 	for _, keep := range []string{"/data/tenants", "/tmp/walbuild", "/tmp/fc2.cjs"} {
 		if !strings.Contains(out, keep) {
 			t.Errorf("report must mention kept/blocked path %q", keep)

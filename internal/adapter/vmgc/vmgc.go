@@ -392,10 +392,14 @@ type Classified struct {
 	Class Class
 }
 
-// Removal is one planned deletion (or one blocked candidate).
+// Removal is one planned deletion (or one blocked candidate). Reclaims is
+// the bytes this command actually reclaims: the entry's own size plus any
+// deletable children folded into it (an rm -rf of a scratch dir reclaims
+// the whole subtree).
 type Removal struct {
-	Entry Entry
-	Cmd   string
+	Entry    Entry
+	Cmd      string
+	Reclaims int64
 }
 
 // Plan is the classified inventory plus the guarded deletion set.
@@ -403,7 +407,7 @@ type Plan struct {
 	Rows    []Classified // every entry, sorted by path
 	Removes []Removal    // deletable, not in use, not folded into a parent
 	Blocked []Removal    // deletable but IN USE — reported, never deleted
-	Freed   int64        // bytes reclaimed (dir subtrees counted once)
+	Freed   int64        // bytes reclaimable (sum of Removes' + Blocked's Reclaims)
 }
 
 // BuildPlan classifies entries, overrides live build contexts to
@@ -444,40 +448,53 @@ func BuildPlan(entries []Entry, inUse, ownerDirs []string, pr Protect) Plan {
 		}
 	}
 
-	plan := Plan{Rows: rows}
+	// Bucket every deletable entry's bytes onto its nearest deletable
+	// ancestor (or itself): the top-level row's rm reclaims the subtree.
+	reclaims := map[string]int64{}
+	var tops []Classified
 	for _, r := range rows {
 		if !Deletable(r.Class) {
 			continue
 		}
-		if foldedUnder(r.Entry.Path, deletableDirs) {
-			plan.Freed += r.Entry.Size // bytes reclaimed by the parent's rm -rf
-			continue
+		key := r.Entry.Path
+		if owner := nearestDeletableAncestor(r.Entry.Path, deletableDirs); owner != "" {
+			key = owner
 		}
+		reclaims[key] += r.Entry.Size
+		if key == r.Entry.Path {
+			tops = append(tops, r)
+		}
+	}
+
+	plan := Plan{Rows: rows}
+	for _, r := range tops {
 		cmd, err := RemoveCommand(r.Entry)
 		if err != nil {
 			// Unreachable when Classify and RemoveCommand agree — belt
 			// suspender: skip and surface in the summary.
 			continue
 		}
-		plan.Freed += r.Entry.Size
+		plan.Freed += reclaims[r.Entry.Path]
+		rm := Removal{Entry: r.Entry, Cmd: cmd, Reclaims: reclaims[r.Entry.Path]}
 		if inUseSet[r.Entry.Path] {
-			plan.Blocked = append(plan.Blocked, Removal{Entry: r.Entry, Cmd: cmd})
+			plan.Blocked = append(plan.Blocked, rm)
 			continue
 		}
-		plan.Removes = append(plan.Removes, Removal{Entry: r.Entry, Cmd: cmd})
+		plan.Removes = append(plan.Removes, rm)
 	}
 	return plan
 }
 
-// foldedUnder reports whether some proper ancestor of p is itself a
-// deletable dir (the parent's rm -rf covers p).
-func foldedUnder(p string, deletableDirs map[string]bool) bool {
+// nearestDeletableAncestor returns the closest proper ancestor of p that
+// is itself a deletable dir ("" when none).
+func nearestDeletableAncestor(p string, deletableDirs map[string]bool) string {
+	best := ""
 	for dir := range deletableDirs {
-		if dir != p && strings.HasPrefix(p, dir+"/") {
-			return true
+		if dir != p && strings.HasPrefix(p, dir+"/") && len(dir) > len(best) {
+			best = dir
 		}
 	}
-	return false
+	return best
 }
 
 // --- deletion guard -----------------------------------------------------------

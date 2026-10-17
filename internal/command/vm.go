@@ -160,10 +160,10 @@ func runVMGC(d Deps, c *cobra.Command) error {
 	for _, b := range plan.Blocked {
 		fmt.Fprintf(d.Stdout, "[vm-gc] blocked (in use): %s\n", b.Entry.Path)
 	}
-	for _, r := range plan.Removes {
-		fmt.Fprintf(d.Stdout, "[vm-gc] would remove: %s\n", r.Cmd)
-	}
 	if !apply {
+		for _, r := range plan.Removes {
+			fmt.Fprintf(d.Stdout, "[vm-gc] would remove: %s\n", r.Cmd)
+		}
 		fmt.Fprintf(d.Stdout, "[vm-gc] DRY RUN — nothing deleted; pass --apply to delete ONLY the stale rows above\n")
 		return nil
 	}
@@ -180,8 +180,8 @@ func runVMGC(d Deps, c *cobra.Command) error {
 			fmt.Fprintf(d.Stdout, "[vm-gc] (failed: %s — %v)\n", r.Entry.Path, err)
 			continue
 		}
-		freed += r.Entry.Size
-		fmt.Fprintf(d.Stdout, "[vm-gc] removed: %s (%s)\n", r.Entry.Path, vmgc.HumanSize(r.Entry.Size))
+		freed += r.Reclaims
+		fmt.Fprintf(d.Stdout, "[vm-gc] removed: %s (reclaims %s)\n", r.Entry.Path, vmgc.HumanSize(r.Reclaims))
 	}
 	fmt.Fprintf(d.Stdout, "[vm-gc] DONE — freed %s across %d path(s) on %s\n",
 		vmgc.HumanSize(freed), len(plan.Removes)-len(failed), target.HostSpec.Host)

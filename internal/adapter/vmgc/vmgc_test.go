@@ -320,6 +320,32 @@ func TestPlanBlocksInUse(t *testing.T) {
 	}
 }
 
+// TestPlanRemovalReclaims: each removal carries its full reclaimed-bytes
+// figure (row + folded dir subtree), the per-removal figures sum to
+// plan.Freed, and the folded subtree lands on the parent's row.
+func TestPlanRemovalReclaims(t *testing.T) {
+	entries := ParseSweepListing(sweepFixture)
+	plan := BuildPlan(entries, nil, []string{"/tmp/walbuild"}, testProtect())
+	var sum int64
+	var parentReclaims int64
+	for _, r := range plan.Removes {
+		if r.Reclaims < r.Entry.Size {
+			t.Fatalf("removal %q reclaims %d < its own size %d", r.Entry.Path, r.Reclaims, r.Entry.Size)
+		}
+		sum += r.Reclaims
+		if r.Entry.Path == "/tmp/green-rebase" {
+			parentReclaims = r.Reclaims
+		}
+	}
+	if sum != plan.Freed {
+		t.Errorf("sum(Reclaims) = %d, want plan.Freed = %d", sum, plan.Freed)
+	}
+	// green-rebase dir inode is 120B; its children are ~1.02G.
+	if parentReclaims <= 120 {
+		t.Errorf("green-rebase Reclaims = %d, want the folded subtree total", parentReclaims)
+	}
+}
+
 func TestValidateDeletablePath(t *testing.T) {
 	for _, ok := range []string{
 		"/tmp/zatcaretrigger",
