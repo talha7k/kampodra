@@ -80,7 +80,7 @@ func TestRootVersion(t *testing.T) {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 	if out != "0.7.0-alpha.1\n" {
-		t.Errorf("--version = %q, want %q (shell prints the bare version)", out, "0.7.0-alpha.1\n")
+		t.Errorf("--version = %q, want %q (shell prints version + commit stamp)", out, "0.7.0-alpha.1 (commit dev)\n")
 	}
 }
 

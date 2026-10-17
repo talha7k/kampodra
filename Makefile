@@ -71,7 +71,7 @@ endif
 # now matches). main.version is stamped from the npm package version so the
 # shipped binaries report the release, not the main.go fallback.
 cross-compile:
-	@mkdir -p dist
+	@rm -rf dist && mkdir -p dist
 	# Ship the agent skill inside the root npm package (files: skills/ is
 	# npm/-relative and cannot reach the repo's skills/ — copy it in, like
 	# the platform bins).
@@ -84,7 +84,7 @@ cross-compile:
 	set -e; for triple in $(PLATFORMS); do \
 		os=$${triple%%-*}; arch=$${triple##*-}; \
 		case $$arch in x64) arch=amd64 ;; esac; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o dist/kampodra-$$triple ./cmd/kampodra; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$$(git rev-parse --short HEAD)" -o dist/kampodra-$$triple ./cmd/kampodra; \
 		mkdir -p npm/platforms/$$triple/bin; \
 		cp dist/kampodra-$$triple npm/platforms/$$triple/bin/kampodra; \
 		node -e "const fs=require('fs');const f='npm/platforms/$$triple/package.json';const p=JSON.parse(fs.readFileSync(f));p.version='$(VERSION)';fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"; \
@@ -98,8 +98,9 @@ release-check:
 	case $$march in x86_64) march=amd64 ;; arm64|aarch64) march=arm64 ;; esac; \
 	triple=$$os-$$march; case $$triple in darwin-amd64) triple=darwin-x64 ;; linux-amd64) triple=linux-amd64 ;; esac; \
 	bin=dist/kampodra-$$triple; test -x $$bin || { echo "no host binary at $$bin — run make cross-compile"; exit 1; }; \
-	got=$$($$bin --version); echo "binary version: $$got (want $(VERSION))"; \
-	test "$$got" = "$(VERSION)" || { echo "FAIL: shipped binary reports $$got — check the -X main.version ldflag"; exit 1; }
+	want="$(VERSION) (commit $$(git rev-parse --short HEAD))"; \
+	got=$$($$bin --version); echo "binary version: $$got (want $$want)"; \
+	test "$$got" = "$$want" || { echo "FAIL: shipped binary reports $$got, want $$want — stale or mis-stamped build, never publish this"; exit 1; }
 
 # version-check: the release gate — HEAD must carry the git tag matching the
 # npm package version (v<version>). Two distinct failure shapes, named
@@ -157,6 +158,26 @@ publish:
 	done
 	echo "== npm publish kampodra@$(VERSION)"
 	npm publish ./npm --tag $(NPM_TAG) --access public
+	$(MAKE) publish-verify VERSION=$(VERSION)
+
+# publish-verify: the last line of defense — download each published
+# artifact BACK from the registry and prove it is the tag's build
+# (version + commit stamp). Strings-based so every platform is checked
+# without executing foreign-arch binaries; retries ride out registry
+# propagation lag (fresh publishes can 404 for minutes).
+publish-verify:
+	@test -n "$(VERSION)" || { echo "usage: make publish-verify VERSION=0.8.4"; exit 1; }; \
+	tagcommit=$$(git rev-parse --short v$(VERSION)^{} 2>/dev/null || git rev-parse --short HEAD); \
+	want="$(VERSION) (commit $$tagcommit)"; echo "probing registry for: $$want"; \
+	for triple in $(PLATFORMS); do \
+		ok=""; for i in 1 2 3 4 5 6; do \
+			url=$$(npm view @kampodra/$$triple@$(VERSION) dist.tarball 2>/dev/null) || { sleep 20; continue; }; \
+			curl -sL "$$url" | tar -xz -O package/bin/kampodra > /tmp/kampodra-verify-$$triple 2>/dev/null || { sleep 20; continue; }; \
+			if strings /tmp/kampodra-verify-$$triple | grep -qF "$$want"; then ok=1; break; fi; sleep 20; \
+		done; \
+		test -n "$$ok" || { echo "FAIL: @kampodra/$$triple@$(VERSION) on the registry does not carry $$want — stale binary shipped"; exit 1; }; \
+		echo "verified @kampodra/$$triple@$(VERSION)"; \
+	done
 
 clean:
 	rm -rf dist
