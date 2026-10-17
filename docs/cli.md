@@ -11,7 +11,7 @@ unless noted). No command prompts — gates are flags (`--yes`, `--force`).
 
 **Contents:** [deploy](#deploy) · [env](#env) · [ssh](#ssh) ·
 [config](#config) · [backup](#backup) · [vm-prepare](#vm-prepare) ·
-[vm-wipe](#vm-wipe) · [metrics](#metrics) · [dns](#dns) ·
+[vm-wipe](#vm-wipe) · [vm gc](#vm-gc) · [metrics](#metrics) · [dns](#dns) ·
 [migrate](#migrate) · [status](#status) ·
 [Target & config resolution](#target--config-resolution) ·
 [kampodra.json](#kampodrajson) · [Files on disk](#files-on-disk) ·
@@ -440,6 +440,47 @@ kampodra vm-wipe --profile prod --yes --keep-data
 
 - Refuses to wipe a host where no project container or service matches —
   pass `--force` to mean it.
+
+## vm gc
+
+Dry-run-by-default VM garbage sweep. The inventory phase classifies every
+host artifact into a typed table (scratch / stale-script / residue /
+kampodra-helper / os-session / os / infra / tenant-data / live /
+owner-decision / unknown); `--apply` deletes ONLY the stale classes.
+Built because agents kept hand-rolling `find | rm` sweeps over raw ssh —
+the surface belongs here, with the allowlists enforced in code.
+
+```
+kampodra vm gc [--apply] [--host root@<ip>] [--profile <name>] [--ssh-key <path>]
+```
+
+| flag | type | default | description |
+|---|---|---|---|
+| `--apply` | bool | `false` | delete the stale classes found by the sweep (default: dry run) |
+| `--host` / `--profile` / `--ssh-key` | string | `""` | target flags |
+
+```bash
+kampodra vm gc --profile prod          # typed inventory, nothing deleted
+kampodra vm gc --profile prod --apply  # delete ONLY the stale classes
+```
+
+- NEVER touched (hard-coded allowlists): OS paths and podman storage, the
+  live artifact/web/backup chains, kampodra's own version-stamped helpers
+  (`/tmp/kampodra-*`), OS session dirs (`/tmp/.X11-*`), live build contexts
+  (scratch dirs holding a Dockerfile), cutover db snapshots beside the
+  project data dir, and `/root` pre-op safety snapshots.
+- Tenant data routes from the project's `dataDir`; zero knowledge of it
+  fails closed to report-only. The tenant tree is also pruned from the
+  sweep walk itself.
+- Podman containers/images are inventoried and cross-checked against the
+  estate naming (app container + shadow + kamal-proxy = the project stack;
+  other configured services = estate services; random names = orphaned
+  probes) — strictly REPORT-ONLY, `vm gc` never mutates podman.
+- Candidates in use by a live process or a container bind mount are
+  BLOCKED from deletion (the in-use probe scans /proc cmdlines and
+  container mount sources).
+- `/opt` and `/home` are sweep zones but not ephemeral ones: unrecognized
+  content there is report-only; only stale `.sh` scripts are deletable.
 
 ## metrics
 

@@ -58,7 +58,7 @@ func assertIndexShape(t *testing.T, out string) {
 	}
 	// Every implemented command appears in the index — unimplemented
 	// commands are unlisted, so the index lists exactly the real surface.
-	for _, c := range []string{"deploy", "migrate", "vm-prepare", "status", "dns", "env", "config", "metrics", "backup", "ssh", "vm-wipe", "db"} {
+	for _, c := range []string{"deploy", "migrate", "vm-prepare", "status", "dns", "env", "config", "metrics", "backup", "ssh", "vm-wipe", "db", "vm"} {
 		if !strings.Contains(out, c) {
 			t.Errorf("index missing command %q:\n%s", c, out)
 		}

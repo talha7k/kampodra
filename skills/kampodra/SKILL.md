@@ -90,6 +90,7 @@ A leftover shadow must be converged before the next `--rolling` deploy. `--drain
 | Operation | Behavior | Guard |
 |---|---|---|
 | `vm-wipe` | Stops/disables services, removes project containers, prunes images, deletes env/stamp/state | `--yes` REQUIRED; `--keep-data` spares the data dir; `--force` overrides a services-mismatch refusal (wrong host?) |
+| `vm gc --apply` | Deletes ONLY stale scratch/scripts/residues from the typed sweep inventory | Dry run by default; hard-coded never-touch allowlists (tenant data, live chains, kampodra helpers, OS, build contexts, owner decisions); podman strictly report-only; in-use candidates blocked |
 | `backup restore-plan <object>` | PRINTS the documented recovery sequence | Never executes anything |
 | `backup verify <file>` | Read-only: uploads to VM scratch files and runs the VM's `restore-verify` | Never writes into the data dir |
 | `deploy prune` | Removes old sha-tagged images (keeps running + ts-rollback + newest N) | `--dry-run` prints exact commands first |
