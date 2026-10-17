@@ -841,3 +841,30 @@ func TestDbSnapshotMariaContainerPhysical(t *testing.T) {
 		}
 	}
 }
+
+// grant-ro in container mode: the SQL rides stdin through podman exec,
+// env keys append on the VM, the password never prints.
+func TestDbGrantROMariaContainer(t *testing.T) {
+	h := setupMariaContainer(t)
+	code := h.run(t, "grant-ro", "--host", statusHost, "--db", "esellar")
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, h.stderr.String())
+	}
+	stdin := h.invocations(t, h.stdinLog)
+	for _, want := range []string{
+		"CREATE USER IF NOT EXISTS", "GRANT SELECT ON `esellar`.*",
+	} {
+		if !strings.Contains(stdin, want) {
+			t.Errorf("grant SQL missing %q:\n%s", want, stdin)
+		}
+	}
+	if !strings.Contains(h.invocations(t, h.sshLog), "podman exec -i maria-pod mariadb") {
+		t.Errorf("the grant must run through the container:\n%s", h.invocations(t, h.sshLog))
+	}
+	if strings.Contains(h.stdout.String(), "KAMPODRA_DB_PASSWORD=") {
+		t.Errorf("the password must never print:\n%s", h.stdout.String())
+	}
+	if !strings.Contains(h.stderr.String(), "env keys written") {
+		t.Errorf("the summary must confirm the env write:\n%s", h.stderr.String())
+	}
+}
