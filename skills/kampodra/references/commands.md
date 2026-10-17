@@ -415,8 +415,11 @@ Tenant db migrations over SSH, applied THROUGH the repo checkout ON the VM
 (the app's own script, path from the `migrateScript` config — default
 `scripts/migrate-db.ts`; no parallel implementation; runs via `pnpm exec
 tsx`). Order: root.db first
-(`root/root.db` preferred, legacy flat `root.db` honored), then `tenant_*.db`
-sorted, bounded-parallel. Preconditions are probed in one round-trip and fail
+(`root/root.db` preferred, legacy flat `root.db` honored), then the support
++ billing class dbs (`support/support.db`, `billing/billing.db` — their own
+`-dir` pairings in binary mode), then `tenant_*.db`
+sorted, bounded-parallel. A db file matching no known class is an explicit
+warned skip. Preconditions are probed in one round-trip and fail
 closed: repo root (must contain the migrate script), pnpm, tenant data dir.
 
 | Flag | Type | Default |

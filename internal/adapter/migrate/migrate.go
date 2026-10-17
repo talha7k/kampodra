@@ -1,10 +1,12 @@
 // Package migrate is the frozen migrate.sh port's remote composition: the
 // tenant-db migration loop over libSQL db files (one .db file per tenant
-// under the data dir, + root.db for the auth/org plane). The command layer
-// drives three pieces over ssh:
+// under the data dir, + root.db for the auth/org plane, + the support and
+// billing class dbs — <data>/support/support.db, <data>/billing/billing.db).
+// The command layer drives three pieces over ssh:
 //
 //	ProbeCommand    — preconditions + the db-file listing in ONE round-trip
-//	Plan            — the pure ordering decision (root first, tenants sorted)
+//	Plan            — the pure ordering decision (root first, then the
+//	                  support/billing class planes, tenants sorted)
 //	MigrateCommand  — the per-file apply via the repo's configured migrate script
 //
 // Every snippet is busybox-safe (Alpine ships no bash): POSIX sh, no
@@ -58,7 +60,9 @@ func probeCommand(repoRoot, migrateScript, dataDir string, checkPnpm bool) strin
 	}
 	return cmd +
 		`if [ ! -d ` + data + ` ]; then echo "ERR tenant-dir"; fi; ` +
-		`for f in ` + data + `/*.db; do [ -f "$f" ] && printf 'db=%s\n' "$f"; done`
+		// The class dirs are their own globs — a nested db file is invisible
+		// to a flat glob; the -f guard skips absent dirs (unexpanded glob).
+		`for f in ` + data + `/*.db ` + data + `/root/*.db ` + data + `/support/*.db ` + data + `/billing/*.db; do [ -f "$f" ] && printf 'db=%s\n' "$f"; done`
 }
 
 // Probe is the parsed probe result.
@@ -97,31 +101,71 @@ type Job struct {
 	NS   string
 }
 
+// PlanResult is the parsed ordering decision: the root plane (root.db —
+// the auth/org plane), the class planes (support + billing — one file
+// each), the bounded-parallel tenant pool, and every file that matched NO
+// known shape (surfaced so the command layer can warn — a silent ignore
+// is how a new db class drifted with zero errors).
+type PlanResult struct {
+	Root    *Job
+	Classes []Job // support + billing, fixed apply order (support, billing)
+	Tenants []Job // tenant_*.db, sorted
+	Unknown []string
+}
+
+// classApplyOrder pins the class-plane apply order (support, billing —
+// the esellar class enumeration; each class is one file).
+var classApplyOrder = map[string]int{"support": 0, "billing": 1}
+
+// setClass keeps ONE job per class plane: a later sighting replaces an
+// earlier one — the nested-root rule's parity (only one class dir exists
+// on a real estate).
+func setClass(classes []Job, j Job) []Job {
+	for i := range classes {
+		if classes[i].NS == j.NS {
+			classes[i] = j
+			return classes
+		}
+	}
+	return append(classes, j)
+}
+
 // Plan orders the migration work: root.db FIRST (the auth/org plane —
 // root/root.db preferred, the legacy flat root.db honored), then the
-// tenant_*.db files sorted. Files matching neither shape are ignored.
-func Plan(dbFiles []string) (root *Job, tenants []Job) {
+// support + billing class planes (<data>/support/support.db,
+// <data>/billing/billing.db — handled exactly like the root pairing),
+// then the tenant_*.db files sorted. Files matching no known shape land
+// in Unknown — never applied, never silently dropped.
+func Plan(dbFiles []string) PlanResult {
+	var p PlanResult
 	legacyFlat := ""
 	for _, f := range dbFiles {
 		switch {
 		case strings.HasSuffix(f, "/root/root.db"):
 			// the nested root is authoritative; it replaces any earlier
 			// legacy sighting (only one can exist on a real estate)
-			root = &Job{Path: f, NS: "root"}
+			p.Root = &Job{Path: f, NS: "root"}
 		case strings.HasSuffix(f, "/root.db"):
 			legacyFlat = f // provisional; a nested root/root.db replaces it
+		case strings.HasSuffix(f, "/support/support.db"):
+			p.Classes = setClass(p.Classes, Job{Path: f, NS: "support"})
+		case strings.HasSuffix(f, "/billing/billing.db"):
+			p.Classes = setClass(p.Classes, Job{Path: f, NS: "billing"})
 		default:
 			base := path.Base(f)
 			if strings.HasPrefix(base, "tenant_") && strings.HasSuffix(base, ".db") {
-				tenants = append(tenants, Job{Path: f, NS: strings.TrimSuffix(base, ".db")})
+				p.Tenants = append(p.Tenants, Job{Path: f, NS: strings.TrimSuffix(base, ".db")})
+			} else {
+				p.Unknown = append(p.Unknown, f)
 			}
 		}
 	}
-	if root == nil && legacyFlat != "" {
-		root = &Job{Path: legacyFlat, NS: "root"}
+	if p.Root == nil && legacyFlat != "" {
+		p.Root = &Job{Path: legacyFlat, NS: "root"}
 	}
-	sort.Slice(tenants, func(i, j int) bool { return tenants[i].Path < tenants[j].Path })
-	return root, tenants
+	sort.Slice(p.Classes, func(i, j int) bool { return classApplyOrder[p.Classes[i].NS] < classApplyOrder[p.Classes[j].NS] })
+	sort.Slice(p.Tenants, func(i, j int) bool { return p.Tenants[i].Path < p.Tenants[j].Path })
+	return p
 }
 
 // MigrateCommand composes one file's migrate apply, run from the repo
@@ -141,13 +185,17 @@ func MigrateCommand(repoRoot, migrateScript string, j Job) string {
 // binary's repo-relative path — the static runner streamed into the repo
 // checkout; migrateDir is the repo-relative migrations root). The
 // migrater's own pairing drives -dir: the root job reads
-// <root>/root, every tenant job <root>/tenant — one composition cannot
-// mispair the dirs. -db takes the PLAIN sqlite path (the binary opens it
+// <root>/root, the support + billing class jobs their own dirs, and
+// every tenant job <root>/tenant — one composition cannot mispair the
+// dirs. -db takes the PLAIN sqlite path (the binary opens it
 // directly; the file: URI is the tsx script's contract).
 func MigrateCommandBinary(repoRoot, binaryPath, migrationsRoot string, j Job) string {
 	sub := "tenant"
-	if j.NS == "root" {
+	switch j.NS {
+	case "root":
 		sub = "root"
+	case "support", "billing":
+		sub = j.NS
 	}
 	return shellQuote(repoRoot+"/"+binaryPath) +
 		" -db " + shellQuote(j.Path) +
