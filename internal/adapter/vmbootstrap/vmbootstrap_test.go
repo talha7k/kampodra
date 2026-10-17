@@ -446,3 +446,17 @@ func TestRenderAnchorWatcherGCEVariant(t *testing.T) {
 		}
 	}
 }
+
+// The MariaDB client snippets: client-only (no server), and the apt one
+// stays non-interactive.
+func TestMariaClientSnippets(t *testing.T) {
+	if apk := ApkMariaClientSnippet(); !strings.Contains(apk, "apk add") || !strings.Contains(apk, "mariadb-client") {
+		t.Errorf("apk snippet malformed:\n%s", apk)
+	}
+	apt := AptMariaClientSnippet()
+	for _, want := range []string{"DEBIAN_FRONTEND=noninteractive", "apt-get install -y mariadb-client"} {
+		if !strings.Contains(apt, want) {
+			t.Errorf("apt snippet missing %q:\n%s", want, apt)
+		}
+	}
+}

@@ -21,32 +21,46 @@ import (
 )
 
 const dbHelp = `Usage:
-  kampodra db query    --db <path-on-vm> (--sql "<statement>" | --file <local.sql>)
-                       [--profile <name>] [--host <user@ip>] [--ssh-key <path>]
-  kampodra db snapshot --db <path-on-vm> [--out <local-path>]
-                       [--profile <name>] [--host <user@ip>] [--ssh-key <path>]
+  kampodra db query    --db <sqlite-path-on-vm | mariadb-schema> (--sql "<statement>" | --file <local.sql>)
+                       [--engine auto|sqlite|mariadb] [--profile <name>] [--host <user@ip>] [--ssh-key <path>]
+  kampodra db snapshot --db <sqlite-path-on-vm | mariadb-schema> [--out <local-path>]
+                       [--engine auto|sqlite|mariadb] [--profile <name>] [--host <user@ip>] [--ssh-key <path>]
 
-Read-only sqlite access over SSH — the kampodra-owned surface for the
-"hand-rolled read-only query binary over ssh" habit.
+Read-only database access over SSH — the kampodra-owned surface for the
+"hand-rolled read-only query binary over ssh" habit. Two engines:
 
-query runs ONE statement against the VM's sqlite file through a small
-static-linux helper (kampodra-sqlq) that kampodra builds locally and
-streams to the VM's /tmp on demand — cached at /tmp/kampodra-sqlq-*,
-reused across runs; building needs the go toolchain once (the first
-build may fetch the pure-Go sqlite driver). Read-only is enforced TWICE:
-the gate rejects any statement whose first keyword is not SELECT or WITH
-(exit 2, nothing is sent), and the helper opens the file with
-mode=ro&immutable=0 so writes fail at the driver level. Rows print to
-stdout as raw JSON ([{"col":val},...] — integers/reals as numbers, text
-as strings, blobs base64, NULLs null); everything human rides stderr.
+sqlite (a FILE on the VM):
+  query runs ONE statement through a small static-linux helper
+  (kampodra-sqlq) kampodra builds locally and streams to the VM's /tmp
+  once (version-stamped cache). Read-only is enforced TWICE: the gate
+  rejects any statement not starting with SELECT/WITH (exit 2, nothing is
+  sent), and the helper opens the file read-only at the driver level.
+  Rows print to stdout as raw JSON. snapshot uses the VM's sqlite3
+  ".backup" (consistent under concurrent writes; plain cp fallback noted
+  on stderr when sqlite3 is absent). An existing --out is never
+  overwritten.
 
-snapshot streams a consistent copy of the db to --out (default: the db's
-basename in the current directory), written 0600. The VM's own sqlite3
-does the copying (sqlite3 <db> ".backup <scratch>" — consistent under
-concurrent writes); if sqlite3 is absent on the VM, snapshot falls back
-to plain cp, which is NOT consistent against a writer — the fallback is
-noted on stderr when it happens. An existing --out file is never
-overwritten.
+mariadb (a SCHEMA on a server — same VM or a db host reachable from it):
+  query runs ONE gate-checked statement through the VM's mariadb client
+  (TSV on stdout — batch mode, header row); snapshot streams
+  mariadb-dump --single-transaction --quick (routines+triggers) and
+  verifies the "Dump completed" tail stamp before trusting the copy.
+  Credentials come from the VM's unit env at run time — kampodra never
+  stores them: set KAMPODRA_DB_NAME/HOST/USER/PASSWORD via
+  ` + "`kampodra env set`" + `. They are copied into a 0600 defaults file on
+  the VM for the duration of the command and never ride argv (no ` + "`ps`" + `
+  leak). Same-VM topologies authenticate over the local socket (empty
+  HOST/USER = unix_socket); a remote db host reachable FROM the app VM
+  works with HOST set — kampodra only ever ssh's to the app VM.
+  Provision a read-only role for agents:
+    CREATE USER 'kampodra_ro'@'localhost' IDENTIFIED BY '…';
+    GRANT SELECT ON <db>.* TO 'kampodra_ro'@'localhost';
+  and point KAMPODRA_DB_USER at it — the gate is belt, the role is the
+  suspender.
+
+Engine resolution (--engine auto, the default): the flag wins; then the
+VM's unit env (KAMPODRA_DB_ENGINE=mariadb); then the file's magic bytes
+(sqlite). --db is a PATH for sqlite, a schema NAME for mariadb.
 
 Host/key resolution is the shared ladder: --host | --profile <name> |
 KAMPODRA_PROFILE | config defaultProfile | KAMPODRA_HOST; --ssh-key |
@@ -54,9 +68,11 @@ profile sshKey | KAMPODRA_SSH_KEY | agent / ssh config.
 
 Examples:
   kampodra db query --db /data/root.db --sql "SELECT count(*) AS orgs FROM org"
-  kampodra db query --db <dataDir>/acme/tenant_acme.db --sql "SELECT id, total FROM pos_order ORDER BY id DESC LIMIT 5"
-  kampodra db query --db /data/root.db --file ./audit.sql --profile prod
+  kampodra db query --db <dataDir>/acme/tenant_acme.db --file ./audit.sql --profile prod
   kampodra db snapshot --db <dataDir>/acme/tenant_acme.db --out ./acme-snapshot.db
+  kampodra env set KAMPODRA_DB_ENGINE=mariadb KAMPODRA_DB_NAME=esellar KAMPODRA_DB_USER=kampodra_ro
+  kampodra db query --db esellar --sql "SELECT id, total FROM pos_order ORDER BY id DESC LIMIT 5"
+  kampodra db snapshot --db esellar --out ./esellar.sql
 `
 
 func newDBCommand(d Deps) *cobra.Command {
@@ -86,9 +102,10 @@ func newDBQuerySub(d Deps) *cobra.Command {
 		},
 	}
 	remoteTargetFlags(cmd)
-	cmd.Flags().String("db", "", "the sqlite file's path ON THE VM (the root db or a tenant db under the project's dataDir)")
+	cmd.Flags().String("db", "", "the sqlite file's path ON THE VM, or the mariadb schema NAME")
 	cmd.Flags().String("sql", "", "the statement (exactly one of --sql/--file)")
 	cmd.Flags().String("file", "", "a local .sql file holding the statement (exactly one of --sql/--file)")
+	cmd.Flags().String("engine", "auto", "sqlite | mariadb | auto (flag > unit env KAMPODRA_DB_ENGINE > file magic)")
 	return cmd
 }
 
@@ -102,9 +119,63 @@ func newDBSnapshotSub(d Deps) *cobra.Command {
 		},
 	}
 	remoteTargetFlags(cmd)
-	cmd.Flags().String("db", "", "the sqlite file's path ON THE VM (the root db or a tenant db under the project's dataDir)")
+	cmd.Flags().String("db", "", "the sqlite file's path ON THE VM, or the mariadb schema NAME")
 	cmd.Flags().String("out", "", "local destination (default: the db's basename in the current directory); never overwritten")
+	cmd.Flags().String("engine", "auto", "sqlite | mariadb | auto (flag > unit env KAMPODRA_DB_ENGINE > file magic)")
 	return cmd
+}
+
+// dbEngine is the resolved engine for one db invocation.
+type dbEngine string
+
+const (
+	engineSQLite dbEngine = "sqlite"
+	engineMaria  dbEngine = "mariadb"
+)
+
+// validateDbArgByShape is the pre-ssh sanity gate on --db: path-shaped
+// args (contain a separator) obey the sqlite path gate; bare tokens obey
+// the maria identifier gate. The resolved engine's own validator runs
+// again inside its branch — this pass exists so bad input costs zero
+// round-trips even when --engine auto can't be resolved yet.
+func validateDbArgByShape(dbArg string) error {
+	if strings.ContainsRune(dbArg, '/') {
+		return dbq.ValidateDbPath(dbArg)
+	}
+	return dbq.ValidateMariaDbName(dbArg)
+}
+
+// resolveDBEngine runs the auto ladder: explicit flag wins; then the VM's
+// unit env declaration (KAMPODRA_DB_ENGINE=mariadb — one round-trip);
+// then the file's magic bytes (one round-trip). Anything still ambiguous
+// is an error NAMING the ladder — never a guess.
+func resolveDBEngine(d Deps, ctx context.Context, target Target, engineFlag, dbArg string) (dbEngine, error) {
+	switch engineFlag {
+	case "sqlite":
+		return engineSQLite, nil
+	case "mariadb":
+		return engineMaria, nil
+	case "auto", "":
+		// fall through to the probes
+	default:
+		return "", fmt.Errorf("unknown --engine %q (sqlite | mariadb | auto)", engineFlag)
+	}
+	run := func(remote string) string {
+		out, err := d.Runner.Run(ctx, target.HostSpec, remote)
+		if err != nil {
+			return "" // probes answer by CONTENT; a failing probe is just "no"
+		}
+		return strings.TrimSpace(out)
+	}
+	if run(dbq.EngineUnitEnvProbeCommand(target.Project.EnvFile)) == "mariadb" {
+		return engineMaria, nil
+	}
+	if dbArg != "" && run(dbq.EngineMagicProbeCommand(dbArg)) == "sqlite" {
+		return engineSQLite, nil
+	}
+	return "", fmt.Errorf(
+		"cannot infer the engine: no KAMPODRA_DB_ENGINE=mariadb in the VM's unit env and %q has no sqlite magic — pass --engine sqlite|mariadb",
+		dbArg)
 }
 
 func runDBQuery(d Deps, c *cobra.Command) error {
@@ -128,12 +199,18 @@ func runDBQuery(d Deps, c *cobra.Command) error {
 		return fmt.Errorf("query needs a statement: --sql \"<statement>\" or --file <local.sql>")
 	}
 
-	// The gate FIRST — a rejected statement costs zero round-trips.
+	// The gate FIRST — a rejected statement costs zero round-trips, on
+	// both engines (the classification is engine-portable: SELECT/WITH).
 	if err := dbq.ValidateReadOnly(stmt); err != nil {
 		fmt.Fprintf(d.Stderr, "[db] %v\n", err)
 		return &exitError{code: 2}
 	}
-	if err := dbq.ValidateDbPath(dbPath); err != nil {
+	// Local input sanity BEFORE any ssh — the engine isn't resolved yet,
+	// so validate by SHAPE: a path-shaped arg obeys the sqlite path gate,
+	// a bare token obeys the maria name gate (the resolved engine's own
+	// validator runs again in its branch — cheap, and the contract "bad
+	// input costs zero round-trips" holds regardless of the flag).
+	if err := validateDbArgByShape(dbPath); err != nil {
 		return err
 	}
 
@@ -141,20 +218,65 @@ func runDBQuery(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	// stdout IS the payload (the JSON rows) — provenance rides stderr.
+	// stdout IS the payload (the JSON rows / TSV) — provenance rides stderr.
 	sayProvenance(Deps{Stdout: d.Stderr}, "db", target)
 	if err := requireHost(target); err != nil {
 		return err
 	}
 
 	ctx := c.Context()
-	helper, err := ensureSQLHelper(d, ctx, target)
+	engineFlag, _ := c.Flags().GetString("engine")
+	engine, err := resolveDBEngine(d, ctx, target, engineFlag, dbPath)
 	if err != nil {
 		return err
 	}
-	out, err := d.Runner.RunWithStdin(ctx, target.HostSpec, dbq.QueryCommand(helper, dbPath), strings.NewReader(stmt))
+
+	switch engine {
+	case engineSQLite:
+		if err := dbq.ValidateDbPath(dbPath); err != nil {
+			return err
+		}
+		helper, err := ensureSQLHelper(d, ctx, target)
+		if err != nil {
+			return err
+		}
+		return runEngineQuery(d, ctx, target, dbq.SQLiteEngine(helper), dbPath, stmt)
+	case engineMaria:
+		return runEngineQuery(d, ctx, target, dbq.MariaEngine(target.Project.EnvFile), dbPath, stmt)
+	}
+	return fmt.Errorf("unreachable engine %q", engine)
+}
+
+// runEngineQuery is the shared query flow — identical shape for every
+// engine; the Engine struct supplies the steps (probe? creds stage? —
+// then the gated statement rides stdin). Output is the engine's data
+// payload (JSON rows / TSV); human lines ride stderr.
+func runEngineQuery(d Deps, ctx context.Context, target Target, eng dbq.Engine, dbTarget, stmt string) error {
+	if err := eng.Validate(dbTarget); err != nil {
+		return err
+	}
+	if eng.ProbeCommand != "" {
+		probe, err := d.Runner.Run(ctx, target.HostSpec, eng.ProbeCommand)
+		if err != nil {
+			return fmt.Errorf("cannot reach VM %s (ssh failed) — nothing to query", target.HostSpec.Host)
+		}
+		if strings.TrimSpace(probe) != "yes" {
+			return fmt.Errorf("the %s client stack is missing on %s — install its client packages (e.g. apk add mariadb-client / apt-get install mariadb-client) or run kampodra vm-prepare with KAMPODRA_DB_ENGINE set in the unit env", eng.Name, target.HostSpec.Host)
+		}
+	}
+	if eng.CredsStage != "" {
+		defer func() {
+			if _, err := d.Runner.Run(context.Background(), target.HostSpec, eng.CredsCleanup); err != nil {
+				fmt.Fprintf(d.Stderr, "[db] WARNING: creds cleanup failed on %s: %v\n", target.HostSpec.Host, err)
+			}
+		}()
+		if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, eng.CredsStage, strings.NewReader("")); err != nil {
+			return fmt.Errorf("cannot stage %s credentials on %s (is %s present? set the KAMPODRA_DB_* keys via kampodra env set): %w", eng.Name, target.HostSpec.Host, target.Project.EnvFile, err)
+		}
+	}
+	out, err := d.Runner.RunWithStdin(ctx, target.HostSpec, eng.QueryCommand(dbTarget), strings.NewReader(stmt))
 	if err != nil {
-		return fmt.Errorf("query failed on %s: %w", target.HostSpec.Host, err)
+		return fmt.Errorf("query failed on %s (target %q): %w", target.HostSpec.Host, dbTarget, err)
 	}
 	fmt.Fprint(d.Stdout, out)
 	return nil
@@ -190,14 +312,15 @@ func ensureSQLHelper(d Deps, ctx context.Context, target Target) (string, error)
 func runDBSnapshot(d Deps, c *cobra.Command) error {
 	dbPath, _ := c.Flags().GetString("db")
 	out, _ := c.Flags().GetString("out")
-	if err := dbq.ValidateDbPath(dbPath); err != nil {
+	// Local input sanity BEFORE any ssh (same shape gate as query), and
+	// an explicit --out that exists is refused before any round-trip.
+	if err := validateDbArgByShape(dbPath); err != nil {
 		return err
 	}
-	if out == "" {
-		out = filepath.Base(dbPath)
-	}
-	if _, err := os.Stat(out); err == nil {
-		return fmt.Errorf("refusing to overwrite %s — remove it or pass --out <path>", out)
+	if out != "" {
+		if _, err := os.Stat(out); err == nil {
+			return fmt.Errorf("refusing to overwrite %s — remove it or pass --out <path>", out)
+		}
 	}
 
 	target, err := resolveTargetFromFlags(d, c)
@@ -210,6 +333,24 @@ func runDBSnapshot(d Deps, c *cobra.Command) error {
 	}
 
 	ctx := c.Context()
+	engineFlag, _ := c.Flags().GetString("engine")
+	engine, err := resolveDBEngine(d, ctx, target, engineFlag, dbPath)
+	if err != nil {
+		return err
+	}
+	if engine == engineMaria {
+		return runMariaSnapshot(d, ctx, target, dbq.MariaEngine(target.Project.EnvFile), dbPath, out)
+	}
+
+	if err := dbq.ValidateDbPath(dbPath); err != nil {
+		return err
+	}
+	if out == "" {
+		out = filepath.Base(dbPath)
+	}
+	if _, err := os.Stat(out); err == nil {
+		return fmt.Errorf("refusing to overwrite %s — remove it or pass --out <path>", out)
+	}
 	run := func(remote string) (string, error) {
 		return d.Runner.Run(ctx, target.HostSpec, remote)
 	}
@@ -253,3 +394,55 @@ func runDBSnapshot(d Deps, c *cobra.Command) error {
 // dbqSQLArch mirrors the helper's cross-build arch (dbq's build target) —
 // the on-VM cache name must agree with what was built.
 const dbqSQLArch = dbq.SQLQGOARCH
+
+// runMariaSnapshot: probe client → defaults from the unit env → single-
+// transaction dump to a random scratch → PROVE the "Dump completed" tail
+// stamp (an incomplete dump is a failure, not a warning) → fetch → 0600
+// → cleanup of BOTH scratch and defaults, riding Background so ctrl-C
+// never strands credentials or half-dumps on the VM.
+func runMariaSnapshot(d Deps, ctx context.Context, target Target, eng dbq.Engine, dbName, out string) error {
+	if err := eng.Validate(dbName); err != nil {
+		return err
+	}
+	if out == "" {
+		out = dbName + ".sql"
+	}
+	if _, err := os.Stat(out); err == nil {
+		return fmt.Errorf("refusing to overwrite %s — remove it or pass --out <path>", out)
+	}
+	probe, err := d.Runner.Run(ctx, target.HostSpec, dbq.MariaProbeCommand)
+	if err != nil {
+		return fmt.Errorf("cannot reach VM %s (ssh failed) — nothing to snapshot", target.HostSpec.Host)
+	}
+	if strings.TrimSpace(probe) != "yes" {
+		return fmt.Errorf("mariadb client stack missing on %s — install it (alpine: apk add mariadb-client; ubuntu: apt-get install mariadb-client) or run kampodra vm-prepare with KAMPODRA_DB_ENGINE=mariadb in the unit env", target.HostSpec.Host)
+	}
+	defaults := dbq.MariaDefaultsPath()
+	scratch := dbq.MariaScratchPath()
+	defer func() {
+		for _, remote := range []string{eng.CredsCleanup, dbq.SnapshotCleanupCommand(scratch)} {
+			if _, err := d.Runner.Run(context.Background(), target.HostSpec, remote); err != nil {
+				fmt.Fprintf(d.Stderr, "[db] WARNING: cleanup failed on %s: %v\n", target.HostSpec.Host, err)
+			}
+		}
+	}()
+	if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, eng.CredsStage, strings.NewReader("")); err != nil {
+		return fmt.Errorf("cannot stage %s credentials on %s (is %s present? set the KAMPODRA_DB_* keys via kampodra env set): %w", eng.Name, target.HostSpec.Host, target.Project.EnvFile, err)
+	}
+	fmt.Fprintf(d.Stderr, "[db] consistent dump via mariadb-dump --single-transaction → %s:%s\n", target.HostSpec.Host, scratch)
+	if _, err := d.Runner.Run(ctx, target.HostSpec, dbq.MariaDumpCommand(defaults, dbName, scratch)); err != nil {
+		return fmt.Errorf("mariadb-dump failed for %q on %s: %w", dbName, target.HostSpec.Host, err)
+	}
+	if verify, err := d.Runner.Run(ctx, target.HostSpec, dbq.MariaVerifyDumpCommand(scratch)); err != nil || strings.TrimSpace(verify) == "" {
+		return fmt.Errorf("the dump of %q on %s is INCOMPLETE (no 'Dump completed' tail stamp) — refusing to fetch a partial copy", dbName, target.HostSpec.Host)
+	}
+	data, err := d.Runner.Run(ctx, target.HostSpec, dbq.SnapshotFetchCommand(scratch))
+	if err != nil {
+		return fmt.Errorf("cannot fetch the dump from %s: %w", target.HostSpec.Host, err)
+	}
+	if err := writeFile0600(out, []byte(data)); err != nil {
+		return err
+	}
+	fmt.Fprintf(d.Stdout, "[db] wrote %s (0600) — %d bytes\n", out, len(data))
+	return nil
+}

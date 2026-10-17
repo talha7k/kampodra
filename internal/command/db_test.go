@@ -24,6 +24,8 @@ const dbFixtureRows = `[{"n":1}]` + "\n"
 const dbFixtureSnapBytes = "SNAPBYTES"
 const dbFixtureCpBytes = "CPBYTES"
 const dbFixtureHelperBytes = "fake-sqlq-helper-bytes"
+const dbFixtureDumpBytes = "-- MariaDB dump header\nDUMPCODE\n-- Dump completed on 2026-10-17"
+const dbFixtureTsvRows = "id\ttotal\n1\t420"
 
 type dbHarness struct {
 	deps     command.Deps
@@ -46,6 +48,10 @@ func setupDb(t *testing.T) *dbHarness {
 	goLog := filepath.Join(stubDir, "go-calls.log")
 	scratchDir := filepath.Join(stubDir, "scratch")
 
+	if err := os.WriteFile(filepath.Join(fixtures, "has-sqlite-magic"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	sshShim := "#!/bin/bash\n" +
 		"printf '%s\\n' \"$*\" >> '" + sshLog + "'\n" +
 		"cmd=\"${*: -1}\"\n" +
@@ -56,6 +62,26 @@ func setupDb(t *testing.T) *dbHarness {
 		"  \"umask 077; cat > /tmp/kampodra-sqlq-\"*) cat >> '" + stdinLog + "'; exit 0 ;;\n" +
 		// sqlite3 probe: echo yes/no per fixture
 		"  *\"command -v sqlite3\"*) [ -f \"" + fixtures + "/has-sqlite3\" ] && echo yes || echo no ;;\n" +
+		// --- the MariaDB leg ---
+		// engine declared in the unit env?
+		"  \"grep -E '^KAMPODRA_DB_ENGINE=mariadb'\"*) [ -f \"" + fixtures + "/engine-mariadb\" ] && echo mariadb || echo unknown ;;\n" +
+		// sqlite file magic? (default ON — existing tests auto-resolve sqlite)
+		"  \"head -c 15\"*) [ -f \"" + fixtures + "/has-sqlite-magic\" ] && echo sqlite || echo other ;;\n" +
+		// client stack present?
+		"  \"if command -v mariadb-dump\"*) [ -f \"" + fixtures + "/has-mariadb\" ] && echo yes || echo no ;;\n" +
+		// defaults file composed from the unit env (creds ride stdin-side file)
+		"  \"get() { grep\"*) exit 0 ;;\n" +
+		// dump: write fixture bytes to the scratch path (the LAST token)
+		"  \"mariadb-dump --defaults-extra-file\"*) f=${cmd##* }; mkdir -p \"" + scratchDir + "\"; printf '%s' '" + dbFixtureDumpBytes + "' > \"" + scratchDir + "/$(basename \"$f\")\"; exit 0 ;;\n" +
+		// dump completeness stamp (fixture decides: complete vs truncated)
+		"  \"tail -c 200 /tmp/kampodra-dump-\"*) [ -f \"" + fixtures + "/dump-incomplete\" ] || echo '-- Dump completed on 2026-10-17'; exit 0 ;;\n" +
+		// fetch the dump scratch
+		"  \"cat /tmp/kampodra-dump-\"*) f=${cmd#cat }; cat \"" + scratchDir + "/$(basename \"$f\")\" ;;\n" +
+		// cleanups (defaults + dump scratch)
+		"  \"rm -f /tmp/kampodra-maria-defaults\"*) exit 0 ;;\n" +
+		"  \"rm -f /tmp/kampodra-dump-\"*) exit 0 ;;\n" +
+		// the maria query itself: capture the statement stdin, emit fixture TSV
+		"  \"mariadb --defaults-extra-file\"*) cat >> '" + stdinLog + "'; printf '%s\n' '" + strings.TrimSpace(dbFixtureTsvRows) + "' ;;\n" +
 		// sqlite3 .backup: write fixture bytes to the scratch path the
 		// command composed (kept under the stub dir — no real /tmp litter)
 		"  *\".backup \"*) f=${cmd#*\\\"}; f=${f%\\\"}; f=${f#* }; mkdir -p \"" + scratchDir + "\"; printf '%s' '" + dbFixtureSnapBytes + "' > \"" + scratchDir + "/$(basename \"$f\")\"; exit 0 ;;\n" +
@@ -429,5 +455,178 @@ func TestDbWithoutTargetFails(t *testing.T) {
 	}
 	if !strings.Contains(h.stderr.String(), "target required") {
 		t.Errorf("stderr = %q", h.stderr.String())
+	}
+}
+
+// --- the MariaDB leg -----------------------------------------------------
+
+// Happy path: the unit env declares the engine, the client stack answers,
+// the gate-checked statement rides stdin, TSV lands on stdout — and the
+// defaults file is composed and cleaned up around the query.
+func TestDbQueryMariaHappyPath(t *testing.T) {
+	h := setupDb(t)
+	if err := os.WriteFile(filepath.Join(h.fixtures, "engine-mariadb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(h.fixtures, "has-sqlite-magic")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.fixtures, "has-mariadb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code := h.run(t, "query", "--host", statusHost, "--db", "esellar", "--sql", "SELECT id, total FROM pos_order LIMIT 1")
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), "id\ttotal") {
+		t.Errorf("stdout must be the client's TSV:\n%s", h.stdout.String())
+	}
+	if !strings.Contains(h.invocations(t, h.stdinLog), "SELECT id, total FROM pos_order") {
+		t.Errorf("the statement must ride stdin (never argv):\n%s", h.invocations(t, h.stdinLog))
+	}
+	inv := h.invocations(t, h.sshLog)
+	for _, want := range []string{
+		"get() { grep",                       // defaults composed from the unit env
+		"if command -v mariadb-dump",         // client probed
+		"mariadb --defaults-extra-file=",     // the query
+		"rm -f /tmp/kampodra-maria-defaults", // creds file cleaned up
+	} {
+		if !strings.Contains(inv, want) {
+			t.Errorf("ssh log missing %q:\n%s", want, inv)
+		}
+	}
+}
+
+// The gate fires BEFORE any round-trip on the maria path too.
+func TestDbQueryMariaGateRejectsBeforeSsh(t *testing.T) {
+	h := setupDb(t)
+	if err := os.WriteFile(filepath.Join(h.fixtures, "engine-mariadb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(h.fixtures, "has-sqlite-magic")); err != nil {
+		t.Fatal(err)
+	}
+	code := h.run(t, "query", "--host", statusHost, "--db", "esellar", "--sql", "UPDATE pos_order SET total=0")
+	if code != 2 {
+		t.Fatalf("exit %d, want 2 (gate)", code)
+	}
+	if inv := h.invocations(t, h.sshLog); inv != "" {
+		t.Errorf("a rejected statement must cost ZERO round-trips:\n%s", inv)
+	}
+}
+
+// No client stack on the VM → actionable error naming the install path.
+func TestDbQueryMariaMissingClient(t *testing.T) {
+	h := setupDb(t)
+	if err := os.WriteFile(filepath.Join(h.fixtures, "engine-mariadb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(h.fixtures, "has-sqlite-magic")); err != nil {
+		t.Fatal(err)
+	}
+	code := h.run(t, "query", "--host", statusHost, "--db", "esellar", "--sql", "SELECT 1")
+	if code == 0 {
+		t.Fatalf("expected failure, stderr:\n%s", h.stderr.String())
+	}
+	for _, want := range []string{"mariadb-client", "vm-prepare"} {
+		if !strings.Contains(h.stderr.String(), want) {
+			t.Errorf("error must name %q:\n%s", want, h.stderr.String())
+		}
+	}
+}
+
+// Snapshot: dump → tail-stamp verify → fetch → 0600 → double cleanup.
+func TestDbSnapshotMariaHappyPath(t *testing.T) {
+	h := setupDb(t)
+	if err := os.WriteFile(filepath.Join(h.fixtures, "engine-mariadb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(h.fixtures, "has-sqlite-magic")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.fixtures, "has-mariadb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(h.stubDir, "esellar.sql")
+	code := h.run(t, "snapshot", "--host", statusHost, "--db", "esellar", "--out", out)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, h.stderr.String())
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "DUMPCODE") {
+		t.Errorf("snapshot must be the dump bytes:\n%s", data)
+	}
+	inv := h.invocations(t, h.sshLog)
+	for _, want := range []string{
+		"mariadb-dump --defaults-extra-file=",
+		"--single-transaction",
+		"tail -c 200",                        // the completeness stamp gate
+		"rm -f /tmp/kampodra-maria-defaults", // creds gone
+	} {
+		if !strings.Contains(inv, want) {
+			t.Errorf("ssh log missing %q:\n%s", want, inv)
+		}
+	}
+}
+
+// A truncated dump (no tail stamp) is REFUSED — never fetched, never written.
+func TestDbSnapshotMariaIncompleteDumpRefused(t *testing.T) {
+	h := setupDb(t)
+	if err := os.WriteFile(filepath.Join(h.fixtures, "engine-mariadb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(h.fixtures, "has-sqlite-magic")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.fixtures, "has-mariadb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.fixtures, "dump-incomplete"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(h.stubDir, "esellar.sql")
+	code := h.run(t, "snapshot", "--host", statusHost, "--db", "esellar", "--out", out)
+	if code == 0 {
+		t.Fatalf("expected failure, stderr:\n%s", h.stderr.String())
+	}
+	if !strings.Contains(h.stderr.String(), "INCOMPLETE") {
+		t.Errorf("error must name the missing stamp:\n%s", h.stderr.String())
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("no snapshot file may exist for a refused dump")
+	}
+}
+
+// --engine sqlite skips the auto probes entirely (flag wins, zero probes).
+func TestDbEngineExplicitFlagSkipsProbes(t *testing.T) {
+	h := setupDb(t)
+	if err := os.Remove(filepath.Join(h.fixtures, "has-sqlite-magic")); err != nil {
+		t.Fatal(err)
+	}
+	code := h.run(t, "snapshot", "--host", statusHost, "--db", "/data/root.db", "--engine", "sqlite", "--out", filepath.Join(t.TempDir(), "out.db"))
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, h.stderr.String())
+	}
+	inv := h.invocations(t, h.sshLog)
+	if strings.Contains(inv, "head -c 15") || strings.Contains(inv, "KAMPODRA_DB_ENGINE") {
+		t.Errorf("explicit --engine must not probe:\n%s", inv)
+	}
+}
+
+// Auto with nothing to lean on fails NAMING the ladder.
+func TestDbEngineUnresolvable(t *testing.T) {
+	h := setupDb(t)
+	if err := os.Remove(filepath.Join(h.fixtures, "has-sqlite-magic")); err != nil {
+		t.Fatal(err)
+	}
+	code := h.run(t, "snapshot", "--host", statusHost, "--db", "/data/mystery.db")
+	if code == 0 {
+		t.Fatalf("expected failure, stderr:\n%s", h.stderr.String())
+	}
+	if !strings.Contains(h.stderr.String(), "cannot infer the engine") {
+		t.Errorf("error must name the ladder:\n%s", h.stderr.String())
 	}
 }
