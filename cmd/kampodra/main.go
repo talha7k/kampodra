@@ -14,6 +14,12 @@ import (
 // npm package.json version is pinned to the same value.
 var version = "0.8.5"
 
+// commit is stamped at release time via -ldflags "-X main.commit=…" — the
+// short sha the binary was built from. "dev" = local build. Printed with
+// the version so any shipped binary self-identifies its exact source;
+// release-check and publish-verify gate on this string.
+var commit = "dev"
+
 func main() {
-	os.Exit(command.Execute(version, command.Deps{}, os.Args[1:]))
+	os.Exit(command.Execute(version+" (commit "+commit+")", command.Deps{}, os.Args[1:]))
 }
