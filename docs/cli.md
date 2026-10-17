@@ -407,7 +407,17 @@ VM's `sqlite3 .backup` (consistent under concurrent writes; plain `cp`
 fallback is noted on stderr when sqlite3 is absent).
 
 **mariadb** (a schema on a server — same VM, or a db host reachable from
-the app VM): `--db` is the schema NAME. Query runs the gate-checked
+the app VM; a podman container is the estate's shape): `--db` is the
+schema NAME.
+
+  podman container mode (auto-detected; KAMPODRA_DB_CONTAINER names it
+  explicitly): with no host client installed, the tools run via
+  `podman exec` — in-container root over the socket (the ssh session is
+  the DBA; the statement gate is the only limiter), and snapshots take
+  the PHYSICAL form: in-container mariabackup → --prepare (crash-apply,
+  restorable) → tar, gated on mariabackup's control files before fetch.
+  `--out` is a .tar; restore with mariabackup --copy-back. The
+  host-client mode stays the logical SQL dump with the tail-stamp gate. Query runs the gate-checked
 statement through the VM's `mariadb` client (TSV, header row). Snapshot
 runs `mariadb-dump --single-transaction --quick --routines --triggers`
 and refuses the copy unless the `Dump completed` tail stamp is present.

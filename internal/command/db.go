@@ -387,7 +387,7 @@ func runDBQuery(d Deps, c *cobra.Command) error {
 		}
 		return runEngineQuery(d, ctx, target, dbq.SQLiteEngine(helper), engineSQLite, dbPath, stmt)
 	case engineMaria:
-		return runEngineQuery(d, ctx, dbTarget, dbq.MariaEngine(dbTarget.Project.EnvFile), engineMaria, dbPath, stmt)
+		return runMariaQuery(d, ctx, dbTarget, dbPath, stmt)
 	case enginePg:
 		return runEngineQuery(d, ctx, dbTarget, dbq.PostgresEngine(dbTarget.Project.EnvFile), enginePg, dbPath, stmt)
 	case engineLibsql:
@@ -514,7 +514,7 @@ func runDBSnapshot(d Deps, c *cobra.Command) error {
 		return fmt.Errorf("--db-host does not apply to sqlite — the file lives on the app VM; drop the flag or drop --engine sqlite")
 	}
 	if engine == engineMaria {
-		return runMariaSnapshot(d, ctx, dbTarget, dbq.MariaEngine(dbTarget.Project.EnvFile), dbPath, out)
+		return runMariaSnapshot(d, ctx, dbTarget, dbPath, out)
 	}
 	if engine == enginePg {
 		return runPgSnapshot(d, ctx, dbTarget, dbq.PostgresEngine(dbTarget.Project.EnvFile), dbPath, out)
@@ -587,8 +587,8 @@ const dbqSQLArch = dbq.SQLQGOARCH
 // stamp (an incomplete dump is a failure, not a warning) → fetch → 0600
 // → cleanup of BOTH scratch and defaults, riding Background so ctrl-C
 // never strands credentials or half-dumps on the VM.
-func runMariaSnapshot(d Deps, ctx context.Context, target Target, eng dbq.Engine, dbName, out string) error {
-	if err := eng.Validate(dbName); err != nil {
+func runMariaHostSnapshot(d Deps, ctx context.Context, target Target, dbName, out string) error {
+	if err := dbq.ValidateMariaDbName(dbName); err != nil {
 		return err
 	}
 	if out == "" {
@@ -604,6 +604,7 @@ func runMariaSnapshot(d Deps, ctx context.Context, target Target, eng dbq.Engine
 	if strings.TrimSpace(probe) != "yes" {
 		return fmt.Errorf("mariadb client stack missing on %s — install it (alpine: apk add mariadb-client; ubuntu: apt-get install mariadb-client) or run kampodra vm-prepare with KAMPODRA_DB_ENGINE=mariadb in the unit env", target.HostSpec.Host)
 	}
+	eng := dbq.MariaEngine(target.Project.EnvFile)
 	defaults := dbq.MariaDefaultsPath()
 	scratch := dbq.MariaScratchPath()
 	defer func() {
@@ -692,6 +693,121 @@ func runLibsqlSnapshot(d Deps, ctx context.Context, target Target, envFile, out 
 		return err
 	}
 	fmt.Fprintf(d.Stdout, "[db] wrote %s (0600) — %d bytes\n", out, len(data))
+	return nil
+}
+
+// mariaMode resolves HOW MariaDB is served on the VM: host client stack
+// ("host"), a podman container ("container <name>" — the estate's shape;
+// KAMPODRA_DB_CONTAINER names it explicitly, else the first running
+// maria/mysql container), or neither ("no" — the caller errors with both
+// install paths).
+func mariaMode(d Deps, ctx context.Context, target Target) (string, string, error) {
+	out, err := d.Runner.Run(ctx, target.HostSpec, dbq.MariaModeProbeCommand(target.Project.EnvFile))
+	if err != nil {
+		return "", "", fmt.Errorf("cannot reach VM %s (ssh failed)", target.HostSpec.Host)
+	}
+	fields := strings.Fields(strings.TrimSpace(out))
+	switch {
+	case len(fields) == 1 && fields[0] == "host":
+		return "host", "", nil
+	case len(fields) == 2 && fields[0] == "container":
+		return "container", fields[1], nil
+	default:
+		return "", "", nil
+	}
+}
+
+// runMariaQuery dispatches on the mode: the container path runs the
+// gate-checked statement through `podman exec -i <c> mariadb --batch`
+// (in-container root — the gate is the only limiter) and normalizes the
+// TSV; the host path is the ro-role engine flow.
+func runMariaQuery(d Deps, ctx context.Context, target Target, dbName, stmt string) error {
+	if err := dbq.ValidateMariaDbName(dbName); err != nil {
+		return err
+	}
+	mode, container, err := mariaMode(d, ctx, target)
+	if err != nil {
+		return err
+	}
+	switch mode {
+	case "container":
+		out, err := d.Runner.RunWithStdin(ctx, target.HostSpec, dbq.MariaContainerQueryCommand(container), strings.NewReader(stmt))
+		if err != nil {
+			return fmt.Errorf("query failed on %s (container %s): %w", target.HostSpec.Host, container, err)
+		}
+		flat, nerr := dbq.NormalizeTSV(out)
+		if nerr != nil {
+			return fmt.Errorf("query failed on %s: %w", target.HostSpec.Host, nerr)
+		}
+		fmt.Fprint(d.Stdout, flat+"\n")
+		return nil
+	case "host":
+		return runEngineQuery(d, ctx, target, dbq.MariaEngine(target.Project.EnvFile), engineMaria, dbName, stmt)
+	default:
+		return fmt.Errorf("mariadb is unreachable on %s — install the host client (%s) or run the server in a podman container", target.HostSpec.Host, dbq.MariaInstallHint)
+	}
+}
+
+// runMariaSnapshot dispatches on the mode: host = logical SQL dump with
+// the tail-stamp gate; container = PHYSICAL backup via in-container
+// mariabackup (backup → prepare → tar → control-file gate) — restorable
+// with mariabackup --copy-back, the whole-instance form.
+func runMariaSnapshot(d Deps, ctx context.Context, target Target, dbName, out string) error {
+	if err := dbq.ValidateMariaDbName(dbName); err != nil {
+		return err
+	}
+	if out == "" {
+		out = dbName + ".sql"
+	}
+	if _, err := os.Stat(out); err == nil {
+		return fmt.Errorf("refusing to overwrite %s — remove it or pass --out <path>", out)
+	}
+	mode, container, err := mariaMode(d, ctx, target)
+	if err != nil {
+		return err
+	}
+	switch mode {
+	case "container":
+		return runMariaContainerSnapshot(d, ctx, target, container, out)
+	case "host":
+		return runMariaHostSnapshot(d, ctx, target, dbName, out)
+	default:
+		return fmt.Errorf("mariadb is unreachable on %s — install the host client (%s) or run the server in a podman container", target.HostSpec.Host, dbq.MariaInstallHint)
+	}
+}
+
+// runMariaContainerSnapshot: backup → prepare (crash-apply) → tar →
+// control-file gate → fetch → 0600 → cleanup of dir+tar, all riding the
+// Background pass for cleanup.
+func runMariaContainerSnapshot(d Deps, ctx context.Context, target Target, container, out string) error {
+	dir := dbq.MariaContainerBackupDir()
+	tar := dir + ".tar"
+	defer func() {
+		if _, err := d.Runner.Run(context.Background(), target.HostSpec, dbq.MariaContainerCleanupCommand(dir, tar)); err != nil {
+			fmt.Fprintf(d.Stderr, "[db] WARNING: cleanup failed on %s: %v\n", target.HostSpec.Host, err)
+		}
+	}()
+	fmt.Fprintf(d.Stderr, "[db] physical backup via in-container mariabackup → %s:%s\n", target.HostSpec.Host, dir)
+	if _, err := d.Runner.Run(ctx, target.HostSpec, dbq.MariaContainerBackupCommand(container, dir)); err != nil {
+		return fmt.Errorf("mariabackup failed for container %s on %s: %w", container, target.HostSpec.Host, err)
+	}
+	if _, err := d.Runner.Run(ctx, target.HostSpec, dbq.MariaContainerPrepareCommand(container, dir)); err != nil {
+		return fmt.Errorf("mariabackup --prepare failed (the backup is not restorable without it): %w", err)
+	}
+	if _, err := d.Runner.Run(ctx, target.HostSpec, dbq.MariaContainerTarCommand(dir, tar)); err != nil {
+		return fmt.Errorf("cannot bundle the backup on %s: %w", target.HostSpec.Host, err)
+	}
+	if v, err := d.Runner.Run(ctx, target.HostSpec, dbq.MariaContainerVerifyTarCommand(tar)); err != nil || strings.TrimSpace(v) == "" {
+		return fmt.Errorf("the backup bundle on %s is missing mariabackup's control files — refusing to fetch a torn archive", target.HostSpec.Host)
+	}
+	data, err := d.Runner.Run(ctx, target.HostSpec, dbq.SnapshotFetchCommand(tar))
+	if err != nil {
+		return fmt.Errorf("cannot fetch the backup from %s: %w", target.HostSpec.Host, err)
+	}
+	if err := writeFile0600(out, []byte(data)); err != nil {
+		return err
+	}
+	fmt.Fprintf(d.Stdout, "[db] wrote %s (0600) — %d bytes (physical: restore with mariabackup --copy-back)\n", out, len(data))
 	return nil
 }
 

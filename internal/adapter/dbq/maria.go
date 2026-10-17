@@ -75,14 +75,19 @@ func MariaDefaultsCleanupCommand(defaults string) string {
 	return "rm -f " + defaults
 }
 
-// MariaScratchPath mints the dump's scratch file — same crypto/rand
-// discipline as the sqlite snapshot scratch, .sql-suffixed.
-func MariaScratchPath() string {
+// MariaScratchToken is the maria legs' shared crypto/rand suffix.
+func MariaScratchToken() string {
 	var b [4]byte
 	if _, err := crand.Read(b[:]); err != nil {
 		panic(fmt.Sprintf("crypto/rand: %v", err))
 	}
-	return "/tmp/kampodra-dump-" + hex.EncodeToString(b[:]) + ".sql"
+	return hex.EncodeToString(b[:])
+}
+
+// MariaScratchPath mints the dump's scratch file — same crypto/rand
+// discipline as the sqlite snapshot scratch, .sql-suffixed.
+func MariaScratchPath() string {
+	return "/tmp/kampodra-dump-" + MariaScratchToken() + ".sql"
 }
 
 // ValidateMariaDbName gates the schema NAME before it rides a remote
@@ -155,3 +160,68 @@ func MariaEnvAppendCommand(envFile string) string {
 
 // MariaInstallHint names the client packages for probe-fail errors.
 const MariaInstallHint = "apk add mariadb-client / apt-get install mariadb-client"
+
+// --- the podman container path -------------------------------------------
+// MariaDB deployed as a podman container (the estate's shape): the server
+// tools live IN the image — mariadb/mariadb-dump/mariabackup run via
+// `podman exec`, in-container root over the socket (ssh root = DBA, the
+// same trust model). The host-client path stays as fallback.
+
+// MariaContainerEnvKey names the container explicitly in the env file
+// (beats detection); empty = auto-detect the first running container
+// whose name or image matches maria|mysql.
+const MariaContainerEnvKey = "KAMPODRA_DB_CONTAINER"
+
+// MariaModeProbeCommand answers THREE ways in one round-trip: "host"
+// (host client stack), "container <name>" (a running maria/mysql
+// container — explicit env key first, else detected), or "no". The
+// explicit env key wins over detection.
+func MariaModeProbeCommand(envFile string) string {
+	return `get() { grep -E "^$1=" ` + envFile + ` 2>/dev/null | head -1 | cut -d= -f2-; }; ` +
+		`if command -v mariadb-dump >/dev/null 2>&1 && command -v mariadb >/dev/null 2>&1; then echo host; ` +
+		`elif command -v podman >/dev/null 2>&1; then ` +
+		`c=$(get ` + MariaContainerEnvKey + `); ` +
+		`if [ -z "$c" ]; then c=$(podman ps --format '{{.Names}} {{.Image}}' 2>/dev/null | awk 'tolower($0) ~ /maria|mysql/ {print $1; exit}'); fi; ` +
+		`if [ -n "$c" ]; then echo "container $c"; else echo no; fi; ` +
+		`else echo no; fi`
+}
+
+// MariaContainerQueryCommand: the statement rides stdin into the
+// container's mariadb client (in-container root — the gate is the only
+// limiter; the ro-role concept belongs to the host-credential path).
+func MariaContainerQueryCommand(container string) string {
+	return "podman exec -i " + container + " mariadb --batch"
+}
+
+// MariaContainerGrantROSQL runs the role SQL inside the container (root
+// socket) — same SQL as the host path.
+// MariaContainerBackupDir mints the physical backup's scratch directory
+// (the crypto/rand discipline; mariabackup requires a fresh empty dir).
+func MariaContainerBackupDir() string {
+	return "/tmp/kampodra-mariabackup-" + MariaScratchToken()
+}
+
+// The physical flow, one step per command: backup (in-container root,
+// socket auth) → prepare (crash-apply, makes it restorable) → tar (host
+// side — the dir is on the VM fs) → verify (the archive must contain
+// mariabackup's control files; a torn tar fails the listing) → fetch
+// (the shared cat) → rm -rf both.
+func MariaContainerBackupCommand(container, dir string) string {
+	return "podman exec " + container + " mariabackup --backup --target-dir=" + dir
+}
+
+func MariaContainerPrepareCommand(container, dir string) string {
+	return "podman exec " + container + " mariabackup --prepare --target-dir=" + dir
+}
+
+func MariaContainerTarCommand(dir, tar string) string {
+	return "tar -C " + dir + " -cf " + tar + " ."
+}
+
+func MariaContainerVerifyTarCommand(tar string) string {
+	return "tar -tf " + tar + " | grep -q xtrabackup_checkpoints"
+}
+
+func MariaContainerCleanupCommand(dir, tar string) string {
+	return "rm -rf " + dir + " " + tar
+}
