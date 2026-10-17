@@ -32,7 +32,6 @@
   skip (`[migrate] WARNING: skipping … matches no known db class`) instead
   of a silent ignore — a future class can no longer drift unnoticed.
 
->>>>>>> support-billing-classes
 - **bluegreen live-fire fixes (2026-10-09 session)** — two real-drill
   findings: (1) `ReservedIPListArgs` never passed the `--query` its
   parser documents, so `bluegreen status/init/flip/rollback` ate full
