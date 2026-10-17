@@ -99,6 +99,27 @@ func normalizeHrana(raw string) (string, error) {
 	return string(out), nil
 }
 
+// isJSONInteger reports whether s is a bare signed integer (the only
+// shape safely re-emitted as a JSON number).
+func isJSONInteger(s string) bool {
+	if s == "" {
+		return false
+	}
+	i := 0
+	if s[0] == '-' {
+		i = 1
+	}
+	if i >= len(s) {
+		return false
+	}
+	for ; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // decodeHranaValue maps the typed envelope value to plain JSON: numbers
 // pass through, text/blob are strings (blob already arrives base64),
 // null is null. Unknown types surface as their raw envelope (visible,
@@ -111,7 +132,17 @@ func decodeHranaValue(cell json.RawMessage) []byte {
 	switch v.Type {
 	case "null":
 		return []byte("null")
-	case "integer", "float":
+	case "integer":
+		// Hrana encodes integers as DIGIT STRINGS (JS float-precision
+		// convention — real sqld sends {"type":"integer","value":"7"}).
+		// Emit the digits raw as a JSON number: precision-preserving
+		// (no float round-trip) and type-consistent with the sqlite leg.
+		var digits string
+		if json.Unmarshal(v.Value, &digits) == nil && isJSONInteger(digits) {
+			return []byte(digits)
+		}
+		return v.Value
+	case "float":
 		return v.Value
 	case "text":
 		var s string

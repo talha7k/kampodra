@@ -44,7 +44,7 @@ func TestMariaCommandComposition(t *testing.T) {
 		t.Errorf("dump command malformed:\n%s", dump)
 	}
 	if q := MariaQueryCommand(defaults, "esellar"); !strings.Contains(q, "--defaults-extra-file="+defaults) ||
-		!strings.Contains(q, "--batch esellar") {
+		!strings.Contains(q, "--batch --binary-as-hex esellar") {
 		t.Errorf("query command malformed:\n%s", q)
 	}
 	// The SQL rides stdin — the query command itself must contain no
@@ -92,7 +92,7 @@ func TestMariaEngineSteps(t *testing.T) {
 	if err := eng.Validate("ese llar; rm -rf"); err == nil {
 		t.Errorf("metacharacter schema accepted")
 	}
-	if q := eng.QueryCommand("esellar"); !strings.Contains(q, "--batch esellar") {
+	if q := eng.QueryCommand("esellar"); !strings.Contains(q, "--batch --binary-as-hex esellar") {
 		t.Errorf("query composition malformed:\n%s", q)
 	}
 }
@@ -181,17 +181,17 @@ func TestMariaModeProbeCommand(t *testing.T) {
 
 // Container compositions: stdin clients and the physical backup flow.
 func TestMariaContainerCompositions(t *testing.T) {
-	if q := MariaContainerQueryCommand("maria-pod"); q != "podman exec -i maria-pod mariadb --batch" {
+	if q := MariaContainerQueryCommand("maria-pod"); q != "podman exec -i maria-pod mariadb --defaults-extra-file="+MariaContainerCredsPath+" --batch --binary-as-hex" {
 		t.Errorf("container query malformed:\n%s", q)
 	}
 	dir := MariaContainerBackupDir()
 	if !strings.HasPrefix(dir, "/tmp/kampodra-mariabackup-") {
 		t.Errorf("backup dir malformed: %s", dir)
 	}
-	if b := MariaContainerBackupCommand("maria-pod", dir); !strings.Contains(b, "podman exec maria-pod mariabackup --backup --target-dir="+dir) {
+	if b := MariaContainerBackupCommand("maria-pod", dir); !strings.Contains(b, "podman exec maria-pod mariabackup --defaults-extra-file="+MariaContainerCredsPath+" --backup --target-dir="+dir) {
 		t.Errorf("backup malformed:\n%s", b)
 	}
-	if p := MariaContainerPrepareCommand("maria-pod", dir); !strings.Contains(p, "mariabackup --prepare --target-dir="+dir) {
+	if p := MariaContainerPrepareCommand("maria-pod", dir); !strings.Contains(p, "mariabackup --defaults-extra-file="+MariaContainerCredsPath+" --prepare --target-dir="+dir) {
 		t.Errorf("prepare malformed:\n%s", p)
 	}
 	tar := dir + ".tar"

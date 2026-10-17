@@ -35,8 +35,8 @@ func TestPostgresEngineSteps(t *testing.T) {
 		!strings.Contains(q, "ON_ERROR_STOP=1") || !strings.Contains(q, "--dbname esellar") {
 		t.Errorf("query composition malformed:\n%s", q)
 	}
-	if !eng.OutputIsTSV {
-		t.Errorf("postgres output is TSV — the normalizer must run")
+	if eng.Normalize == nil {
+		t.Errorf("postgres output must normalize (CSV → flat JSON)")
 	}
 }
 

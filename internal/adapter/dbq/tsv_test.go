@@ -81,3 +81,60 @@ func TestTSVAndHranaShapesAgree(t *testing.T) {
 		t.Errorf("Hrana values are typed: %v", hrRows[0]["id"])
 	}
 }
+
+// GOLDEN: captured verbatim from real `mariadb --batch` inside the
+// estate-shaped podman container (mariadb:11) — O'Neill apostrophe, a
+// batch-escaped \n\t pair, a bare NULL, and — pre --binary-as-hex — the
+// trap this test exists for: a RAW 0xDEADBEEF blob arriving as invalid
+// UTF-8 bytes (json.Marshal would corrupt them to U+FFFD).
+func TestNormalizeTSVGoldenRealMaria(t *testing.T) {
+	raw := "id\tname\tbalance\tdata\n" +
+		"1\tO'Neill\t-5.50\tNULL\n" +
+		"2\tline\\nbreak\\ttabbed\t0.00\t" + string([]byte{0xDE, 0xAD, 0xBE, 0xEF}) + "\n"
+	got, err := NormalizeTSV(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(got), &rows); err != nil {
+		t.Fatalf("invalid JSON (raw blob leaked through?): %v\n%s", err, got)
+	}
+	if rows[0]["balance"] != "-5.50" || rows[0]["data"] != nil {
+		t.Errorf("row 1: %s", got)
+	}
+	if rows[1]["name"] != "line\nbreak\ttabbed" {
+		t.Errorf("batch escapes must unreverse: %s", got)
+	}
+	blob, ok := rows[1]["data"].(string)
+	if !ok {
+		t.Fatalf("raw-blob cell must become a base64 STRING, got %T", rows[1]["data"])
+	}
+	if dec, err := base64.StdEncoding.DecodeString(blob); err != nil || string(dec) != "\xde\xad\xbe\xef" {
+		t.Errorf("raw blob must survive as base64: %q (%v)", blob, err)
+	}
+}
+
+// GOLDEN: captured verbatim from real `psql --csv` in the estate-shaped
+// podman container (postgres:16) — the quoted multi-line value proves CSV
+// quoting (the reason postgres uses CSV, not TSV), and NULL visibility
+// comes from --set=null=NULL.
+func TestNormalizeCSVGoldenRealPsql(t *testing.T) {
+	raw := "id,name\n" +
+		"1,pg-pod\n" +
+		"2,\"line\ntab\"\n" +
+		"3,NULL\n"
+	got, err := NormalizeCSV(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(got), &rows); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, got)
+	}
+	if rows[1]["name"] != "line\ntab" {
+		t.Errorf("CSV quoting must carry embedded newlines: %s", got)
+	}
+	if rows[2]["name"] != nil {
+		t.Errorf("--set=null=NULL must surface NULLs: %s", got)
+	}
+}

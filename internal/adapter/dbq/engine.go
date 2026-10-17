@@ -53,10 +53,10 @@ type Engine struct {
 	// (perfect JSON escaping, no VM-side quoting).
 	EncodeStatement func(stmt string) string
 
-	// OutputIsTSV marks the server engines whose stdout is client batch
-	// output (header + tab rows) — db.go normalizes it to the flat JSON
-	// row shape so agents parse one format for JSON, one for TSV engines.
-	OutputIsTSV bool
+	// Normalize flattens the engine's wire output to the flat JSON row
+	// shape (maria: escaped TSV; postgres: RFC4180 CSV; libsql: the
+	// Hrana envelope). nil = the output is already flat JSON (sqlite).
+	Normalize func(raw string) (string, error)
 }
 
 // PostgresEngine is the Postgres leg: same env-file contract as MariaDB
@@ -74,7 +74,7 @@ func PostgresEngine(envFile string) Engine {
 		QueryCommand: func(target string) string {
 			return PostgresQueryCommand(defaults, target)
 		},
-		OutputIsTSV: true,
+		Normalize: NormalizeTSV,
 	}
 }
 
@@ -109,7 +109,7 @@ func LibsqlEngine(envFile string) Engine {
 		ProbeCommand:    LibsqlProbeCommand,
 		InstallHint:     "apk add curl / apt-get install curl",
 		CredsStage:      LibsqlAuthStageCommand(envFile, stage),
-		OutputIsTSV:     false,
+		Normalize:       NormalizeHranaResponse,
 		CredsCleanup:    LibsqlAuthCleanupCommand(stage),
 		Validate:        func(string) error { return nil }, // sqld serves one db; --db is unused
 		QueryCommand:    func(string) string { return LibsqlQueryCommand(stage) },

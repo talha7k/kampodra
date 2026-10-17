@@ -118,7 +118,9 @@ KAMPODRA_DB_ENGINE > file magic):
   PHYSICAL form (in-container mariabackup → prepare → tar, gated on the
   control files; restore with mariabackup --copy-back).
 - **postgres** — same env-file contract as mariadb; PGPASSFILE staged
-  0600; pg_dump MVCC-consistent with a completeness tail gate.
+  0600; `psql --csv` (quoted values; NULLs render empty); pg_dump
+  MVCC-consistent with a completeness tail gate; container mode via
+  `podman exec --user postgres`.
 - **libsql (self-hosted sqld)** — no --db needed; KAMPODRA_DB_URL
   (default localhost:8080) + optional KAMPODRA_DB_TOKEN, staged to a 0600
   header file; rows as flat JSON (same shape as sqlite); snapshot needs

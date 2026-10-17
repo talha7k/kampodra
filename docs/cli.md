@@ -430,11 +430,15 @@ a read-only role (`GRANT SELECT ON db.* TO 'kampodra_ro'@'localhost'`)
 and point `KAMPODRA_DB_USER` at it — the gate is belt, the role is the
 suspender.
 
-**postgres** (a schema on a server, like MariaDB): same env-file contract
-(`KAMPODRA_DB_*`), PGPASSFILE staged 0600 (backslash/colon escaped,
-never argv). Query = `psql` with `ON_ERROR_STOP` (TSV). Snapshot =
-`pg_dump` plain format — MVCC-consistent by construction — gated on the
-"PostgreSQL database dump complete" tail stamp.
+**postgres** (a schema on a server, like MariaDB — podman container or
+host client): same env-file contract (`KAMPODRA_DB_*`), PGPASSFILE
+staged 0600 (backslash/colon escaped, never argv). Query = `psql --csv`
+(embedded newlines/tabs survive quoting; NULLs render empty — the text
+protocol loses the NULL/empty-string distinction). Snapshot = `pg_dump`
+plain format — MVCC-consistent by construction — gated on the
+"PostgreSQL database dump complete" tail stamp. Container mode runs
+psql/pg_dump via `podman exec --user postgres` (the exec user names the
+DB role; root does not exist).
 
 **libsql** (self-hosted sqld serving the db over HTTP on the same VM —
 no cloud): `--db` is unused (sqld serves one database). Query rides

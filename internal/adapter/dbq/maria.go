@@ -131,7 +131,7 @@ func MariaVerifyDumpCommand(scratch string) string {
 // MariaQueryCommand runs the statement arriving on stdin — batch mode
 // (tab-separated, header row), SQL never rides argv.
 func MariaQueryCommand(defaults, dbName string) string {
-	return "mariadb --defaults-extra-file=" + defaults + " --batch " + dbName
+	return "mariadb --defaults-extra-file=" + defaults + " --batch --binary-as-hex " + dbName
 }
 
 // MariaDbNameFromUnitEnvCommand prints the declared schema (the query/
@@ -195,9 +195,6 @@ func MariaModeProbeCommand(envFile string) string {
 // MariaContainerQueryCommand: the statement rides stdin into the
 // container's mariadb client (in-container root — the gate is the only
 // limiter; the ro-role concept belongs to the host-credential path).
-func MariaContainerQueryCommand(container string) string {
-	return "podman exec -i " + container + " mariadb --batch"
-}
 
 // MariaContainerGrantROSQL runs the role SQL inside the container (root
 // socket) — same SQL as the host path.
@@ -212,12 +209,20 @@ func MariaContainerBackupDir() string {
 // side — the dir is on the VM fs) → verify (the archive must contain
 // mariabackup's control files; a torn tar fails the listing) → fetch
 // (the shared cat) → rm -rf both.
+// MariaContainerQueryCommand: the statement rides stdin into the
+// container's client, authenticating against the staged defaults file
+// (the official image is password-auth; unix_socket is the
+// Debian-package shape — found by the real-engine smoke).
+func MariaContainerQueryCommand(container string) string {
+	return "podman exec -i " + container + " mariadb --defaults-extra-file=" + MariaContainerCredsPath + " --batch --binary-as-hex"
+}
+
 func MariaContainerBackupCommand(container, dir string) string {
-	return "podman exec " + container + " mariabackup --backup --target-dir=" + dir
+	return "podman exec " + container + " mariabackup --defaults-extra-file=" + MariaContainerCredsPath + " --backup --target-dir=" + dir
 }
 
 func MariaContainerPrepareCommand(container, dir string) string {
-	return "podman exec " + container + " mariabackup --prepare --target-dir=" + dir
+	return "podman exec " + container + " mariabackup --defaults-extra-file=" + MariaContainerCredsPath + " --prepare --target-dir=" + dir
 }
 
 func MariaContainerTarCommand(dir, tar string) string {
@@ -239,4 +244,42 @@ func MariaContainerResolveCommand(envFile string) string {
 		`c=$(get ` + MariaContainerEnvKey + `); ` +
 		`if [ -z "$c" ]; then c=$(podman ps --format '{{.Names}} {{.Image}}' 2>/dev/null | awk 'tolower($0) ~ /maria|mysql/ {print $1; exit}'); fi; ` +
 		`echo "container $c"`
+}
+
+// MariaRootPasswordEnvKey: the container image authenticates root by
+// password (MARIADB_ROOT_PASSWORD), not unix_socket — physical backups
+// (mariabackup) need this privilege level; the env file carries it.
+const MariaRootPasswordEnvKey = "KAMPODRA_DB_ROOT_PASSWORD"
+
+// MariaContainerCredsPath is the defaults file INSIDE the container.
+const MariaContainerCredsPath = "/tmp/kampodra-maria.cnf"
+
+// MariaContainerCredsStageCommand builds the in-container defaults file:
+// the VM's env file is parsed HOST-side and the ini is piped into
+// `podman exec -i … cat >` (0600 in-container; the password transits the
+// pipe, never argv). Least privilege: KAMPODRA_DB_USER/PASSWORD (the ro
+// role) when set; otherwise root via KAMPODRA_DB_ROOT_PASSWORD —
+// mariabackup requires that privilege level, so physical snapshots want
+// the root key present.
+func MariaContainerCredsStageCommand(envFile, container string, forceRoot bool) string {
+	rootPref := `if [ -n "$u" ]; then printf 'user=%s\n' "$u"; [ -n "$w" ] && printf 'password=%s\n' "$w"; `
+	rootSuf := `elif [ -n "$r" ]; then printf 'user=root\npassword=%s\n' "$r"; fi; `
+	if forceRoot {
+		// grant-ro rotates and mariabackup needs root: the ro role can't
+		// do either, so the staged cnf is root-only.
+		rootPref = `u=root; [ -z "$w" ] && w=$r; if [ -n "$w" ]; then printf 'user=%s\n' "$u"; printf 'password=%s\n' "$w"; `
+		rootSuf = `fi; `
+	}
+	return `get() { grep -E "^$1=" ` + envFile + ` 2>/dev/null | head -1 | cut -d= -f2-; }; ` +
+		`{ printf '[client]\n'; ` +
+		`u=$(get ` + MariaUserEnvKey + `); w=$(get ` + MariaPasswordEnvKey + `); r=$(get ` + MariaRootPasswordEnvKey + `); ` +
+		rootPref + rootSuf + `} | ` +
+		`podman exec -i ` + container + ` sh -c 'umask 077; cat > ` + MariaContainerCredsPath + ` && chmod 600 ` + MariaContainerCredsPath + `'; ` +
+		`podman exec ` + container + ` sh -c 'test -s ` + MariaContainerCredsPath + ` || test -f ` + MariaContainerCredsPath + `'`
+}
+
+// MariaContainerCredsCleanupCommand removes the staged cnf (in-container
+// /tmp — the staged role/root password must not outlive the command).
+func MariaContainerCredsCleanupCommand(container string) string {
+	return "podman exec " + container + " rm -f " + MariaContainerCredsPath
 }
