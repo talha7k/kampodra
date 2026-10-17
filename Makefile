@@ -161,21 +161,24 @@ publish:
 	$(MAKE) publish-verify VERSION=$(VERSION)
 
 # publish-verify: the last line of defense — download each published
-# artifact BACK from the registry and prove it is the tag's build
-# (version + commit stamp). Strings-based so every platform is checked
-# without executing foreign-arch binaries; retries ride out registry
-# propagation lag (fresh publishes can 404 for minutes).
+# artifact BACK from the registry and prove it is the tag's build.
+# The version string and the commit sha are probed SEPARATELY: the
+# "--version" phrase is concatenated at RUNTIME, so the joined form
+# never exists in the compiled binary (first live run proved it). The
+# tag sha is the discriminator — only the tag's build carries it.
+# Strings-based so every platform is checked without executing
+# foreign-arch binaries; retries ride out registry propagation lag.
 publish-verify:
 	@test -n "$(VERSION)" || { echo "usage: make publish-verify VERSION=0.8.4"; exit 1; }; \
 	tagcommit=$$(git rev-parse --short v$(VERSION)^{} 2>/dev/null || git rev-parse --short HEAD); \
-	want="$(VERSION) (commit $$tagcommit)"; echo "probing registry for: $$want"; \
+	echo "probing registry for version $(VERSION) + commit $$tagcommit"; \
 	for triple in $(PLATFORMS); do \
-		ok=""; for i in 1 2 3 4 5 6; do \
+		ok=""; for i in 1 2 3 4 5 6 8 10; do \
 			url=$$(npm view @kampodra/$$triple@$(VERSION) dist.tarball 2>/dev/null) || { sleep 20; continue; }; \
 			curl -sL "$$url" | tar -xz -O package/bin/kampodra > /tmp/kampodra-verify-$$triple 2>/dev/null || { sleep 20; continue; }; \
-			if strings /tmp/kampodra-verify-$$triple | grep -qF "$$want"; then ok=1; break; fi; sleep 20; \
+			if strings /tmp/kampodra-verify-$$triple | grep -qF "$$tagcommit" && strings /tmp/kampodra-verify-$$triple | grep -qF "$(VERSION)"; then ok=1; break; fi; sleep 20; \
 		done; \
-		test -n "$$ok" || { echo "FAIL: @kampodra/$$triple@$(VERSION) on the registry does not carry $$want — stale binary shipped"; exit 1; }; \
+		test -n "$$ok" || { echo "FAIL: @kampodra/$$triple@$(VERSION) on the registry does not carry version $(VERSION) + commit $$tagcommit — stale binary shipped"; exit 1; }; \
 		echo "verified @kampodra/$$triple@$(VERSION)"; \
 	done
 
