@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -63,6 +64,9 @@ METRICS
 BACKUP
   backup         object-storage backups via the provider CLI's own auth: list | download | verify | restore-plan (restore-plan never executes)
 
+DB
+  db             read-only sqlite over SSH: query (ONE SELECT/WITH → raw JSON rows on stdout; exit 2 = gate rejection) | snapshot (consistent copy back, 0600; cp fallback noted)
+
 Every command supports --help with usage + examples.
 `
 
@@ -77,6 +81,10 @@ type Deps struct {
 	Stdin  io.Reader
 	Runner transport.Runner
 	Prober *probe.Prober
+	// CacheDir is the root for kampodra's local build caches (the sqlq
+	// helper). Empty = the OS user cache dir (~/Library/Caches or
+	// XDG_CACHE_HOME) + /kampodra; tests point it at a temp dir.
+	CacheDir string
 }
 
 func (d Deps) withDefaults() Deps {
@@ -108,6 +116,13 @@ func (d Deps) withDefaults() Deps {
 		if wd, err := os.Getwd(); err == nil {
 			d.Dir = wd
 		}
+	}
+	if d.CacheDir == "" {
+		base, err := os.UserCacheDir()
+		if err != nil {
+			base = os.TempDir()
+		}
+		d.CacheDir = filepath.Join(base, "kampodra")
 	}
 	return d
 }
@@ -168,6 +183,7 @@ func NewRoot(version string, deps Deps) *cobra.Command {
 	root.AddCommand(newSSHCommand(d))
 	root.AddCommand(newConfigCommand(d))
 	root.AddCommand(newBackupCommand(d))
+	root.AddCommand(newDBCommand(d))
 	root.AddCommand(newVMWipeCommand(d))
 	root.AddCommand(newVMPrepareCommand(d))
 	root.AddCommand(newMetricsCommand(d))

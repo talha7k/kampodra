@@ -43,7 +43,7 @@ func assertIndexShape(t *testing.T, out string) {
 		t.Errorf("index lost the mission line:\n%s", out)
 	}
 	// Groups in index order.
-	wantGroups := []string{"DEPLOY\n", "DEPLOY LIFECYCLE\n", "INFRA\n", "DNS\n", "ENV\n", "CONFIG\n", "HOST\n", "METRICS\n", "BACKUP\n"}
+	wantGroups := []string{"DEPLOY\n", "DEPLOY LIFECYCLE\n", "INFRA\n", "DNS\n", "ENV\n", "CONFIG\n", "HOST\n", "METRICS\n", "BACKUP\n", "DB\n"}
 	last := -1
 	for _, g := range wantGroups {
 		i := strings.Index(out, g)
@@ -58,7 +58,7 @@ func assertIndexShape(t *testing.T, out string) {
 	}
 	// Every implemented command appears in the index — unimplemented
 	// commands are unlisted, so the index lists exactly the real surface.
-	for _, c := range []string{"deploy", "migrate", "vm-prepare", "status", "dns", "env", "config", "metrics", "backup", "ssh", "vm-wipe"} {
+	for _, c := range []string{"deploy", "migrate", "vm-prepare", "status", "dns", "env", "config", "metrics", "backup", "ssh", "vm-wipe", "db"} {
 		if !strings.Contains(out, c) {
 			t.Errorf("index missing command %q:\n%s", c, out)
 		}
