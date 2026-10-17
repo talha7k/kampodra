@@ -542,6 +542,8 @@ kampodra vm gc --profile prod --apply  # delete ONLY the stale classes
   container mount sources).
 - `/opt` and `/home` are sweep zones but not ephemeral ones: unrecognized
   content there is report-only; only stale `.sh` scripts are deletable.
+- `--apply` reports per-removal reclaimed bytes (directory subtrees fold
+  into one number); the delete pass does not echo the dry-run inventory.
 
 ## metrics
 
