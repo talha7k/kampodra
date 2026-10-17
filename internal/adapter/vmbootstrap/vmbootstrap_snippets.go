@@ -66,6 +66,18 @@ test -x /usr/libexec/podman/aardvark-dns
 [ "$(podman info --format '{{.Host.NetworkBackend}}' 2>/dev/null)" = netavark ]`
 }
 
+// ApkMariaClientSnippet installs the MariaDB client stack (dump + query)
+// on Alpine — idempotent, no server.
+func ApkMariaClientSnippet() string {
+	return `apk add --no-progress mariadb-client`
+}
+
+// AptMariaClientSnippet is the Ubuntu sibling: non-interactive, no server.
+func AptMariaClientSnippet() string {
+	return `export DEBIAN_FRONTEND=noninteractive
+apt-get install -y mariadb-client`
+}
+
 // SysctlApplySnippet persists the sysctl service into the boot runlevel and
 // applies the unprivileged-port setting live.
 func SysctlApplySnippet() string {

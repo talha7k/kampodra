@@ -88,10 +88,11 @@ func statementTerminator(s string) int {
 				st = normal
 			}
 		case inBlockComment:
-			if two == "/*" {
+			switch two {
+			case "/*":
 				depth++
 				i++
-			} else if two == "*/" {
+			case "*/":
 				depth--
 				i++
 				if depth == 0 {

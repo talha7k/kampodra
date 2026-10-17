@@ -16,6 +16,7 @@ func (p *vmProvisioner) provisionAlpine(ansiblePath string) error {
 		p.alpineInitGates,
 		func() error { return p.sshdHardening("rc-service sshd restart") },
 		p.alpinePodmanStack,
+		p.alpineMariaClientIfDeclared,
 		func() error { return p.managedState(vmbootstrap.SysctlApplySnippet()) },
 		p.alpineOpenRCUnits,
 		p.alpineProxyUp,
@@ -36,6 +37,20 @@ func (p *vmProvisioner) alpineInitGates() error {
 	}
 	if err := p.run(vmbootstrap.GateOpenRCTooling); err != nil {
 		return p.die("OpenRC tooling missing or not operational (openrc/rc-service/rc-update/supervise-daemon, rc-status)", err)
+	}
+	return nil
+}
+
+// alpineMariaClientIfDeclared installs the MariaDB client stack ONLY when
+// the unit env declares the engine — vm-prepare installs no database
+// tooling the estate didn't ask for.
+func (p *vmProvisioner) alpineMariaClientIfDeclared() error {
+	if p.target.UnitEnvs["KAMPODRA_DB_ENGINE"] != "mariadb" {
+		return nil
+	}
+	p.say("installing the mariadb client stack (unit env declares the engine)…")
+	if err := p.runSh(vmbootstrap.ApkMariaClientSnippet()); err != nil {
+		return p.die("mariadb-client install failed (apk output above)", err)
 	}
 	return nil
 }

@@ -1,0 +1,119 @@
+package dbq
+
+import (
+	"strings"
+	"testing"
+)
+
+// testEnvFile — the env file's path is the PROJECT's (profile-
+// configurable); tests inject a literal so dbq stays magic-string-clean.
+const testEnvFile = "/etc/kampodra/env"
+
+// The MariaDB leg's contract: credentials ride unit env → 0600 defaults
+// file ON the VM (never argv — `ps` must never see a password), the dump
+// is single-transaction + quick, and completeness is proven by the tail
+// stamp before anything is fetched.
+
+func TestMariaDefaultsFromUnitEnvCommand(t *testing.T) {
+	got := MariaDefaultsFromUnitEnvCommand(testEnvFile, MariaDefaultsPath())
+	for _, want := range []string{
+		"umask 077",
+		"[client]",
+		"get() { grep -E \"^$1=\" " + testEnvFile,
+		"get " + MariaHostEnvKey,
+		"get " + MariaPasswordEnvKey,
+		"sed 's/%/%%/g'", // option-file percent escape on the password only
+		"chmod 600 " + MariaDefaultsPath(),
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("defaults command missing %q:\n%s", want, got)
+		}
+	}
+	// The host/user/password greps must NOT run through esc() — only the
+	// password needs the option-file percent escape.
+	if strings.Count(got, "esc)") != 1 {
+		t.Errorf("esc() must apply to the password line only:\n%s", got)
+	}
+}
+
+func TestMariaCommandComposition(t *testing.T) {
+	defaults := MariaDefaultsPath()
+	if dump := MariaDumpCommand(defaults, "esellar", "/tmp/scratch.sql"); !strings.Contains(dump, "--single-transaction") ||
+		!strings.Contains(dump, "--quick") ||
+		!strings.HasSuffix(dump, "esellar > /tmp/scratch.sql") {
+		t.Errorf("dump command malformed:\n%s", dump)
+	}
+	if q := MariaQueryCommand(defaults, "esellar"); !strings.Contains(q, "--defaults-extra-file="+defaults) ||
+		!strings.Contains(q, "--batch esellar") {
+		t.Errorf("query command malformed:\n%s", q)
+	}
+	// The SQL rides stdin — the query command itself must contain no
+	// statement text and no credentials by construction.
+	if v := MariaVerifyDumpCommand("/tmp/scratch.sql"); !strings.Contains(v, "grep -q 'Dump completed'") {
+		t.Errorf("verify command malformed:\n%s", v)
+	}
+}
+
+func TestMariaProbeAndEngineProbes(t *testing.T) {
+	if !strings.Contains(MariaProbeCommand, "mariadb-dump") || !strings.Contains(MariaProbeCommand, "command -v mariadb ") {
+		t.Errorf("client probe must require BOTH binaries:\n%s", MariaProbeCommand)
+	}
+	if magic := EngineMagicProbeCommand("/data/root.db"); !strings.Contains(magic, "head -c 15 /data/root.db") ||
+		!strings.Contains(magic, "SQLite format 3") {
+		t.Errorf("magic probe malformed:\n%s", magic)
+	}
+	if env := EngineUnitEnvProbeCommand(testEnvFile); !strings.Contains(env, "^"+EngineEnvKey+"=mariadb") ||
+		!strings.Contains(env, testEnvFile) {
+		t.Errorf("unit-env engine probe malformed:\n%s", env)
+	}
+	if name := MariaDbNameFromUnitEnvCommand(testEnvFile); !strings.Contains(name, MariaNameEnvKey) {
+		t.Errorf("db-name probe malformed:\n%s", name)
+	}
+}
+
+// --- the engine seam ------------------------------------------------------
+
+// The maria leg is fully self-describing: probe, creds stage+cleanup, its
+// own validator, and a query composition that takes only the target.
+func TestMariaEngineSteps(t *testing.T) {
+	eng := MariaEngine(testEnvFile)
+	if eng.Name != "mariadb" || eng.ProbeCommand != MariaProbeCommand {
+		t.Fatalf("engine identity malformed: %+v", eng)
+	}
+	if eng.CredsStage == "" || !strings.Contains(eng.CredsStage, MariaDefaultsPath()) {
+		t.Errorf("creds stage must compose the defaults file:\n%s", eng.CredsStage)
+	}
+	if eng.CredsCleanup != MariaDefaultsCleanupCommand(MariaDefaultsPath()) {
+		t.Errorf("creds cleanup malformed:\n%s", eng.CredsCleanup)
+	}
+	if err := eng.Validate("esellar"); err != nil {
+		t.Errorf("valid schema rejected: %v", err)
+	}
+	if err := eng.Validate("ese llar; rm -rf"); err == nil {
+		t.Errorf("metacharacter schema accepted")
+	}
+	if q := eng.QueryCommand("esellar"); !strings.Contains(q, "--batch esellar") {
+		t.Errorf("query composition malformed:\n%s", q)
+	}
+}
+
+// The sqlite leg carries no creds and no probe — provisioning is db.go's
+// helper flow — and its query composition closes over the helper path.
+func TestSQLiteEngineSteps(t *testing.T) {
+	eng := SQLiteEngine("/tmp/kampodra-sqlq-v1-arm64")
+	if eng.Name != "sqlite" || eng.ProbeCommand != "" || eng.CredsStage != "" || eng.CredsCleanup != "" {
+		t.Fatalf("sqlite steps must be empty where the flow provisions: %+v", eng)
+	}
+	if err := eng.Validate("/data/root.db"); err != nil {
+		t.Errorf("valid path rejected: %v", err)
+	}
+	if err := eng.Validate("root.db"); err != nil {
+		t.Errorf("relative paths are legitimate sqlite targets: %v", err)
+	}
+	if err := eng.Validate("x; rm -rf /"); err == nil {
+		t.Errorf("metacharacters accepted as a sqlite path")
+	}
+	if q := eng.QueryCommand("/data/root.db"); !strings.Contains(q, "/tmp/kampodra-sqlq-v1-arm64 -db /data/root.db") {
+		t.Errorf("query composition must use the provisioned helper:\n%s", q)
+	}
+}
