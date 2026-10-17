@@ -47,10 +47,16 @@ reproduction.
 The exec-shim suite proves orchestration, not hosts. The real-engine db
 smoke (local pods, env-gated, torn down) is the pattern to extend:
 
-- [ ] vm-prepare against a REAL systemd container (alpine + ubuntu:24.04
-      via podman --systemd=always) — the gates have never met a live host
-- [ ] one real cloud provision → vm-prepare → vm-wipe cycle (GCP
-      ubuntu-minimal, torn down after) as a pre-release canary
+- [x] vm-prepare against a REAL systemd host — DONE this date: an
+      ubuntu:24.04 privileged container (systemd PID1) cleared every gate
+      after two live findings (iptables missing from the Ubuntu snippet;
+      the netavark gate trusted a name without a binary) — both fixed
+- [x] real cloud leg — DONE this date: GCP ubuntu-minimal 24.04.5 (live
+      VM, torn down): found the PID1 gate's /proc/1/exe is unreadable to
+      non-root (comm-based gate now) — vm-prepare could never have run
+      on a real GCP VM before this
+- [ ] follow-up: sudo-wrap for vm-prepare on root-disabled clouds (GCP
+      ssh users are never root; privileged steps assume root today)
 - Rule: local pods first; cloud only when containers cannot represent the
   surface; EVERYTHING torn down after
 
