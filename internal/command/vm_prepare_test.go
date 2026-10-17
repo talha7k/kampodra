@@ -152,7 +152,7 @@ func TestVMPrepareHappyPathSequence(t *testing.T) {
 	for _, want := range []string{
 		// gates
 		"test -d /sys/firmware/efi",
-		"! readlink /proc/1/exe 2>/dev/null | grep -q systemd",
+		"! cat /proc/1/comm 2>/dev/null | grep -qx systemd",
 		"command -v openrc",
 		// sshd hardening ensure + restart + gate
 		"mkdir -p /etc/ssh/sshd_config.d",

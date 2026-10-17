@@ -331,7 +331,7 @@ func TestUbuntuSnippets(t *testing.T) {
 func TestUbuntuGatesAndPaths(t *testing.T) {
 	n := testNaming()
 	// GateSystemdPID1 is the INVERSE of the Alpine no-systemd gate.
-	if !strings.Contains(GateSystemdPID1, "readlink /proc/1/exe") || !strings.Contains(GateSystemdPID1, "systemd") {
+	if !strings.Contains(GateSystemdPID1, "cat /proc/1/comm") || !strings.Contains(GateSystemdPID1, "systemd") {
 		t.Errorf("systemd-pid1 gate wrong: %s", GateSystemdPID1)
 	}
 	if strings.HasPrefix(strings.TrimSpace(GateSystemdPID1), "!") {
