@@ -24,6 +24,7 @@ func TestCommandSurface(t *testing.T) {
 		"backup",
 		"bluegreen",
 		"config",
+		"db",
 		"deploy",
 		"dns",
 		"env",

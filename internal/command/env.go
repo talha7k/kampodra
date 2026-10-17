@@ -61,14 +61,16 @@ func newEnvCommand(d Deps) *cobra.Command {
 	subDiff := newEnvDiffSub(d)
 
 	subFromSchema := newEnvFromSchemaCommand(d)
-	envTargetFlags(subFromSchema)
+	remoteTargetFlags(subFromSchema)
 	cmd.AddCommand(subList, subSet, subPush, subPull, subFingerprint, subDiff, subFromSchema)
 	return cmd
 }
 
 // envTargetFlags registers the shared env-family target flags (the same
 // three every remote env subcommand takes).
-func envTargetFlags(c *cobra.Command) {
+// remoteTargetFlags registers the shared target flag trio (host/profile/ssh-key)
+// every remote command family takes — the SAME resolution ladder below them.
+func remoteTargetFlags(c *cobra.Command) {
 	c.Flags().String("host", "", "target VM (user@ip or ssh-config alias) — beats KAMPODRA_HOST and any profile")
 	c.Flags().String("profile", "", "per-instance profile (~/.kampodra/config.json) — beats KAMPODRA_PROFILE / defaultProfile")
 	c.Flags().String("ssh-key", "", "identity file — beats KAMPODRA_SSH_KEY; empty = agent / ssh config")
@@ -82,7 +84,7 @@ func newEnvListSub(d Deps) *cobra.Command {
 		Short: "KEY + fingerprint table of the remote env file (NEVER values)",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
-			target, err := resolveEnvTarget(d, c)
+			target, err := resolveTargetFromFlags(d, c)
 			if err != nil {
 				return err
 			}
@@ -98,7 +100,7 @@ func newEnvListSub(d Deps) *cobra.Command {
 			return nil
 		},
 	}
-	envTargetFlags(cmd)
+	remoteTargetFlags(cmd)
 	return cmd
 }
 
@@ -122,7 +124,7 @@ func newEnvPushSub(d Deps) *cobra.Command {
 			if envfile.CountKeyLines(string(data)) == 0 {
 				return fmt.Errorf("no KEY=VALUE lines in %s — nothing to push", file)
 			}
-			target, err := resolveEnvTarget(d, c)
+			target, err := resolveTargetFromFlags(d, c)
 			if err != nil {
 				return err
 			}
@@ -145,7 +147,7 @@ func newEnvPushSub(d Deps) *cobra.Command {
 			return nil
 		},
 	}
-	envTargetFlags(cmd)
+	remoteTargetFlags(cmd)
 	cmd.Flags().String("file", "", "local env file to upload (verbatim — what you push is what lands)")
 	cmd.Flags().Bool("restart", false, "restart the api service after the push (init-aware) — the env file is re-read on container start")
 	return cmd
@@ -181,7 +183,7 @@ func newEnvSetSub(d Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			target, err := resolveEnvTarget(d, c)
+			target, err := resolveTargetFromFlags(d, c)
 			if err != nil {
 				return err
 			}
@@ -193,7 +195,7 @@ func newEnvSetSub(d Deps) *cobra.Command {
 			return runEnvSet(d, c.Context(), target, pairs, restart)
 		},
 	}
-	envTargetFlags(cmd)
+	remoteTargetFlags(cmd)
 	cmd.Flags().Bool("restart", false, "restart the api service after the set (init-aware) — the env file is re-read on container start")
 	return cmd
 }
@@ -301,7 +303,7 @@ func newEnvPullSub(d Deps) *cobra.Command {
 		Short: "raw payload to stdout/--out (0600); masked fingerprint summary follows",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
-			target, err := resolveEnvTarget(d, c)
+			target, err := resolveTargetFromFlags(d, c)
 			if err != nil {
 				return err
 			}
@@ -329,7 +331,7 @@ func newEnvPullSub(d Deps) *cobra.Command {
 			return nil
 		},
 	}
-	envTargetFlags(cmd)
+	remoteTargetFlags(cmd)
 	cmd.Flags().String("out", "", "write the raw payload to this file (0600) instead of stdout")
 	return cmd
 }
@@ -382,7 +384,7 @@ func newEnvDiffSub(d Deps) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("no such file: %s", localPath)
 			}
-			target, err := resolveEnvTarget(d, c)
+			target, err := resolveTargetFromFlags(d, c)
 			if err != nil {
 				return err
 			}
@@ -407,7 +409,7 @@ func newEnvDiffSub(d Deps) *cobra.Command {
 			return nil
 		},
 	}
-	envTargetFlags(cmd)
+	remoteTargetFlags(cmd)
 	return cmd
 }
 
@@ -431,24 +433,26 @@ func newEnvFromSchemaCommand(d Deps) *cobra.Command {
 	return sub
 }
 
+// writeFile0600 writes content to path with 0600-from-creation semantics
+// (pre-created 0600, chmod after close so the umask can never widen it) —
+// the single place secret/db payloads touch local disk.
+func writeFile0600(path string, content []byte) error {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		return fmt.Errorf("cannot write %s", path)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("cannot write %s", path)
+	}
+	return nil
+}
+
 // writeSecretFile0600 writes secret content to out with 0600-from-creation
-// semantics (pre-created 0600, chmod after close) and prints the
-// fingerprint table — the single place secret payloads touch disk, so the
-// masking invariant lives here, not in each caller.
+// semantics and prints the fingerprint table — the single place secret
+// payloads touch disk, so the masking invariant lives here, not in each
+// caller.
 func writeSecretFile0600(d Deps, out, content, wroteNote string) error {
-	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("cannot write %s", out)
-	}
-	if _, err := f.WriteString(content); err != nil {
-		f.Close()
-		return fmt.Errorf("cannot write %s", out)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("cannot write %s", out)
-	}
-	if err := os.Chmod(out, 0o600); err != nil {
-		return fmt.Errorf("cannot write %s", out)
+	if err := writeFile0600(out, []byte(content)); err != nil {
+		return err
 	}
 	fmt.Fprintf(d.Stdout, "[env] wrote %s (0600) — %s\n", out, wroteNote)
 	fmt.Fprint(d.Stdout, envfile.Table(content))
@@ -467,7 +471,7 @@ func runEnvFromSchema(d Deps, c *cobra.Command) error {
 		return fmt.Errorf("no git repo at . — pass --repo <path>")
 	}
 
-	target, err := resolveEnvTarget(d, c)
+	target, err := resolveTargetFromFlags(d, c)
 	if out == "" {
 		if err != nil {
 			return err
@@ -522,7 +526,7 @@ func gitRepoRoot(dir string) (string, error) {
 
 // resolveEnvTarget is the env family's target resolution: the standard
 // flag > profile > env ladder over the three shared flags.
-func resolveEnvTarget(d Deps, c *cobra.Command) (Target, error) {
+func resolveTargetFromFlags(d Deps, c *cobra.Command) (Target, error) {
 	host, _ := c.Flags().GetString("host")
 	key, _ := c.Flags().GetString("ssh-key")
 	profile, _ := c.Flags().GetString("profile")
