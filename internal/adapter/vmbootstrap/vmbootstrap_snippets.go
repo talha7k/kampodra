@@ -78,6 +78,18 @@ func AptMariaClientSnippet() string {
 apt-get install -y mariadb-client`
 }
 
+// ApkCurlSnippet installs curl (the libsql leg's Hrana client needs real
+// header handling — busybox wget can't take headers from a file).
+func ApkCurlSnippet() string {
+	return `apk add --no-progress curl`
+}
+
+// AptCurlSnippet is the Ubuntu sibling.
+func AptCurlSnippet() string {
+	return `export DEBIAN_FRONTEND=noninteractive
+apt-get install -y curl`
+}
+
 // SysctlApplySnippet persists the sysctl service into the boot runlevel and
 // applies the unprivileged-port setting live.
 func SysctlApplySnippet() string {

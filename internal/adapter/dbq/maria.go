@@ -38,12 +38,12 @@ func EngineMagicProbeCommand(dbPath string) string {
 	return "head -c 15 " + dbPath + " 2>/dev/null | grep -q 'SQLite format 3' && echo sqlite || echo other"
 }
 
-// EngineUnitEnvProbeCommand reads the engine the unit env declares (the
-// operator's explicit choice rides KAMPODRA_DB_ENGINE). The env file's
-// path is the project adapter's (profile-configurable) — injected, never
-// hardcoded here.
+// EngineUnitEnvProbeCommand echoes the engine the unit env declares
+// (mariadb | libsql | empty — the operator's explicit choice rides
+// KAMPODRA_DB_ENGINE). The env file's path is the project adapter's
+// (profile-configurable) — injected, never hardcoded here.
 func EngineUnitEnvProbeCommand(envFile string) string {
-	return "grep -E '^" + EngineEnvKey + "=mariadb' " + envFile + " 2>/dev/null && echo mariadb || echo unknown"
+	return "grep -E '^" + EngineEnvKey + "=(mariadb|libsql)' " + envFile + " 2>/dev/null | head -1 | cut -d= -f2-"
 }
 
 // MariaDefaultsPath is the on-VM defaults file holding the client creds —
@@ -132,5 +132,5 @@ func MariaQueryCommand(defaults, dbName string) string {
 // MariaDbNameFromUnitEnvCommand prints the declared schema (the query/
 // snapshot flows need a NAME, not a path — resolved once, named here).
 func MariaDbNameFromUnitEnvCommand(envFile string) string {
-	return "grep -E '^" + MariaNameEnvKey + "=./" + envFile + " 2>/dev/null | head -1 | cut -d= -f2-"
+	return "grep -E '^" + MariaNameEnvKey + "=' " + envFile + " 2>/dev/null | head -1 | cut -d= -f2-"
 }

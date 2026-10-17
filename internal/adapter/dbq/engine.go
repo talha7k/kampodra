@@ -42,6 +42,16 @@ type Engine struct {
 	// statement. For sqlite, db.go provisions the helper FIRST and passes
 	// its path to the constructor, so this closure is total.
 	QueryCommand func(target string) string
+
+	// InstallHint names the client packages the probe-failure error
+	// suggests (engine-specific, actionable).
+	InstallHint string
+
+	// EncodeStatement transforms the gated statement into the command's
+	// stdin payload. nil = the statement rides verbatim (sqlite, maria);
+	// libsql wraps it into the Hrana pipeline body Go-side (perfect JSON
+	// escaping, no VM-side quoting).
+	EncodeStatement func(stmt string) string
 }
 
 // MariaEngine is the MariaDB leg: server engine, credentials read from
@@ -56,9 +66,29 @@ func MariaEngine(envFile string) Engine {
 		CredsStage:   MariaDefaultsFromUnitEnvCommand(envFile, defaults),
 		CredsCleanup: MariaDefaultsCleanupCommand(defaults),
 		Validate:     ValidateMariaDbName,
+		InstallHint:  "apk add mariadb-client / apt-get install mariadb-client",
 		QueryCommand: func(target string) string {
 			return MariaQueryCommand(defaults, target)
 		},
+	}
+}
+
+// LibsqlEngine is the self-hosted libsql leg: sqld serving the db over
+// Hrana (HTTP) on the same VM. Query rides curl with the token staged to
+// a 0600 header file (never argv); --db is unused (sqld serves one db —
+// the URL and token come from the env file). Snapshots treat the db as
+// the file it is (db.go branches on the engine for the snapshot flow).
+func LibsqlEngine(envFile string) Engine {
+	stage := LibsqlAuthHeaderStage
+	return Engine{
+		Name:            EngineLibsql,
+		ProbeCommand:    LibsqlProbeCommand,
+		InstallHint:     "apk add curl / apt-get install curl",
+		CredsStage:      LibsqlAuthStageCommand(envFile, stage),
+		CredsCleanup:    LibsqlAuthCleanupCommand(stage),
+		Validate:        func(string) error { return nil }, // sqld serves one db; --db is unused
+		QueryCommand:    func(string) string { return LibsqlQueryCommand(stage) },
+		EncodeStatement: HranaPipelineBody,
 	}
 }
 
@@ -70,6 +100,7 @@ func SQLiteEngine(helperPath string) Engine {
 		Name:         "sqlite",
 		ProbeCommand: "", // provisioning is flow-specific: build + stream the helper
 		Validate:     ValidateDbPath,
+		InstallHint:  "the sqlq helper is built and streamed by kampodra (no client packages)",
 		QueryCommand: func(target string) string {
 			return QueryCommand(helperPath, target)
 		},

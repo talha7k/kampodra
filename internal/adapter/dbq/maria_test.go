@@ -62,7 +62,7 @@ func TestMariaProbeAndEngineProbes(t *testing.T) {
 		!strings.Contains(magic, "SQLite format 3") {
 		t.Errorf("magic probe malformed:\n%s", magic)
 	}
-	if env := EngineUnitEnvProbeCommand(testEnvFile); !strings.Contains(env, "^"+EngineEnvKey+"=mariadb") ||
+	if env := EngineUnitEnvProbeCommand(testEnvFile); !strings.Contains(env, EngineEnvKey+"=(mariadb|libsql)") ||
 		!strings.Contains(env, testEnvFile) {
 		t.Errorf("unit-env engine probe malformed:\n%s", env)
 	}

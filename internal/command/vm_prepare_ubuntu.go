@@ -16,7 +16,7 @@ func (p *vmProvisioner) provisionUbuntu(ansiblePath string) error {
 		p.ubuntuInitGates,
 		func() error { return p.sshdHardening("systemctl restart ssh") },
 		p.ubuntuPodmanStack,
-		p.ubuntuMariaClientIfDeclared,
+		p.ubuntuDBClientIfDeclared,
 		func() error { return p.managedState(vmbootstrap.SysctlApplyUbuntuSnippet()) },
 		p.ubuntuSystemdUnits,
 		p.ubuntuUnitsLive,
@@ -44,15 +44,20 @@ func (p *vmProvisioner) ubuntuInitGates() error {
 	return nil
 }
 
-// ubuntuMariaClientIfDeclared installs the MariaDB client stack ONLY when
-// the unit env declares the engine (the apt sibling of the Alpine step).
-func (p *vmProvisioner) ubuntuMariaClientIfDeclared() error {
-	if p.target.UnitEnvs["KAMPODRA_DB_ENGINE"] != "mariadb" {
+// ubuntuDBClientIfDeclared is the apt sibling of the Alpine dispatcher.
+func (p *vmProvisioner) ubuntuDBClientIfDeclared() error {
+	var snippet string
+	switch p.target.UnitEnvs["KAMPODRA_DB_ENGINE"] {
+	case "mariadb":
+		snippet = vmbootstrap.AptMariaClientSnippet()
+	case "libsql":
+		snippet = vmbootstrap.AptCurlSnippet()
+	default:
 		return nil
 	}
-	p.say("installing the mariadb client stack (unit env declares the engine)…")
-	if err := p.runSh(vmbootstrap.AptMariaClientSnippet()); err != nil {
-		return p.die("mariadb-client install failed (apt output above)", err)
+	p.say("installing the db client stack (unit env declares the engine)…")
+	if err := p.runSh(snippet); err != nil {
+		return p.die("db client install failed (apt output above)", err)
 	}
 	return nil
 }
