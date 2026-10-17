@@ -181,26 +181,30 @@ func runDBGrantRO(d Deps, c *cobra.Command) error {
 		return fmt.Errorf("grant-ro supports --engine mariadb (executes) or postgres (prints the SQL); got %q", engineFlag)
 	}
 
-	probe, err := d.Runner.Run(c.Context(), dbTarget.HostSpec, dbq.MariaProbeCommand)
+	mode, container, err := mariaMode(d, c.Context(), dbTarget)
 	if err != nil {
-		return fmt.Errorf("cannot reach VM %s (ssh failed)", dbTarget.HostSpec.Host)
+		return err
 	}
-	if strings.TrimSpace(probe) != "yes" {
-		return fmt.Errorf("the mariadb client stack is missing on %s — %s", dbTarget.HostSpec.Host, dbq.MariaInstallHint)
+	if mode == "" {
+		return fmt.Errorf("mariadb is unreachable on %s — install the host client (%s) or run the server in a podman container", dbTarget.HostSpec.Host, dbq.MariaInstallHint)
 	}
 	pw, err := dbq.GeneratePassword()
 	if err != nil {
 		return err
 	}
 	sql := dbq.MariaGrantROSQL(role, pw, dbName)
-	if _, err := d.Runner.RunWithStdin(c.Context(), dbTarget.HostSpec, "mariadb", strings.NewReader(sql)); err != nil {
-		return fmt.Errorf("role provisioning failed on %s (unix_socket root expected): %w", dbTarget.HostSpec.Host, err)
+	runSQL := "mariadb"
+	if mode == "container" {
+		runSQL = dbq.MariaContainerQueryCommand(container)
+	}
+	if _, err := d.Runner.RunWithStdin(c.Context(), dbTarget.HostSpec, runSQL, strings.NewReader(sql)); err != nil {
+		return fmt.Errorf("role provisioning failed on %s (%s; unix_socket root expected): %w", dbTarget.HostSpec.Host, mode, err)
 	}
 	envLines := fmt.Sprintf("%s=%s\n%s=%s\n", dbq.MariaUserEnvKey, role, dbq.MariaPasswordEnvKey, pw)
 	if _, err := d.Runner.RunWithStdin(c.Context(), dbTarget.HostSpec, dbq.MariaEnvAppendCommand(dbTarget.Project.EnvFile), strings.NewReader(envLines)); err != nil {
 		return fmt.Errorf("role created but the env keys could not be written to %s:%s — set them manually via kampodra env set", dbTarget.HostSpec.Host, dbTarget.Project.EnvFile)
 	}
-	fmt.Fprintf(d.Stdout, "[db] read-only role %s provisioned on %s — SELECT on %s.*; env keys written to %s (the password is in the env file, never printed)\n", role, dbTarget.HostSpec.Host, dbName, dbTarget.Project.EnvFile)
+	fmt.Fprintf(d.Stderr, "[db] read-only role %s provisioned on %s — SELECT on %s.*; env keys written to %s (the password is in the env file, never printed)\n", role, dbTarget.HostSpec.Host, dbName, dbTarget.Project.EnvFile)
 	return nil
 }
 
