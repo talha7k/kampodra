@@ -66,7 +66,7 @@ func run(dbPath string, stmtIn io.Reader, out, errw io.Writer) int {
 		fmt.Fprintf(errw, "kampodra-sqlq: cannot open %s read-only: %v\n", dbPath, err)
 		return 1
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows, err := db.Query(stmt)
 	if err != nil {

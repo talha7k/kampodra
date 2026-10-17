@@ -149,7 +149,7 @@ func BuildLinuxHelper(ctx context.Context, cacheRoot string, stderr io.Writer) (
 	if err != nil {
 		return "", fmt.Errorf("cannot create the helper build dir: %w", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	if err := MaterializeHelperModule(dir); err != nil {
 		return "", err
 	}
