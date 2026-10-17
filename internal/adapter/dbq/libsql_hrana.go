@@ -7,7 +7,9 @@
 package dbq
 
 import (
+	crand "crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 )
@@ -129,4 +131,14 @@ func decodeHranaValue(cell json.RawMessage) []byte {
 	default:
 		return cell
 	}
+}
+
+// GeneratePassword mints an agent-role password: 24 crypto-random bytes,
+// hex — 48 chars, no quoting hazards in any SQL dialect or env file.
+func GeneratePassword() (string, error) {
+	var b [24]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("crypto/rand: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
 }

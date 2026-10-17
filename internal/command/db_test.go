@@ -65,7 +65,7 @@ func setupDb(t *testing.T) *dbHarness {
 		"  *\"command -v sqlite3\"*) [ -f \"" + fixtures + "/has-sqlite3\" ] && echo yes || echo no ;;\n" +
 		// --- the MariaDB leg ---
 		// engine declared in the unit env?
-		"  *\"grep -E '^KAMPODRA_DB_ENGINE=(mariadb|libsql)'\"*) { [ -f \"" + fixtures + "/engine-mariadb\" ] && echo mariadb; [ -f \"" + fixtures + "/engine-libsql\" ] && echo libsql; true; } ;;\n" +
+		"  *\"grep -E '^KAMPODRA_DB_ENGINE=(mariadb|libsql|postgres)'\"*) { [ -f \"" + fixtures + "/engine-mariadb\" ] && echo mariadb; [ -f \"" + fixtures + "/engine-libsql\" ] && echo libsql; true; } ;;\n" +
 		// sqlite file magic? (default ON — existing tests auto-resolve sqlite)
 		"  \"head -c 15\"*) [ -f \"" + fixtures + "/has-sqlite-magic\" ] && echo sqlite || echo other ;;\n" +
 		// client stack present?

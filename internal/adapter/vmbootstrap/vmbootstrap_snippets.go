@@ -90,6 +90,17 @@ func AptCurlSnippet() string {
 apt-get install -y curl`
 }
 
+// ApkPgClientSnippet installs the PostgreSQL client stack (dump + query).
+func ApkPgClientSnippet() string {
+	return `apk add --no-progress postgresql-client`
+}
+
+// AptPgClientSnippet is the Ubuntu sibling.
+func AptPgClientSnippet() string {
+	return `export DEBIAN_FRONTEND=noninteractive
+apt-get install -y postgresql-client`
+}
+
 // SysctlApplySnippet persists the sysctl service into the boot runlevel and
 // applies the unprivileged-port setting live.
 func SysctlApplySnippet() string {

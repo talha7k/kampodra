@@ -112,10 +112,21 @@ KAMPODRA_DB_ENGINE > file magic):
   a 0600 defaults file, never argv; snapshot = mariadb-dump
   --single-transaction with a "Dump completed" tail gate. Prefer a
   read-only role (GRANT SELECT) for agent queries.
+- **postgres** — same env-file contract as mariadb; PGPASSFILE staged
+  0600; pg_dump MVCC-consistent with a completeness tail gate.
 - **libsql (self-hosted sqld)** — no --db needed; KAMPODRA_DB_URL
   (default localhost:8080) + optional KAMPODRA_DB_TOKEN, staged to a 0600
   header file; rows as flat JSON (same shape as sqlite); snapshot needs
   KAMPODRA_DB_PATH and gates on PRAGMA integrity_check.
+
+Server engines on their own VM: `--db-host` / profile `dbHost` moves the
+flows' ssh to the DB VM (its env file carries the creds). TSV engines
+emit string values (batch text has no types); file engines emit typed
+JSON.
+
+`kampodra db grant-ro --db <schema>` provisions the read-only role:
+mariadb executes end-to-end (random password, env keys written on the
+VM, password never printed); `--engine postgres` prints the ready SQL.
 
 The gate rejects non-SELECT/WITH statements (exit 2) BEFORE any ssh on
 every engine — a rejected statement costs zero round-trips.

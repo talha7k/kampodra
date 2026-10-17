@@ -420,6 +420,12 @@ a read-only role (`GRANT SELECT ON db.* TO 'kampodra_ro'@'localhost'`)
 and point `KAMPODRA_DB_USER` at it — the gate is belt, the role is the
 suspender.
 
+**postgres** (a schema on a server, like MariaDB): same env-file contract
+(`KAMPODRA_DB_*`), PGPASSFILE staged 0600 (backslash/colon escaped,
+never argv). Query = `psql` with `ON_ERROR_STOP` (TSV). Snapshot =
+`pg_dump` plain format — MVCC-consistent by construction — gated on the
+"PostgreSQL database dump complete" tail stamp.
+
 **libsql** (self-hosted sqld serving the db over HTTP on the same VM —
 no cloud): `--db` is unused (sqld serves one database). Query rides
 Hrana over the VM's curl — the request body is built Go-side (JSON
@@ -434,8 +440,32 @@ URL alone cannot be snapshotted) and gates the copy on
 All engines: `--db` input is validated locally before any ssh (bad input
 costs zero round-trips); staged credentials and scratch files are
 cleaned up in a deferred pass that survives ctrl-C; `vm-prepare`
-installs the client stack (`mariadb-client` / `curl`) only when the unit
-env declares the engine.
+installs the client stack (`mariadb-client` / `postgresql-client` /
+`curl`) only when the unit env declares the engine.
+
+Output shapes: the file engines (sqlite, libsql) print typed flat JSON;
+the server engines (mariadb, postgres) print TSV normalized to the same
+flat JSON row shape with STRING values — batch text has no types, and
+guessing them would corrupt string codes.
+
+**Server engines on their own VM:** `--db-host` (or the profile's
+`dbHost`) points the db flows' ssh at the database VM — its env file
+carries the `KAMPODRA_DB_*` creds, the ssh key rides the app target's.
+`sqlite` and `libsql` are co-located by design; `--db-host` does not
+apply (libsql reaches remote servers by URL).
+
+**Read-only role, automated** (`db grant-ro`): MariaDB provisions and
+rotates `kampodra_ro` end-to-end — the password is generated Go-side,
+the grant rides stdin over the ssh session's unix_socket root, and the
+env keys are appended to the VM's env file; the password is never
+printed. Postgres's admin path varies by host, so `--engine postgres`
+prints the ready SQL for the operator's superuser instead.
+
+```
+kampodra db grant-ro --db esellar                    # provisions + writes env keys
+kampodra db grant-ro --db esellar --engine postgres  # prints the SQL
+kampodra db query --db esellar --db-host root@10.0.1.5 --sql "SELECT 1"
+```
 
 ```
 kampodra db query --db /data/root.db --sql "SELECT count(*) FROM org" --profile prod

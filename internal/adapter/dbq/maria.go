@@ -43,7 +43,7 @@ func EngineMagicProbeCommand(dbPath string) string {
 // KAMPODRA_DB_ENGINE). The env file's path is the project adapter's
 // (profile-configurable) — injected, never hardcoded here.
 func EngineUnitEnvProbeCommand(envFile string) string {
-	return "grep -E '^" + EngineEnvKey + "=(mariadb|libsql)' " + envFile + " 2>/dev/null | head -1 | cut -d= -f2-"
+	return "grep -E '^" + EngineEnvKey + "=(mariadb|libsql|postgres)' " + envFile + " 2>/dev/null | head -1 | cut -d= -f2-"
 }
 
 // MariaDefaultsPath is the on-VM defaults file holding the client creds —
@@ -134,3 +134,24 @@ func MariaQueryCommand(defaults, dbName string) string {
 func MariaDbNameFromUnitEnvCommand(envFile string) string {
 	return "grep -E '^" + MariaNameEnvKey + "=' " + envFile + " 2>/dev/null | head -1 | cut -d= -f2-"
 }
+
+// MariaGrantROSQL returns the idempotent read-only role SQL for
+// `db grant-ro` (MariaDB dialect, unix_socket root over ssh): create-or-
+// rotate the role, then SELECT on the schema. The schema is backtick-
+// quoted; the password rides stdin via the caller (never argv).
+func MariaGrantROSQL(role, password, dbName string) string {
+	return "CREATE USER IF NOT EXISTS " + jsonString(role) + "@'localhost' IDENTIFIED BY " + jsonString(password) + ";" +
+		" ALTER USER " + jsonString(role) + "@'localhost' IDENTIFIED BY " + jsonString(password) + ";" +
+		" GRANT SELECT ON `" + dbName + "`.* TO " + jsonString(role) + "@'localhost';"
+}
+
+// MariaEnvAppendCommand appends the role's env keys to the VM's env file
+// idempotently (existing KAMPODRA_DB_USER/PASSWORD lines are removed
+// first) — the VALUES ride stdin (never argv): two lines, USER then
+// PASSWORD.
+func MariaEnvAppendCommand(envFile string) string {
+	return `umask 077; sed -i '/^` + MariaUserEnvKey + `=/d;/^` + MariaPasswordEnvKey + `=/d' ` + envFile + ` && printf '%s' "$(cat)" >> ` + envFile
+}
+
+// MariaInstallHint names the client packages for probe-fail errors.
+const MariaInstallHint = "apk add mariadb-client / apt-get install mariadb-client"
