@@ -71,7 +71,12 @@ func setupDb(t *testing.T) *dbHarness {
 		// client stack present?
 		"  \"if command -v mariadb-dump\"*) [ -f \"" + fixtures + "/has-mariadb\" ] && echo yes || echo no ;;\n" +
 		// the maria MODE probe: host client vs a podman container
-		"  *\"if command -v mariadb-dump\"*) [ -f \"" + fixtures + "/maria-container\" ] && echo \"container maria-pod\" || echo host ;;\n" +
+		// MariaEngine's 2-state yes/no probe (starts with the check)
+		"  \"if command -v mariadb-dump\"*) [ -f \"" + fixtures + "/has-mariadb\" ] && echo yes || echo no ;;\n" +
+		// the maria MODE probe (starts with get(), contains the check):
+		// container-first per fixture, else host
+		"  \"get() { grep\"*\"if command -v mariadb-dump\"*) { if [ -f \"" + fixtures + "/maria-container\" ]; then echo \"container maria-pod\"; else echo host; fi; } ;;\n" +
+		"  *\"get KAMPODRA_DB_CONTAINER\"*) [ -f \"" + fixtures + "/maria-container\" ] && echo \"container maria-pod\" || echo \"container \" ;;\n" +
 		// defaults file composed from the unit env (creds ride stdin-side file)
 		"  \"get() { grep\"*) exit 0 ;;\n" +
 		// dump: write fixture bytes to the scratch path (the LAST token)
@@ -786,7 +791,7 @@ func setupMariaContainer(t *testing.T) *dbHarness {
 	if err := os.Remove(filepath.Join(h.fixtures, "has-sqlite-magic")); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"engine-mariadb", "maria-container"} {
+	for _, f := range []string{"engine-mariadb", "maria-container", "has-mariadb"} {
 		if err := os.WriteFile(filepath.Join(h.fixtures, f), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -866,5 +871,56 @@ func TestDbGrantROMariaContainer(t *testing.T) {
 	}
 	if !strings.Contains(h.stderr.String(), "env keys written") {
 		t.Errorf("the summary must confirm the env write:\n%s", h.stderr.String())
+	}
+}
+
+// --- --db-mode: the explicit choice ----------------------------------------
+
+// Pod mode names the container explicitly (skipping host-client probing
+// entirely) and refuses with the remedy when none runs.
+func TestDbQueryMariaPodModeExplicit(t *testing.T) {
+	h := setupMariaContainer(t)
+	code := h.run(t, "query", "--host", statusHost, "--db", "esellar", "--db-mode", "pod", "--sql", "SELECT id, total FROM pos_order LIMIT 1")
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), `{"id":"1","total":"420"}`) {
+		t.Errorf("pod-mode rows:\n%s", h.stdout.String())
+	}
+	// auto flipped container-first: a running container answers before the
+	// host client is even considered (one round-trip decides).
+	inv := h.invocations(t, h.sshLog)
+	if !strings.Contains(inv, "podman exec -i maria-pod mariadb --batch") {
+		t.Errorf("auto must prefer the running container:\n%s", inv)
+	}
+}
+
+func TestDbQueryMariaPodModeNoContainer(t *testing.T) {
+	h := setupMariaContainer(t)
+	if err := os.Remove(filepath.Join(h.fixtures, "maria-container")); err != nil {
+		t.Fatal(err)
+	}
+	code := h.run(t, "query", "--host", statusHost, "--db", "esellar", "--db-mode", "pod", "--sql", "SELECT 1")
+	if code == 0 {
+		t.Fatalf("expected failure, stderr:\n%s", h.stderr.String())
+	}
+	if !strings.Contains(h.stderr.String(), "KAMPODRA_DB_CONTAINER") {
+		t.Errorf("error must name the remedy:\n%s", h.stderr.String())
+	}
+}
+
+// ssh mode names the host client path explicitly (the both-exist case).
+func TestDbQueryMariaSshModeForcesHostClient(t *testing.T) {
+	h := setupMariaContainer(t) // container fixture present — ssh mode must ignore it
+	code := h.run(t, "query", "--host", statusHost, "--db", "esellar", "--db-mode", "ssh", "--sql", "SELECT id, total FROM pos_order LIMIT 1")
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, h.stderr.String())
+	}
+	inv := h.invocations(t, h.sshLog)
+	if strings.Contains(inv, "podman exec") {
+		t.Errorf("ssh mode must not touch podman:\n%s", inv)
+	}
+	if !strings.Contains(inv, "get() { grep") {
+		t.Errorf("ssh mode stages the ro-role creds from the env file:\n%s", inv)
 	}
 }

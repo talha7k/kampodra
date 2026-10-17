@@ -172,18 +172,24 @@ const MariaInstallHint = "apk add mariadb-client / apt-get install mariadb-clien
 // whose name or image matches maria|mysql.
 const MariaContainerEnvKey = "KAMPODRA_DB_CONTAINER"
 
-// MariaModeProbeCommand answers THREE ways in one round-trip: "host"
-// (host client stack), "container <name>" (a running maria/mysql
-// container — explicit env key first, else detected), or "no". The
-// explicit env key wins over detection.
+// The mode env key: ssh (host client) | pod (podman exec) — an explicit
+// choice beats auto-detection (which prefers pod: a running container is
+// self-evident, while a host CLIENT can exist without a host SERVER).
+const MariaModeEnvKey = "KAMPODRA_DB_MODE"
+
+// MariaModeProbeCommand answers THREE ways in one round-trip: "container
+// <name>" (a running maria/mysql container — explicit env key first,
+// else detected; auto's PREFERRED answer), "host" (host client stack),
+// or "no". The caller's explicit mode decides before this runs.
 func MariaModeProbeCommand(envFile string) string {
 	return `get() { grep -E "^$1=" ` + envFile + ` 2>/dev/null | head -1 | cut -d= -f2-; }; ` +
-		`if command -v mariadb-dump >/dev/null 2>&1 && command -v mariadb >/dev/null 2>&1; then echo host; ` +
-		`elif command -v podman >/dev/null 2>&1; then ` +
+		`if command -v podman >/dev/null 2>&1; then ` +
 		`c=$(get ` + MariaContainerEnvKey + `); ` +
 		`if [ -z "$c" ]; then c=$(podman ps --format '{{.Names}} {{.Image}}' 2>/dev/null | awk 'tolower($0) ~ /maria|mysql/ {print $1; exit}'); fi; ` +
-		`if [ -n "$c" ]; then echo "container $c"; else echo no; fi; ` +
-		`else echo no; fi`
+		`if [ -n "$c" ]; then echo "container $c"; exit 0; fi; ` +
+		`fi; ` +
+		`if command -v mariadb-dump >/dev/null 2>&1 && command -v mariadb >/dev/null 2>&1; then echo host; exit 0; fi; ` +
+		`echo no`
 }
 
 // MariaContainerQueryCommand: the statement rides stdin into the
@@ -224,4 +230,13 @@ func MariaContainerVerifyTarCommand(tar string) string {
 
 func MariaContainerCleanupCommand(dir, tar string) string {
 	return "rm -rf " + dir + " " + tar
+}
+
+// MariaContainerResolveCommand answers ONLY the container name (the
+// explicit pod mode's single question; empty = none running).
+func MariaContainerResolveCommand(envFile string) string {
+	return `get() { grep -E "^$1=" ` + envFile + ` 2>/dev/null | head -1 | cut -d= -f2-; }; ` +
+		`c=$(get ` + MariaContainerEnvKey + `); ` +
+		`if [ -z "$c" ]; then c=$(podman ps --format '{{.Names}} {{.Image}}' 2>/dev/null | awk 'tolower($0) ~ /maria|mysql/ {print $1; exit}'); fi; ` +
+		`echo "container $c"`
 }
