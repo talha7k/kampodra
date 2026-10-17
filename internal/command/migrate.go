@@ -26,7 +26,10 @@ VM (the app's own migrate script — the project's migrateScript config,
 resolved like every project field; the same code path as local seeding,
 no parallel implementation). Order: root.db first (the
 auth/org plane; root/root.db preferred, legacy flat root.db honored), then
-tenant_*.db sorted, bounded-parallel (--jobs, default 4; MIGRATE_JOBS env).
+the support + billing class dbs (support/support.db, billing/billing.db),
+then tenant_*.db sorted, bounded-parallel (--jobs, default 4; MIGRATE_JOBS
+env). A db file matching no known class is an explicit warned skip — it
+never migrates silently.
 Per-file failures are COLLECTED (files are independent — one bad tenant must
 not block the others) and the command exits 1 if any failed — do NOT start
 the API on a half-migrated estate.
@@ -35,8 +38,9 @@ Two runner shapes (the profile's migrateMode): "script" (default —
 pnpm exec tsx over the configured script; the host needs pnpm) and
 "binary" — migrateScript names a static Go binary in the repo checkout
 (e.g. the migrater) executed with -db/-dir; migrateDir is the
-repo-relative migrations root holding root/ + tenant/, and the pnpm
-check is skipped (the no-node estate's shape).
+repo-relative migrations root holding root/ + tenant/ + the support/ +
+billing/ class dirs, and the pnpm check is skipped (the no-node
+estate's shape).
 
 Writing schema while the API serves risks SQLITE_BUSY on a single-writer
 engine — the stop-first guard refuses to run while the api service is up
@@ -147,11 +151,13 @@ func checkMigrateProbe(probe migrateadapter.Probe, target Target, repoRoot, migr
 }
 
 // migrateRunAll executes the migration plan: root.db (auth/org plane)
-// FIRST, alone; then tenant files bounded-parallel (per-file write locks
-// are independent — one writer per file by the store model), with the
-// shared stdout writer mutex-guarded. binaryRun selects the Go-binary
-// per-file command (migrateMode "binary"). Returns (migrated, failures).
-func migrateRunAll(d Deps, run func(string) (string, error), repoRoot string, pj project.Config, binaryRun bool, rootJob *migrateadapter.Job, tenantJobs []migrateadapter.Job, jobs int) (int, int) {
+// FIRST, alone; then the support + billing class planes in order (each a
+// single dedicated file, the root pairing's convention); then tenant files
+// bounded-parallel (per-file write locks are independent — one writer per
+// file by the store model), with the shared stdout writer mutex-guarded.
+// binaryRun selects the Go-binary per-file command (migrateMode "binary").
+// Returns (migrated, failures).
+func migrateRunAll(d Deps, run func(string) (string, error), repoRoot string, pj project.Config, binaryRun bool, rootJob *migrateadapter.Job, classJobs []migrateadapter.Job, tenantJobs []migrateadapter.Job, jobs int) (int, int) {
 	migrated, failures := 0, 0
 	// The tenant pool calls migrateOne concurrently — the shared writers
 	// (bytes.Buffer in tests, line interleaving otherwise) need a mutex.
@@ -181,6 +187,15 @@ func migrateRunAll(d Deps, run func(string) (string, error), repoRoot string, pj
 
 	if rootJob != nil {
 		if migrateOne(*rootJob) {
+			migrated++
+		} else {
+			failures++
+		}
+	}
+	// The class planes apply serially in plan order (support, billing) —
+	// dedicated single-file planes, the root-first convention's neighbors.
+	for _, j := range classJobs {
+		if migrateOne(j) {
 			migrated++
 		} else {
 			failures++
@@ -251,14 +266,19 @@ func runMigrate(d Deps, c *cobra.Command) error {
 		return err
 	}
 
-	// --- plan: root first, tenants sorted ----------------------------------
-	rootJob, tenantJobs := migrateadapter.Plan(probe.DbFiles)
-	if rootJob == nil && len(tenantJobs) == 0 {
+	// --- plan: root first, then the class planes, tenants sorted -----------
+	plan := migrateadapter.Plan(probe.DbFiles)
+	// Fail closed: a file matching no known db class is an explicit, warned
+	// skip — the silent ignore is how a new db class would drift unnoticed.
+	for _, u := range plan.Unknown {
+		fmt.Fprintf(d.Stdout, "[migrate] WARNING: skipping %s — matches no known db class (root/root.db, support/support.db, billing/billing.db, tenant_*.db)\n", u)
+	}
+	if plan.Root == nil && len(plan.Classes) == 0 && len(plan.Tenants) == 0 {
 		fmt.Fprintf(d.Stdout, "[migrate] no .db files under %s; nothing to migrate\n", pj.DataDir)
 		return nil
 	}
 
-	migrated, failures := migrateRunAll(d, run, repoRoot, pj, binaryRun, rootJob, tenantJobs, jobs)
+	migrated, failures := migrateRunAll(d, run, repoRoot, pj, binaryRun, plan.Root, plan.Classes, plan.Tenants, jobs)
 	if failures > 0 {
 		fmt.Fprintf(d.Stdout, "[migrate] %d db file(s) failed to migrate (migrated: %d) — do NOT start the API on a half-migrated estate; fix and re-run\n",
 			failures, migrated)
