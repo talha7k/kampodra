@@ -159,3 +159,49 @@ func TestGeneratePassword(t *testing.T) {
 		}
 	}
 }
+
+// --- the podman container path --------------------------------------------
+
+// The mode probe: host wins when the client stack exists; the explicit
+// container env key beats detection; detection greps names+images.
+func TestMariaModeProbeCommand(t *testing.T) {
+	probe := MariaModeProbeCommand(testEnvFile)
+	for _, want := range []string{
+		`get() { grep -E "^$1=" ` + testEnvFile,
+		"if command -v mariadb-dump", // host client first
+		"command -v podman",
+		"get " + MariaContainerEnvKey, // explicit beats detection
+		"tolower($0) ~ /maria|mysql/", // then names+images
+	} {
+		if !strings.Contains(probe, want) {
+			t.Errorf("mode probe missing %q:\n%s", want, probe)
+		}
+	}
+}
+
+// Container compositions: stdin clients and the physical backup flow.
+func TestMariaContainerCompositions(t *testing.T) {
+	if q := MariaContainerQueryCommand("maria-pod"); q != "podman exec -i maria-pod mariadb --batch" {
+		t.Errorf("container query malformed:\n%s", q)
+	}
+	dir := MariaContainerBackupDir()
+	if !strings.HasPrefix(dir, "/tmp/kampodra-mariabackup-") {
+		t.Errorf("backup dir malformed: %s", dir)
+	}
+	if b := MariaContainerBackupCommand("maria-pod", dir); !strings.Contains(b, "podman exec maria-pod mariabackup --backup --target-dir="+dir) {
+		t.Errorf("backup malformed:\n%s", b)
+	}
+	if p := MariaContainerPrepareCommand("maria-pod", dir); !strings.Contains(p, "mariabackup --prepare --target-dir="+dir) {
+		t.Errorf("prepare malformed:\n%s", p)
+	}
+	tar := dir + ".tar"
+	if tc := MariaContainerTarCommand(dir, tar); !strings.Contains(tc, "tar -C "+dir+" -cf "+tar) {
+		t.Errorf("tar malformed:\n%s", tc)
+	}
+	if v := MariaContainerVerifyTarCommand(tar); !strings.Contains(v, "grep -q xtrabackup_checkpoints") {
+		t.Errorf("verify must gate on the control files:\n%s", v)
+	}
+	if c := MariaContainerCleanupCommand(dir, tar); c != "rm -rf "+dir+" "+tar {
+		t.Errorf("cleanup malformed:\n%s", c)
+	}
+}

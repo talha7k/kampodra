@@ -70,6 +70,8 @@ func setupDb(t *testing.T) *dbHarness {
 		"  \"head -c 15\"*) [ -f \"" + fixtures + "/has-sqlite-magic\" ] && echo sqlite || echo other ;;\n" +
 		// client stack present?
 		"  \"if command -v mariadb-dump\"*) [ -f \"" + fixtures + "/has-mariadb\" ] && echo yes || echo no ;;\n" +
+		// the maria MODE probe: host client vs a podman container
+		"  *\"if command -v mariadb-dump\"*) [ -f \"" + fixtures + "/maria-container\" ] && echo \"container maria-pod\" || echo host ;;\n" +
 		// defaults file composed from the unit env (creds ride stdin-side file)
 		"  \"get() { grep\"*) exit 0 ;;\n" +
 		// dump: write fixture bytes to the scratch path (the LAST token)
@@ -99,6 +101,14 @@ func setupDb(t *testing.T) *dbHarness {
 		"  \"cat /tmp/kampodra-snapshot-\"*) f=${cmd#cat }; cat \"" + scratchDir + "/$(basename \"$f\")\" ;;\n" +
 		// scratch cleanup
 		"  \"rm -f /tmp/kampodra-snapshot-\"*) exit 0 ;;\n" +
+		// --- the mariabackup (container, physical) flow ---
+		"  *\"mariabackup --backup --target-dir=\"*) d=${cmd##*--target-dir=}; mkdir -p \"" + scratchDir + "/$d\"; : > \"" + scratchDir + "/$d/xtrabackup_checkpoints\"; printf 'backup_type = full-backuped\n' >> \"" + scratchDir + "/$d/xtrabackup_checkpoints\"; exit 0 ;;\n" +
+		"  *\"mariabackup --prepare --target-dir=\"*) exit 0 ;;\n" +
+		"  \"tar -C /tmp/kampodra-mariabackup-\"*) t=${cmd#*-cf }; t=${t%% *}; printf '%s' '" + dbFixtureDumpBytes + "' > \"" + scratchDir + "/$(basename \"$t\")\"; exit 0 ;;\n" +
+		"  \"tar -tf /tmp/kampodra-mariabackup-\"*) echo xtrabackup_checkpoints ;;\n" +
+		"  \"cat /tmp/kampodra-mariabackup-\"*) f=${cmd#cat }; cat \"" + scratchDir + "/$(basename \"$f\")\" ;;\n" +
+		"  \"rm -rf /tmp/kampodra-mariabackup-\"*) exit 0 ;;\n" +
+		"  \"podman exec -i maria-pod mariadb --batch\"*) cat >> '" + stdinLog + "'; printf '%s\n' '" + strings.TrimSpace(dbFixtureTsvRows) + "' ;;\n" +
 		// the query itself: capture the statement stdin, emit fixture rows
 		"  *\"-db \"*) cat >> '" + stdinLog + "'; printf '%s\\n' '" + strings.TrimSpace(dbFixtureRows) + "' ;;\n" +
 		"esac\n" +
@@ -765,5 +775,69 @@ func TestDbSnapshotLibsqlNeedsPath(t *testing.T) {
 	}
 	if !strings.Contains(h.stderr.String(), "refusing to overwrite") {
 		t.Errorf("error must be the overwrite refusal:\n%s", h.stderr.String())
+	}
+}
+
+// --- the mariadb-in-podman path --------------------------------------------
+
+func setupMariaContainer(t *testing.T) *dbHarness {
+	t.Helper()
+	h := setupDb(t)
+	if err := os.Remove(filepath.Join(h.fixtures, "has-sqlite-magic")); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"engine-mariadb", "maria-container"} {
+		if err := os.WriteFile(filepath.Join(h.fixtures, f), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return h
+}
+
+// Container mode: the statement rides stdin into podman exec, TSV comes
+// back normalized to the flat JSON shape.
+func TestDbQueryMariaContainerHappyPath(t *testing.T) {
+	h := setupMariaContainer(t)
+	code := h.run(t, "query", "--host", statusHost, "--db", "esellar", "--sql", "SELECT id, total FROM pos_order LIMIT 1")
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), `{"id":"1","total":"420"}`) {
+		t.Errorf("stdout must be normalized TSV rows:\n%s", h.stdout.String())
+	}
+	if !strings.Contains(h.invocations(t, h.stdinLog), "SELECT id, total FROM pos_order") {
+		t.Errorf("the statement must ride stdin into the container:\n%s", h.invocations(t, h.stdinLog))
+	}
+	if inv := h.invocations(t, h.sshLog); !strings.Contains(inv, "podman exec -i maria-pod mariadb --batch") {
+		t.Errorf("the query must run through the container:\n%s", inv)
+	}
+}
+
+// Container mode snapshot: mariabackup backup → prepare → tar →
+// control-file gate → fetch → cleanup of dir AND tar.
+func TestDbSnapshotMariaContainerPhysical(t *testing.T) {
+	h := setupMariaContainer(t)
+	out := filepath.Join(h.stubDir, "esellar.tar")
+	code := h.run(t, "snapshot", "--host", statusHost, "--db", "esellar", "--out", out)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, h.stderr.String())
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "DUMPCODE") {
+		t.Errorf("snapshot must be the backup bundle:\n%s", data)
+	}
+	inv := h.invocations(t, h.sshLog)
+	for _, want := range []string{
+		"mariabackup --backup --target-dir=",
+		"mariabackup --prepare --target-dir=",
+		"tar -tf /tmp/kampodra-mariabackup-",
+		"rm -rf /tmp/kampodra-mariabackup-",
+	} {
+		if !strings.Contains(inv, want) {
+			t.Errorf("ssh log missing %q:\n%s", want, inv)
+		}
 	}
 }
