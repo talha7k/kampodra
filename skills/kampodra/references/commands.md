@@ -17,6 +17,7 @@ CLI source (`internal/command/*.go`). When this file and `kampodra <command>
 - [backup](#backup) (list / download / verify / restore-plan)
 - [vm-prepare](#vm-prepare)
 - [vm-wipe](#vm-wipe)
+- [vm gc](#vm-gc)
 - [metrics](#metrics)
 - [dns](#dns) (records / add / rm)
 - [migrate](#migrate)
@@ -354,6 +355,33 @@ Match check: if NO project container is present AND no project service is
 running, it refuses (`--force` to mean it — wrong host?). Individual step
 failures are tolerated and reported, not fatal.
 Example: `kampodra vm-wipe --profile prod --yes --keep-data`
+
+## vm gc
+
+Dry-run-by-default VM garbage sweep: a typed inventory of every host
+artifact (scratch / stale-script / residue / kampodra-helper / os-session
+/ os / infra / tenant-data / live / owner-decision / unknown), with
+`--apply` deleting ONLY the stale classes. Built so agents never hand-roll
+`find | rm` sweeps over raw ssh again — the never-touch allowlists are
+enforced in code, twice (classification + per-command validation).
+
+| Flag | Type | Default |
+|---|---|---|
+| `--apply` | bool | `false` — delete the stale classes found by the sweep |
+| `--host` | string | `""` |
+| `--profile` | string | `""` |
+| `--ssh-key` | string | `""` |
+
+- NEVER touched: OS paths + podman storage, the live artifact/web/backup
+  chains, kampodra's own helpers (`/tmp/kampodra-*`), OS session dirs,
+  live build contexts (scratch dirs holding a Dockerfile), cutover db
+  snapshots beside the data dir, `/root` pre-op safety snapshots.
+- Tenant data routes from the project's `dataDir` (zero knowledge fails
+  closed to report-only); podman is strictly report-only; candidates in
+  use by a live process or container bind mount are BLOCKED.
+- `/opt` and `/home`: unrecognized content is report-only; only stale
+  `.sh` scripts are deletable there.
+Example: `kampodra vm gc --profile prod --apply`
 
 ## metrics
 

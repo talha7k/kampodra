@@ -33,6 +33,7 @@ func TestCommandSurface(t *testing.T) {
 		"migrate",
 		"ssh",
 		"status",
+		"vm",
 		"vm-prepare",
 		"vm-wipe",
 	}

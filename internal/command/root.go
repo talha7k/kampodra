@@ -43,6 +43,7 @@ DEPLOY LIFECYCLE
 INFRA
   vm-wipe        kampodra-native teardown: stop+disable services, remove project containers, prune images, delete env/stamps/state (--yes gated; --keep-data)
   vm-prepare     first-run bootstrap of a bare VM host (guest OS auto-detected: Alpine or Ubuntu 24.04): gates, sshd hardening, podman stack, init services (OpenRC or systemd), kamal-proxy edge, anchor watcher; --ansible <playbook>
+  vm gc          dry-run-by-default garbage sweep: typed artifact inventory; --apply deletes ONLY stale scratch/scripts/residues (never-touch allowlists; podman report-only)
   status         live health + deployment count + VM disk/image/service state + metrics (--verbose); --all-profiles renders every profile
 
 DNS
@@ -186,6 +187,7 @@ func NewRoot(version string, deps Deps) *cobra.Command {
 	root.AddCommand(newDBCommand(d))
 	root.AddCommand(newVMWipeCommand(d))
 	root.AddCommand(newVMPrepareCommand(d))
+	root.AddCommand(newVMCommand(d))
 	root.AddCommand(newMetricsCommand(d))
 	root.AddCommand(newDNSCommand(d))
 	root.AddCommand(newMigrateCommand(d))
