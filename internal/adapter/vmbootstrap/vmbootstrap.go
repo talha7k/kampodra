@@ -126,7 +126,7 @@ const (
 	// routes to one provisioner BEFORE anything mutates. The gates below
 	// are the per-sibling init gates; each provisioner runs its own.
 	// GateNoSystemd — start-fresh has NO systemd anywhere.
-	GateNoSystemd = `! readlink /proc/1/exe 2>/dev/null | grep -q systemd`
+	GateNoSystemd = `! cat /proc/1/comm 2>/dev/null | grep -qx systemd` // comm: world-readable (the exe form is root-only)
 	// GateSystemdPID1 — the Ubuntu golden image's init IS systemd (the
 	// inverse of GateNoSystemd). Runs before anything mutates: a foreign
 	// guest must fail here, never halfway through apt/systemctl steps.
