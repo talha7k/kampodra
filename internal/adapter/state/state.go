@@ -196,10 +196,21 @@ type Profile struct {
 	ProxyHost  string          `json:"proxyHost"`
 	ProxyHosts []string        `json:"proxyHosts,omitempty"` // EXTRA kamal-proxy hosts (the flat-list form); empty = [ProxyHost]
 	DbHost     string          `json:"dbHost,omitempty"`     // server-engine DBs on their own VM: the ssh target db flows use (empty = the profile host)
+	DB         *ProfileDB      `json:"db,omitempty"`         // non-secret db identity (engine/name/container/mode); PASSWORDS NEVER — they live in the VM's env file
 	Group      string          `json:"group"`
 	Init       string          `json:"init"`
 	Project    json.RawMessage `json:"project,omitempty"`
 	Cloud      json.RawMessage `json:"cloud,omitempty"`
+}
+
+// ProfileDB is the profile's non-secret db declaration. Deliberately NO
+// password field: credentials live in the VM's env file (the app reads
+// the same keys) or via `db grant-ro` — never in local config files.
+type ProfileDB struct {
+	Engine    string `json:"engine,omitempty"`    // sqlite | mariadb | postgres | libsql
+	Name      string `json:"name,omitempty"`      // the schema (server engines) — sqlite paths stay --db
+	Container string `json:"container,omitempty"` // the podman container (pod mode)
+	Mode      string `json:"mode,omitempty"`      // auto | ssh | pod
 }
 
 // Config is ~/.kampodra/config.json. Version is the on-disk schema version:

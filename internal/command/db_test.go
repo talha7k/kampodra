@@ -74,8 +74,9 @@ func setupDb(t *testing.T) *dbHarness {
 		// MariaEngine's 2-state yes/no probe (starts with the check)
 		"  \"if command -v mariadb-dump\"*) [ -f \"" + fixtures + "/has-mariadb\" ] && echo yes || echo no ;;\n" +
 		// the maria MODE probe (starts with get(), contains the check):
-		// container-first per fixture, else host
-		"  \"get() { grep\"*\"if command -v mariadb-dump\"*) { if [ -f \"" + fixtures + "/maria-container\" ]; then echo \"container maria-pod\"; else echo host; fi; } ;;\n" +
+		// FAITHFUL — container per fixture, host only when the client
+		// fixture exists, else "no" (neither)
+		"  \"get() { grep\"*\"if command -v mariadb-dump\"*) { if [ -f \"" + fixtures + "/maria-container\" ]; then echo \"container maria-pod\"; elif [ -f \"" + fixtures + "/has-mariadb\" ]; then echo host; else echo no; fi; } ;;\n" +
 		"  *\"get KAMPODRA_DB_CONTAINER\"*) [ -f \"" + fixtures + "/maria-container\" ] && echo \"container maria-pod\" || echo \"container \" ;;\n" +
 		// defaults file composed from the unit env (creds ride stdin-side file)
 		"  \"get() { grep\"*) exit 0 ;;\n" +
@@ -926,5 +927,99 @@ func TestDbQueryMariaSshModeForcesHostClient(t *testing.T) {
 	}
 	if !strings.Contains(inv, "get() { grep") {
 		t.Errorf("ssh mode stages the ro-role creds from the env file:\n%s", inv)
+	}
+}
+
+// --- the profile db block ---------------------------------------------------
+
+// writeDbProfile seeds ~/.kampodra/config.json with a profile carrying a
+// non-secret db declaration (no password field can exist — the type has
+// none), then the flows resolve through it.
+func (h *dbHarness) writeDbProfile(t *testing.T, dbJSON string) {
+	t.Helper()
+	cfgDir := filepath.Join(h.deps.Home, ".kampodra")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `{"version":1,"profiles":{"prod":{"host":"root@203.0.113.9","sshKey":"","db":` + dbJSON + `}}}`
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The profile declares the engine (no env-file fixture, no magic, no
+// flag) — the ladder's new rung carries the whole decision.
+func TestDbProfileEngineDeclaration(t *testing.T) {
+	h := setupDb(t)
+	h.writeDbProfile(t, `{"engine":"mariadb"}`)
+	if err := os.Remove(filepath.Join(h.fixtures, "has-sqlite-magic")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.fixtures, "has-mariadb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code := h.run(t, "query", "--profile", "prod", "--db", "esellar", "--sql", "SELECT 1")
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.invocations(t, h.sshLog), "get() { grep") {
+		t.Errorf("host mode stages creds from the env file:\n%s", h.invocations(t, h.sshLog))
+	}
+}
+
+// The profile also carries the NAME: --db disappears entirely.
+func TestDbProfileNameDeclaration(t *testing.T) {
+	h := setupDb(t)
+	h.writeDbProfile(t, `{"engine":"mariadb","container":"maria-pod","name":"esellar"}`)
+	if err := os.Remove(filepath.Join(h.fixtures, "has-sqlite-magic")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.fixtures, "engine-mariadb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code := h.run(t, "query", "--profile", "prod", "--sql", "SELECT id, total FROM pos_order LIMIT 1")
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.invocations(t, h.sshLog), "podman exec -i maria-pod mariadb --defaults-extra-file=") {
+		t.Errorf("profile container must resolve:\n%s", h.invocations(t, h.sshLog))
+	}
+}
+
+// VM truth outranks the profile: an env-file declaration beats
+// db.engine=sqlite in the profile.
+func TestDbProfileLosesToVMEnv(t *testing.T) {
+	h := setupDb(t)
+	h.writeDbProfile(t, `{"engine":"sqlite"}`)
+	if err := os.WriteFile(filepath.Join(h.fixtures, "engine-mariadb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.fixtures, "has-mariadb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(h.fixtures, "has-sqlite-magic")); err != nil {
+		t.Fatal(err)
+	}
+	code := h.run(t, "query", "--profile", "prod", "--db", "esellar", "--sql", "SELECT 1")
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, h.stderr.String())
+	}
+	// the VM env file declared mariadb → the flow ran mariadb HOST mode
+	// (the profile's db.engine=sqlite lost at the engine rung): the creds
+	// stage is the host-mode fingerprint
+	inv := h.invocations(t, h.sshLog)
+	if !strings.Contains(inv, "/tmp/kampodra-maria-defaults") {
+		t.Errorf("the VM env file must outrank the profile (mariadb host mode expected):\n%s", inv)
+	}
+}
+
+// Container-mode snapshots default to .tar — the extension tells the
+// truth about the physical form.
+func TestDbSnapshotMariaContainerTarDefault(t *testing.T) {
+	h := setupMariaContainer(t)
+	out := filepath.Join(h.stubDir, "esellar.tar")
+	code := h.run(t, "snapshot", "--host", statusHost, "--db", "esellar", "--out", out)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, h.stderr.String())
 	}
 }
