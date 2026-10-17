@@ -1,6 +1,6 @@
 ---
 name: kampodra
-description: "Operates the kampodra CLI, a kamal-alternative that deploys containers or binaries to Linux VMs over SSH with podman and kamal-proxy — no registry in the image path, zero-downtime by default. Use when deploying or rolling back a release, running the standby-update bluegreen flow (deploy to the idle color then flip), recovering an interrupted rolling deploy, reading deploy logs/status, pushing or diffing remote env files, generating env from a schema, managing instance profiles, listing or verifying backups, planning a restore, managing DNS records on OCI or GCP, staging golden images, running tenant database migrations, sampling VM metrics, or preparing and wiping VMs. Triggers: deploy, rollback, podman, kamal-proxy, SSH, env, metrics, backup, DNS, gcp, gcloud, oci, bluegreen, flip, migrate, VM, Alpine."
+description: "Operates the kampodra CLI, a kamal-alternative that deploys containers or binaries to Linux VMs over SSH with podman and kamal-proxy — no registry in the image path, zero-downtime by default. Use when deploying or rolling back a release, running the standby-update bluegreen flow (deploy to the idle color then flip), recovering an interrupted rolling deploy, reading deploy logs/status, pushing or diffing remote env files, generating env from a schema, managing instance profiles, listing or verifying backups, planning a restore, managing DNS records on OCI or GCP, staging golden images, running tenant database migrations, sampling VM metrics, preparing or wiping VMs, or running read-only database queries and snapshots (sqlite, MariaDB, self-hosted libsql/sqld). Triggers: deploy, rollback, podman, kamal-proxy, SSH, env, metrics, backup, DNS, gcp, gcloud, oci, bluegreen, flip, migrate, VM, Alpine, db query, db snapshot, libsql, sqld, mariadb, sqlite."
 license: AGPL-3.0
 compatibility: Requires podman, ssh, and git locally; the target VM needs a Linux userland (Alpine or Ubuntu 24.04) with podman and kamal-proxy (vm-prepare installs them). Cloud families authenticate through the provider CLI itself (oci or gcloud).
 metadata:
@@ -97,6 +97,35 @@ A leftover shadow must be converged before the next `--rolling` deploy. `--drain
 | `migrate` | Writes db schema | Stop-first guard: refuses while the api service runs unless `--allow-running` |
 | `env push` | Overwrites the remote env file atomically | Preview first with `env diff <local-file>` (exit 1 = differs) |
 | `vm-prepare` | Mutates a bare host (packages, sshd, services) | Idempotent; safe to re-run |
+
+## Read-only database access (db)
+
+`kampodra db query` (one SELECT/WITH → rows on stdout) and
+`kampodra db snapshot` (verified consistent copy, 0600) over ssh, three
+engines behind `--engine auto` (flag > the VM env file's
+KAMPODRA_DB_ENGINE > file magic):
+
+- **sqlite** — `--db` is the file's path; rows as flat JSON; snapshot via
+  `sqlite3 .backup` (consistent).
+- **mariadb** — `--db` is the schema NAME; creds ride the VM env file
+  (KAMPODRA_DB_NAME/HOST/USER/PASSWORD via `kampodra env set`), staged to
+  a 0600 defaults file, never argv; snapshot = mariadb-dump
+  --single-transaction with a "Dump completed" tail gate. Prefer a
+  read-only role (GRANT SELECT) for agent queries.
+- **libsql (self-hosted sqld)** — no --db needed; KAMPODRA_DB_URL
+  (default localhost:8080) + optional KAMPODRA_DB_TOKEN, staged to a 0600
+  header file; rows as flat JSON (same shape as sqlite); snapshot needs
+  KAMPODRA_DB_PATH and gates on PRAGMA integrity_check.
+
+The gate rejects non-SELECT/WITH statements (exit 2) BEFORE any ssh on
+every engine — a rejected statement costs zero round-trips.
+
+```
+kampodra db query --db /data/root.db --sql "SELECT count(*) FROM org" --profile prod
+kampodra db query --db esellar --sql "SELECT id, total FROM pos_order LIMIT 5"   # mariadb, after env set
+kampodra db snapshot --db esellar --out ./esellar.sql
+kampodra db snapshot --out ./app.db                                              # libsql, after env set
+```
 
 ## Gotchas
 
