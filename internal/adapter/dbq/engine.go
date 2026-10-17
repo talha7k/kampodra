@@ -48,10 +48,34 @@ type Engine struct {
 	InstallHint string
 
 	// EncodeStatement transforms the gated statement into the command's
-	// stdin payload. nil = the statement rides verbatim (sqlite, maria);
-	// libsql wraps it into the Hrana pipeline body Go-side (perfect JSON
-	// escaping, no VM-side quoting).
+	// stdin payload. nil = the statement rides verbatim (sqlite, maria,
+	// postgres); libsql wraps it into the Hrana pipeline body Go-side
+	// (perfect JSON escaping, no VM-side quoting).
 	EncodeStatement func(stmt string) string
+
+	// OutputIsTSV marks the server engines whose stdout is client batch
+	// output (header + tab rows) — db.go normalizes it to the flat JSON
+	// row shape so agents parse one format for JSON, one for TSV engines.
+	OutputIsTSV bool
+}
+
+// PostgresEngine is the Postgres leg: same env-file contract as MariaDB
+// (KAMPODRA_DB_*), PGPASSFILE staged 0600 (never argv), psql query in the
+// shared TSV contract, pg_dump with the completeness tail stamp.
+func PostgresEngine(envFile string) Engine {
+	defaults := PostgresDefaultsPath()
+	return Engine{
+		Name:         "postgres",
+		ProbeCommand: PostgresProbeCommand,
+		InstallHint:  PostgresInstallHint,
+		CredsStage:   PostgresDefaultsFromUnitEnvCommand(envFile, defaults),
+		CredsCleanup: PostgresDefaultsCleanupCommand(defaults),
+		Validate:     ValidateMariaDbName, // same bare-identifier gate
+		QueryCommand: func(target string) string {
+			return PostgresQueryCommand(defaults, target)
+		},
+		OutputIsTSV: true,
+	}
 }
 
 // MariaEngine is the MariaDB leg: server engine, credentials read from
@@ -85,6 +109,7 @@ func LibsqlEngine(envFile string) Engine {
 		ProbeCommand:    LibsqlProbeCommand,
 		InstallHint:     "apk add curl / apt-get install curl",
 		CredsStage:      LibsqlAuthStageCommand(envFile, stage),
+		OutputIsTSV:     false,
 		CredsCleanup:    LibsqlAuthCleanupCommand(stage),
 		Validate:        func(string) error { return nil }, // sqld serves one db; --db is unused
 		QueryCommand:    func(string) string { return LibsqlQueryCommand(stage) },

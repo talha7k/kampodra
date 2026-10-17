@@ -195,6 +195,7 @@ type Profile struct {
 	SSHKey     string          `json:"sshKey"`
 	ProxyHost  string          `json:"proxyHost"`
 	ProxyHosts []string        `json:"proxyHosts,omitempty"` // EXTRA kamal-proxy hosts (the flat-list form); empty = [ProxyHost]
+	DbHost     string          `json:"dbHost,omitempty"`     // server-engine DBs on their own VM: the ssh target db flows use (empty = the profile host)
 	Group      string          `json:"group"`
 	Init       string          `json:"init"`
 	Project    json.RawMessage `json:"project,omitempty"`

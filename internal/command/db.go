@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/talha7k/kampodra/internal/adapter/dbq"
+	"github.com/talha7k/kampodra/internal/adapter/transport"
 )
 
 const dbHelp = `Usage:
@@ -70,10 +71,32 @@ cloud):
   reuses the consistent .backup flow and is gated on PRAGMA
   integrity_check before fetch. --db is unused (sqld serves one db).
 
+postgres (a schema on a server, like MariaDB): psql/pg_dump with a
+0600 PGPASSFILE staged from the env file; pg_dump is MVCC-consistent
+by construction and the copy gates on the "PostgreSQL database dump
+complete" tail stamp. Output is TSV normalized to the flat JSON row
+shape — with one honest difference: batch text has no types, so TSV
+values are STRINGS (the typed engines carry native numbers; guessing
+types from text would corrupt string codes).
+
+Server engines on their OWN VM: --db-host (or the profile's dbHost)
+points the db flows' ssh at the database VM — its env file carries the
+KAMPODRA_DB_* creds, and the ssh key rides the app target's. sqlite and
+libsql are co-located by design; --db-host does not apply.
+
+Read-only role for agents, automated:
+
+  kampodra db grant-ro --db esellar          # mariadb: provisions
+                                             # kampodra_ro (random
+                                             # password), appends the env
+                                             # keys on the VM — the
+                                             # password never prints
+  kampodra db grant-ro --db esellar --engine postgres   # prints ready SQL
+
 Engine resolution (--engine auto, the default): the flag wins; then the
-VM's unit env (KAMPODRA_DB_ENGINE=mariadb|libsql); then the file's magic
-bytes (sqlite). --db is a PATH for sqlite, a schema NAME for mariadb,
-and unused for libsql.
+VM's unit env (KAMPODRA_DB_ENGINE=mariadb|postgres|libsql); then the
+file's magic bytes (sqlite). --db is a PATH for sqlite, a schema NAME
+for the server engines, and unused for libsql.
 
 Host/key resolution is the shared ladder: --host | --profile <name> |
 KAMPODRA_PROFILE | config defaultProfile | KAMPODRA_HOST; --ssh-key |
@@ -101,8 +124,84 @@ func newDBCommand(d Deps) *cobra.Command {
 	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
 		fmt.Fprint(c.OutOrStdout(), dbHelp)
 	})
-	cmd.AddCommand(newDBQuerySub(d), newDBSnapshotSub(d))
+	cmd.AddCommand(newDBQuerySub(d), newDBSnapshotSub(d), newDBGrantROSub(d))
 	return cmd
+}
+
+// newDBGrantROSub provisions the read-only role agents use: MariaDB
+// executes over the ssh session's unix_socket root (deterministic — the
+// ssh session IS the DBA), generates the password Go-side, and appends
+// the env keys to the VM's env file. Postgres's admin path varies by
+// host (sudo -u postgres, local trust...), so it PRINTS the ready SQL
+// instead of executing — the operator runs it as their superuser.
+func newDBGrantROSub(d Deps) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "grant-ro --db <schema> [--role kampodra_ro] [--rotate]",
+		Short: "provision the read-only role (mariadb executes; postgres prints the SQL)",
+		Args:  cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			return runDBGrantRO(d, c)
+		},
+	}
+	remoteTargetFlags(cmd)
+	cmd.Flags().String("db", "", "the schema the role may read")
+	cmd.Flags().String("role", "kampodra_ro", "the role name")
+	cmd.Flags().String("role-host", "localhost", "the role's connect host part (localhost = same-VM apps)")
+	cmd.Flags().String("engine", "mariadb", "mariadb (executes) | postgres (prints the SQL)")
+	cmd.Flags().String("db-host", "", "ssh target of the DB VM (default: the profile's dbHost, else the app VM)")
+	return cmd
+}
+
+func runDBGrantRO(d Deps, c *cobra.Command) error {
+	dbName, _ := c.Flags().GetString("db")
+	role, _ := c.Flags().GetString("role")
+	engineFlag, _ := c.Flags().GetString("engine")
+	dbHostFlag, _ := c.Flags().GetString("db-host")
+
+	if err := dbq.ValidateMariaDbName(dbName); err != nil {
+		return err
+	}
+	target, err := resolveTargetFromFlags(d, c)
+	if err != nil {
+		return err
+	}
+	sayProvenance(Deps{Stdout: d.Stderr}, "db grant-ro", target)
+	if err := requireHost(target); err != nil {
+		return err
+	}
+	dbTarget, _ := dbTargetFor(target, dbHostFlag)
+
+	switch engineFlag {
+	case "postgres":
+		const placeholder = "REPLACE_WITH_A_LONG_RANDOM_PASSWORD"
+		fmt.Fprintf(d.Stdout, "-- run as your postgres superuser, then:\n--   kampodra env set KAMPODRA_DB_ENGINE=postgres KAMPODRA_DB_NAME=%s KAMPODRA_DB_USER=%s KAMPODRA_DB_PASSWORD=<the password>\n%s\n", dbName, role, dbq.PostgresGrantROSQL(role, placeholder, dbName))
+		return nil
+	case "mariadb":
+	default:
+		return fmt.Errorf("grant-ro supports --engine mariadb (executes) or postgres (prints the SQL); got %q", engineFlag)
+	}
+
+	probe, err := d.Runner.Run(c.Context(), dbTarget.HostSpec, dbq.MariaProbeCommand)
+	if err != nil {
+		return fmt.Errorf("cannot reach VM %s (ssh failed)", dbTarget.HostSpec.Host)
+	}
+	if strings.TrimSpace(probe) != "yes" {
+		return fmt.Errorf("the mariadb client stack is missing on %s — %s", dbTarget.HostSpec.Host, dbq.MariaInstallHint)
+	}
+	pw, err := dbq.GeneratePassword()
+	if err != nil {
+		return err
+	}
+	sql := dbq.MariaGrantROSQL(role, pw, dbName)
+	if _, err := d.Runner.RunWithStdin(c.Context(), dbTarget.HostSpec, "mariadb", strings.NewReader(sql)); err != nil {
+		return fmt.Errorf("role provisioning failed on %s (unix_socket root expected): %w", dbTarget.HostSpec.Host, err)
+	}
+	envLines := fmt.Sprintf("%s=%s\n%s=%s\n", dbq.MariaUserEnvKey, role, dbq.MariaPasswordEnvKey, pw)
+	if _, err := d.Runner.RunWithStdin(c.Context(), dbTarget.HostSpec, dbq.MariaEnvAppendCommand(dbTarget.Project.EnvFile), strings.NewReader(envLines)); err != nil {
+		return fmt.Errorf("role created but the env keys could not be written to %s:%s — set them manually via kampodra env set", dbTarget.HostSpec.Host, dbTarget.Project.EnvFile)
+	}
+	fmt.Fprintf(d.Stdout, "[db] read-only role %s provisioned on %s — SELECT on %s.*; env keys written to %s (the password is in the env file, never printed)\n", role, dbTarget.HostSpec.Host, dbName, dbTarget.Project.EnvFile)
+	return nil
 }
 
 func newDBQuerySub(d Deps) *cobra.Command {
@@ -118,7 +217,8 @@ func newDBQuerySub(d Deps) *cobra.Command {
 	cmd.Flags().String("db", "", "the sqlite file's path ON THE VM, or the mariadb schema NAME")
 	cmd.Flags().String("sql", "", "the statement (exactly one of --sql/--file)")
 	cmd.Flags().String("file", "", "a local .sql file holding the statement (exactly one of --sql/--file)")
-	cmd.Flags().String("engine", "auto", "sqlite | mariadb | auto (flag > unit env KAMPODRA_DB_ENGINE > file magic)")
+	cmd.Flags().String("engine", "auto", "sqlite | mariadb | postgres | libsql | auto (flag > unit env KAMPODRA_DB_ENGINE > file magic)")
+	cmd.Flags().String("db-host", "", "ssh target of the DB VM when the server engine lives on its own host (default: the profile's dbHost, else the app VM)")
 	return cmd
 }
 
@@ -145,6 +245,7 @@ const (
 	engineSQLite dbEngine = "sqlite"
 	engineMaria  dbEngine = "mariadb"
 	engineLibsql dbEngine = "libsql"
+	enginePg     dbEngine = "postgres"
 )
 
 // validateDbArgByShape is the pre-ssh sanity gate on --db: path-shaped
@@ -186,13 +287,33 @@ func resolveDBEngine(d Deps, ctx context.Context, target Target, engineFlag, dbA
 		return engineMaria, nil
 	case "libsql":
 		return engineLibsql, nil
+	case "postgres":
+		return enginePg, nil
 	}
 	if dbArg != "" && run(dbq.EngineMagicProbeCommand(dbArg)) == "sqlite" {
 		return engineSQLite, nil
 	}
 	return "", fmt.Errorf(
-		"cannot infer the engine: no KAMPODRA_DB_ENGINE=mariadb in the VM's unit env and %q has no sqlite magic — pass --engine sqlite|mariadb",
+		"cannot infer the engine: the VM's env file declares no engine (KAMPODRA_DB_ENGINE=mariadb|postgres|libsql) and %q has no sqlite magic — pass --engine explicitly",
 		dbArg)
+}
+
+// dbTargetFor resolves where server-engine commands RUN: an explicit
+// --db-host, else the profile's dbHost, else the app VM target itself.
+// The ssh key rides the app target's (one identity per estate by
+// default). Only server engines consult this; sqlite/libsql are
+// co-located by design.
+func dbTargetFor(target Target, flag string) (Target, bool) {
+	host := flag
+	if host == "" {
+		host = target.DbHost
+	}
+	if host == "" {
+		return target, false
+	}
+	dt := target
+	dt.HostSpec = transport.HostSpec{Host: host, SSHKey: target.HostSpec.SSHKey}
+	return dt, true
 }
 
 func runDBQuery(d Deps, c *cobra.Command) error {
@@ -245,9 +366,14 @@ func runDBQuery(d Deps, c *cobra.Command) error {
 
 	ctx := c.Context()
 	engineFlag, _ := c.Flags().GetString("engine")
-	engine, err := resolveDBEngine(d, ctx, target, engineFlag, dbPath)
+	dbHostFlag, _ := c.Flags().GetString("db-host")
+	dbTarget, separate := dbTargetFor(target, dbHostFlag)
+	engine, err := resolveDBEngine(d, ctx, dbTarget, engineFlag, dbPath)
 	if err != nil {
 		return err
+	}
+	if separate && engine == engineSQLite {
+		return fmt.Errorf("--db-host does not apply to sqlite — the file lives on the app VM; drop the flag or drop --engine sqlite")
 	}
 
 	switch engine {
@@ -261,7 +387,9 @@ func runDBQuery(d Deps, c *cobra.Command) error {
 		}
 		return runEngineQuery(d, ctx, target, dbq.SQLiteEngine(helper), engineSQLite, dbPath, stmt)
 	case engineMaria:
-		return runEngineQuery(d, ctx, target, dbq.MariaEngine(target.Project.EnvFile), engineMaria, dbPath, stmt)
+		return runEngineQuery(d, ctx, dbTarget, dbq.MariaEngine(dbTarget.Project.EnvFile), engineMaria, dbPath, stmt)
+	case enginePg:
+		return runEngineQuery(d, ctx, dbTarget, dbq.PostgresEngine(dbTarget.Project.EnvFile), enginePg, dbPath, stmt)
 	case engineLibsql:
 		return runEngineQuery(d, ctx, target, dbq.LibsqlEngine(target.Project.EnvFile), engineLibsql, dbPath, stmt)
 	}
@@ -303,8 +431,15 @@ func runEngineQuery(d Deps, ctx context.Context, target Target, eng dbq.Engine, 
 	if err != nil {
 		return fmt.Errorf("query failed on %s (target %q): %w", target.HostSpec.Host, dbTarget, err)
 	}
-	if engine == engineLibsql {
+	switch {
+	case engine == engineLibsql:
 		flat, nerr := dbq.NormalizeHranaResponse(out)
+		if nerr != nil {
+			return fmt.Errorf("query failed on %s: %w", target.HostSpec.Host, nerr)
+		}
+		out = flat + "\n"
+	case eng.OutputIsTSV:
+		flat, nerr := dbq.NormalizeTSV(out)
 		if nerr != nil {
 			return fmt.Errorf("query failed on %s: %w", target.HostSpec.Host, nerr)
 		}
@@ -369,17 +504,31 @@ func runDBSnapshot(d Deps, c *cobra.Command) error {
 
 	ctx := c.Context()
 	engineFlag, _ := c.Flags().GetString("engine")
-	engine, err := resolveDBEngine(d, ctx, target, engineFlag, dbPath)
+	dbHostFlag, _ := c.Flags().GetString("db-host")
+	dbTarget, separate := dbTargetFor(target, dbHostFlag)
+	engine, err := resolveDBEngine(d, ctx, dbTarget, engineFlag, dbPath)
 	if err != nil {
 		return err
 	}
+	if separate && engine == engineSQLite {
+		return fmt.Errorf("--db-host does not apply to sqlite — the file lives on the app VM; drop the flag or drop --engine sqlite")
+	}
 	if engine == engineMaria {
-		return runMariaSnapshot(d, ctx, target, dbq.MariaEngine(target.Project.EnvFile), dbPath, out)
+		return runMariaSnapshot(d, ctx, dbTarget, dbq.MariaEngine(dbTarget.Project.EnvFile), dbPath, out)
+	}
+	if engine == enginePg {
+		return runPgSnapshot(d, ctx, dbTarget, dbq.PostgresEngine(dbTarget.Project.EnvFile), dbPath, out)
 	}
 	if engine == engineLibsql {
 		return runLibsqlSnapshot(d, ctx, target, target.Project.EnvFile, out)
 	}
 
+	return runSQLiteSnapshot(d, ctx, target, dbPath, out)
+}
+
+// runSQLiteSnapshot: the file is on the app VM — consistent .backup via
+// the VM's sqlite3 (cp fallback noted), no credentials stage.
+func runSQLiteSnapshot(d Deps, ctx context.Context, target Target, dbPath, out string) error {
 	if err := dbq.ValidateDbPath(dbPath); err != nil {
 		return err
 	}
@@ -538,6 +687,57 @@ func runLibsqlSnapshot(d Deps, ctx context.Context, target Target, envFile, out 
 	data, err := run(dbq.SnapshotFetchCommand(scratch))
 	if err != nil {
 		return fmt.Errorf("cannot fetch the snapshot from %s: %w", target.HostSpec.Host, err)
+	}
+	if err := writeFile0600(out, []byte(data)); err != nil {
+		return err
+	}
+	fmt.Fprintf(d.Stdout, "[db] wrote %s (0600) — %d bytes\n", out, len(data))
+	return nil
+}
+
+// runPgSnapshot mirrors the MariaDB flow: client probe → pgpass staged
+// from the env file → MVCC-consistent plain dump to a random scratch →
+// "dump complete" tail-stamp gate → fetch → 0600 → Background cleanup of
+// creds + scratch.
+func runPgSnapshot(d Deps, ctx context.Context, target Target, eng dbq.Engine, dbName, out string) error {
+	if err := eng.Validate(dbName); err != nil {
+		return err
+	}
+	if out == "" {
+		out = dbName + ".sql"
+	}
+	if _, err := os.Stat(out); err == nil {
+		return fmt.Errorf("refusing to overwrite %s — remove it or pass --out <path>", out)
+	}
+	probe, err := d.Runner.Run(ctx, target.HostSpec, eng.ProbeCommand)
+	if err != nil {
+		return fmt.Errorf("cannot reach VM %s (ssh failed) — nothing to snapshot", target.HostSpec.Host)
+	}
+	if strings.TrimSpace(probe) != "yes" {
+		return fmt.Errorf("the %s client stack is missing on %s — install it (%s) or run kampodra vm-prepare with KAMPODRA_DB_ENGINE set in the unit env", eng.Name, target.HostSpec.Host, eng.InstallHint)
+	}
+	defaults := dbq.PostgresDefaultsPath()
+	scratch := dbq.MariaScratchPath()
+	defer func() {
+		for _, remote := range []string{eng.CredsCleanup, dbq.SnapshotCleanupCommand(scratch)} {
+			if _, err := d.Runner.Run(context.Background(), target.HostSpec, remote); err != nil {
+				fmt.Fprintf(d.Stderr, "[db] WARNING: cleanup failed on %s: %v\n", target.HostSpec.Host, err)
+			}
+		}
+	}()
+	if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, eng.CredsStage, strings.NewReader("")); err != nil {
+		return fmt.Errorf("cannot stage %s credentials on %s (is %s present? set the KAMPODRA_DB_* keys via kampodra env set): %w", eng.Name, target.HostSpec.Host, target.Project.EnvFile, err)
+	}
+	fmt.Fprintf(d.Stderr, "[db] consistent dump via pg_dump (MVCC snapshot) → %s:%s\n", target.HostSpec.Host, scratch)
+	if _, err := d.Runner.Run(ctx, target.HostSpec, dbq.PostgresDumpCommand(defaults, dbName, scratch)); err != nil {
+		return fmt.Errorf("pg_dump failed for %q on %s: %w", dbName, target.HostSpec.Host, err)
+	}
+	if verify, err := d.Runner.Run(ctx, target.HostSpec, dbq.PostgresVerifyDumpCommand(scratch)); err != nil || strings.TrimSpace(verify) == "" {
+		return fmt.Errorf("the dump of %q on %s is INCOMPLETE (no '%s' tail stamp) — refusing to fetch a partial copy", dbName, target.HostSpec.Host, dbq.PgDumpCompleteStamp)
+	}
+	data, err := d.Runner.Run(ctx, target.HostSpec, dbq.SnapshotFetchCommand(scratch))
+	if err != nil {
+		return fmt.Errorf("cannot fetch the dump from %s: %w", target.HostSpec.Host, err)
 	}
 	if err := writeFile0600(out, []byte(data)); err != nil {
 		return err

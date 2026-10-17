@@ -62,7 +62,7 @@ func TestMariaProbeAndEngineProbes(t *testing.T) {
 		!strings.Contains(magic, "SQLite format 3") {
 		t.Errorf("magic probe malformed:\n%s", magic)
 	}
-	if env := EngineUnitEnvProbeCommand(testEnvFile); !strings.Contains(env, EngineEnvKey+"=(mariadb|libsql)") ||
+	if env := EngineUnitEnvProbeCommand(testEnvFile); !strings.Contains(env, EngineEnvKey+"=(mariadb|libsql|postgres)") ||
 		!strings.Contains(env, testEnvFile) {
 		t.Errorf("unit-env engine probe malformed:\n%s", env)
 	}
@@ -115,5 +115,47 @@ func TestSQLiteEngineSteps(t *testing.T) {
 	}
 	if q := eng.QueryCommand("/data/root.db"); !strings.Contains(q, "/tmp/kampodra-sqlq-v1-arm64 -db /data/root.db") {
 		t.Errorf("query composition must use the provisioned helper:\n%s", q)
+	}
+}
+
+// The grant-ro SQL + env-append composition: create-or-rotate + SELECT
+// on the schema; the env keys ride stdin (never argv).
+func TestMariaGrantROComposition(t *testing.T) {
+	sql := MariaGrantROSQL("kampodra_ro", "pw456", "esellar")
+	for _, want := range []string{
+		"CREATE USER IF NOT EXISTS", "ALTER USER", "IDENTIFIED BY",
+		"GRANT SELECT ON `esellar`.*",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("grant SQL missing %q:\n%s", want, sql)
+		}
+	}
+	appendCmd := MariaEnvAppendCommand(testEnvFile)
+	for _, want := range []string{
+		"umask 077",
+		"sed -i '/^KAMPODRA_DB_USER=/d;/^KAMPODRA_DB_PASSWORD=/d'",
+		`printf '%s' "$(cat)"`,
+		testEnvFile,
+	} {
+		if !strings.Contains(appendCmd, want) {
+			t.Errorf("env append missing %q:\n%s", want, appendCmd)
+		}
+	}
+}
+
+// GeneratePassword: 48 hex chars, no quoting hazards.
+func TestGeneratePassword(t *testing.T) {
+	pw, err := GeneratePassword()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pw) != 48 {
+		t.Errorf("password length %d, want 48", len(pw))
+	}
+	for _, r := range pw {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			t.Errorf("password must be lowercase hex, got %q", pw)
+			break
+		}
 	}
 }
