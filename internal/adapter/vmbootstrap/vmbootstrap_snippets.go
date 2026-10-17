@@ -141,7 +141,7 @@ func AptPodmanSnippet() string {
 	return `grep -qsE 'universe' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || add-apt-repository -y universe
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y podman netavark aardvark-dns crun`
+apt-get install -y podman netavark aardvark-dns crun iptables`
 }
 
 // SysctlApplyUbuntuSnippet applies the sysctl drop-in live (systemd re-reads

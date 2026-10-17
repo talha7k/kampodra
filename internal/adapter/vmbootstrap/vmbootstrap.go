@@ -140,8 +140,13 @@ const (
 	GateSSHDHardened = `sshd -T 2>/dev/null | grep -qi "^passwordauthentication no"`
 	// GatePodmanVersion — netavark needs podman >= 4.9.
 	GatePodmanVersion = `V=$(podman --version | grep -oE "[0-9]+\.[0-9]+\.[0-9]+"); echo "$V" | awk -F. '{exit !($1>4 || ($1==4 && $2>=9))}'`
-	// GateNetavark — the network backend must be netavark.
-	GateNetavark = `podman info --format "{{.Host.NetworkBackend}}" | grep -qx netavark`
+	// GateNetavark — the network backend must be netavark AND its binary
+	// must exist: podman info reports the backend NAME from static config
+	// without touching the binary, and Ubuntu 24.04's GA netavark package
+	// shipped with the binaries MISSING (live-smoke finding — the gate
+	// passed, the first container run failed with "netavark: No such
+	// file or directory"). The path comes from podman itself.
+	GateNetavark = `podman info --format "{{.Host.NetworkBackend}}" | grep -qx netavark && test -x "$(podman info --format "{{.Host.NetworkBackendInfo.Path}}")"`
 	// GateSysctl — the live sysctl value must be 80.
 	GateSysctl = `sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null | grep -qx 80`
 	// GateAnchorIdleLog — the watcher logged its idle transition (loop live).
