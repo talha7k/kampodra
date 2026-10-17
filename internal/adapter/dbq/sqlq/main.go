@@ -73,7 +73,7 @@ func run(dbPath string, stmtIn io.Reader, out, errw io.Writer) int {
 		fmt.Fprintf(errw, "kampodra-sqlq: query failed: %v\n", err)
 		return 1
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	cols, err := rows.Columns()
 	if err != nil {
