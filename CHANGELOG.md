@@ -19,6 +19,20 @@
   bind-mount sources) that blocks live candidates from deletion.
   Deletion commands are exact-path, metacharacter-gated, and `rm -rf` is
   restricted to scratch-zone dirs.
+- **migrate: the support + billing db classes are first-class** — the
+  esellar estate gains two db classes beside root + tenants
+  (`<dataDir>/support/support.db`, `<dataDir>/billing/billing.db`), and
+  `Plan` silently IGNORED files matching neither shape — both dbs would
+  drift with zero errors. `Plan` now enumerates them as dedicated class
+  planes handled exactly like the root pairing: root first, then support +
+  billing (own `--ns`, own `-dir` pairings in binary mode —
+  `drizzle/support/` + `drizzle/billing/`), then tenants sorted; the probe
+  lists the class dirs as their own globs (a nested db file is invisible to
+  a flat glob); and any file matching NO known class is an explicit warned
+  skip (`[migrate] WARNING: skipping … matches no known db class`) instead
+  of a silent ignore — a future class can no longer drift unnoticed.
+
+>>>>>>> support-billing-classes
 - **bluegreen live-fire fixes (2026-10-09 session)** — two real-drill
   findings: (1) `ReservedIPListArgs` never passed the `--query` its
   parser documents, so `bluegreen status/init/flip/rollback` ate full

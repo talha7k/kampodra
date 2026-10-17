@@ -622,9 +622,13 @@ file VIA THE REPO ON THE VM — the script path comes from the `migrateScript`
 config (default `scripts/migrate-db.ts`; set it in `kampodra.json`/profile/
 `KAMPODRA_MIGRATE_SCRIPT` to your repo's real layout), resolved inside
 `--repo-root`, executed with `pnpm exec tsx` on the VM. Order: `root.db`
-first, then tenant files sorted, bounded-parallel. Per-file failures are
-collected (one bad tenant does not block the others) and the command exits 1
-if any failed — do not start the API on a half-migrated estate.
+first (the auth/org plane; `root/root.db` preferred, legacy flat `root.db`
+honored), then the support + billing class dbs (`support/support.db`,
+`billing/billing.db`), then tenant files sorted, bounded-parallel. A db file
+matching no known class is an explicit warned skip — it never migrates
+silently. Per-file failures are collected (one bad tenant does not block the
+others) and the command exits 1 if any failed — do not start the API on a
+half-migrated estate.
 
 ```
 kampodra migrate [--allow-running] [--profile <name>] [--host <user@ip>] [--ssh-key <path>] [--repo-root <path>] [--jobs <n>]
