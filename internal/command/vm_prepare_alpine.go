@@ -16,7 +16,7 @@ func (p *vmProvisioner) provisionAlpine(ansiblePath string) error {
 		p.alpineInitGates,
 		func() error { return p.sshdHardening("rc-service sshd restart") },
 		p.alpinePodmanStack,
-		p.alpineMariaClientIfDeclared,
+		p.alpineDBClientIfDeclared,
 		func() error { return p.managedState(vmbootstrap.SysctlApplySnippet()) },
 		p.alpineOpenRCUnits,
 		p.alpineProxyUp,
@@ -41,16 +41,22 @@ func (p *vmProvisioner) alpineInitGates() error {
 	return nil
 }
 
-// alpineMariaClientIfDeclared installs the MariaDB client stack ONLY when
-// the unit env declares the engine — vm-prepare installs no database
-// tooling the estate didn't ask for.
-func (p *vmProvisioner) alpineMariaClientIfDeclared() error {
-	if p.target.UnitEnvs["KAMPODRA_DB_ENGINE"] != "mariadb" {
+// alpineDBClientIfDeclared installs ONLY the client tooling the unit env's
+// declared engine needs (mariadb-client / curl) — vm-prepare installs no
+// database tooling the estate didn't ask for.
+func (p *vmProvisioner) alpineDBClientIfDeclared() error {
+	var snippet string
+	switch p.target.UnitEnvs["KAMPODRA_DB_ENGINE"] {
+	case "mariadb":
+		snippet = vmbootstrap.ApkMariaClientSnippet()
+	case "libsql":
+		snippet = vmbootstrap.ApkCurlSnippet()
+	default:
 		return nil
 	}
-	p.say("installing the mariadb client stack (unit env declares the engine)…")
-	if err := p.runSh(vmbootstrap.ApkMariaClientSnippet()); err != nil {
-		return p.die("mariadb-client install failed (apk output above)", err)
+	p.say("installing the db client stack (unit env declares the engine)…")
+	if err := p.runSh(snippet); err != nil {
+		return p.die("db client install failed (apk output above)", err)
 	}
 	return nil
 }

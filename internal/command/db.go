@@ -58,9 +58,22 @@ mariadb (a SCHEMA on a server — same VM or a db host reachable from it):
   and point KAMPODRA_DB_USER at it — the gate is belt, the role is the
   suspender.
 
+libsql (self-hosted sqld serving the db over HTTP on the same VM — no
+cloud):
+  query rides Hrana over the VM's curl: the request body is built
+  Go-side (the statement's JSON escaping is the stdlib's, not a shell
+  exercise) and the auth token is staged into a 0600 header file from
+  the env file — never argv. Rows come back as the SAME flat JSON shape
+  as sqlite. Set KAMPODRA_DB_URL (default http://127.0.0.1:8080),
+  KAMPODRA_DB_TOKEN (empty = unauthenticated localhost), and — for
+  snapshot — KAMPODRA_DB_PATH (the sqld --db-path on the VM): the copy
+  reuses the consistent .backup flow and is gated on PRAGMA
+  integrity_check before fetch. --db is unused (sqld serves one db).
+
 Engine resolution (--engine auto, the default): the flag wins; then the
-VM's unit env (KAMPODRA_DB_ENGINE=mariadb); then the file's magic bytes
-(sqlite). --db is a PATH for sqlite, a schema NAME for mariadb.
+VM's unit env (KAMPODRA_DB_ENGINE=mariadb|libsql); then the file's magic
+bytes (sqlite). --db is a PATH for sqlite, a schema NAME for mariadb,
+and unused for libsql.
 
 Host/key resolution is the shared ladder: --host | --profile <name> |
 KAMPODRA_PROFILE | config defaultProfile | KAMPODRA_HOST; --ssh-key |
@@ -131,6 +144,7 @@ type dbEngine string
 const (
 	engineSQLite dbEngine = "sqlite"
 	engineMaria  dbEngine = "mariadb"
+	engineLibsql dbEngine = "libsql"
 )
 
 // validateDbArgByShape is the pre-ssh sanity gate on --db: path-shaped
@@ -167,8 +181,11 @@ func resolveDBEngine(d Deps, ctx context.Context, target Target, engineFlag, dbA
 		}
 		return strings.TrimSpace(out)
 	}
-	if run(dbq.EngineUnitEnvProbeCommand(target.Project.EnvFile)) == "mariadb" {
+	switch strings.TrimSpace(run(dbq.EngineUnitEnvProbeCommand(target.Project.EnvFile))) {
+	case "mariadb":
 		return engineMaria, nil
+	case "libsql":
+		return engineLibsql, nil
 	}
 	if dbArg != "" && run(dbq.EngineMagicProbeCommand(dbArg)) == "sqlite" {
 		return engineSQLite, nil
@@ -210,8 +227,10 @@ func runDBQuery(d Deps, c *cobra.Command) error {
 	// a bare token obeys the maria name gate (the resolved engine's own
 	// validator runs again in its branch — cheap, and the contract "bad
 	// input costs zero round-trips" holds regardless of the flag).
-	if err := validateDbArgByShape(dbPath); err != nil {
-		return err
+	if dbPath != "" {
+		if err := validateDbArgByShape(dbPath); err != nil {
+			return err
+		}
 	}
 
 	target, err := resolveTargetFromFlags(d, c)
@@ -240,9 +259,11 @@ func runDBQuery(d Deps, c *cobra.Command) error {
 		if err != nil {
 			return err
 		}
-		return runEngineQuery(d, ctx, target, dbq.SQLiteEngine(helper), dbPath, stmt)
+		return runEngineQuery(d, ctx, target, dbq.SQLiteEngine(helper), engineSQLite, dbPath, stmt)
 	case engineMaria:
-		return runEngineQuery(d, ctx, target, dbq.MariaEngine(target.Project.EnvFile), dbPath, stmt)
+		return runEngineQuery(d, ctx, target, dbq.MariaEngine(target.Project.EnvFile), engineMaria, dbPath, stmt)
+	case engineLibsql:
+		return runEngineQuery(d, ctx, target, dbq.LibsqlEngine(target.Project.EnvFile), engineLibsql, dbPath, stmt)
 	}
 	return fmt.Errorf("unreachable engine %q", engine)
 }
@@ -251,7 +272,7 @@ func runDBQuery(d Deps, c *cobra.Command) error {
 // engine; the Engine struct supplies the steps (probe? creds stage? —
 // then the gated statement rides stdin). Output is the engine's data
 // payload (JSON rows / TSV); human lines ride stderr.
-func runEngineQuery(d Deps, ctx context.Context, target Target, eng dbq.Engine, dbTarget, stmt string) error {
+func runEngineQuery(d Deps, ctx context.Context, target Target, eng dbq.Engine, engine dbEngine, dbTarget, stmt string) error {
 	if err := eng.Validate(dbTarget); err != nil {
 		return err
 	}
@@ -261,7 +282,7 @@ func runEngineQuery(d Deps, ctx context.Context, target Target, eng dbq.Engine, 
 			return fmt.Errorf("cannot reach VM %s (ssh failed) — nothing to query", target.HostSpec.Host)
 		}
 		if strings.TrimSpace(probe) != "yes" {
-			return fmt.Errorf("the %s client stack is missing on %s — install its client packages (e.g. apk add mariadb-client / apt-get install mariadb-client) or run kampodra vm-prepare with KAMPODRA_DB_ENGINE set in the unit env", eng.Name, target.HostSpec.Host)
+			return fmt.Errorf("the %s client stack is missing on %s — install it (%s) or run kampodra vm-prepare with KAMPODRA_DB_ENGINE set in the unit env", eng.Name, target.HostSpec.Host, eng.InstallHint)
 		}
 	}
 	if eng.CredsStage != "" {
@@ -274,9 +295,20 @@ func runEngineQuery(d Deps, ctx context.Context, target Target, eng dbq.Engine, 
 			return fmt.Errorf("cannot stage %s credentials on %s (is %s present? set the KAMPODRA_DB_* keys via kampodra env set): %w", eng.Name, target.HostSpec.Host, target.Project.EnvFile, err)
 		}
 	}
-	out, err := d.Runner.RunWithStdin(ctx, target.HostSpec, eng.QueryCommand(dbTarget), strings.NewReader(stmt))
+	payload := stmt
+	if eng.EncodeStatement != nil {
+		payload = eng.EncodeStatement(stmt)
+	}
+	out, err := d.Runner.RunWithStdin(ctx, target.HostSpec, eng.QueryCommand(dbTarget), strings.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("query failed on %s (target %q): %w", target.HostSpec.Host, dbTarget, err)
+	}
+	if engine == engineLibsql {
+		flat, nerr := dbq.NormalizeHranaResponse(out)
+		if nerr != nil {
+			return fmt.Errorf("query failed on %s: %w", target.HostSpec.Host, nerr)
+		}
+		out = flat + "\n"
 	}
 	fmt.Fprint(d.Stdout, out)
 	return nil
@@ -312,10 +344,13 @@ func ensureSQLHelper(d Deps, ctx context.Context, target Target) (string, error)
 func runDBSnapshot(d Deps, c *cobra.Command) error {
 	dbPath, _ := c.Flags().GetString("db")
 	out, _ := c.Flags().GetString("out")
-	// Local input sanity BEFORE any ssh (same shape gate as query), and
-	// an explicit --out that exists is refused before any round-trip.
-	if err := validateDbArgByShape(dbPath); err != nil {
-		return err
+	// Local input sanity BEFORE any ssh (same shape gate as query — and
+	// same empty-skip: libsql needs no --db at all), and an explicit --out
+	// that exists is refused before any round-trip.
+	if dbPath != "" {
+		if err := validateDbArgByShape(dbPath); err != nil {
+			return err
+		}
 	}
 	if out != "" {
 		if _, err := os.Stat(out); err == nil {
@@ -340,6 +375,9 @@ func runDBSnapshot(d Deps, c *cobra.Command) error {
 	}
 	if engine == engineMaria {
 		return runMariaSnapshot(d, ctx, target, dbq.MariaEngine(target.Project.EnvFile), dbPath, out)
+	}
+	if engine == engineLibsql {
+		return runLibsqlSnapshot(d, ctx, target, target.Project.EnvFile, out)
 	}
 
 	if err := dbq.ValidateDbPath(dbPath); err != nil {
@@ -439,6 +477,67 @@ func runMariaSnapshot(d Deps, ctx context.Context, target Target, eng dbq.Engine
 	data, err := d.Runner.Run(ctx, target.HostSpec, dbq.SnapshotFetchCommand(scratch))
 	if err != nil {
 		return fmt.Errorf("cannot fetch the dump from %s: %w", target.HostSpec.Host, err)
+	}
+	if err := writeFile0600(out, []byte(data)); err != nil {
+		return err
+	}
+	fmt.Fprintf(d.Stdout, "[db] wrote %s (0600) — %d bytes\n", out, len(data))
+	return nil
+}
+
+// runLibsqlSnapshot: the sqld db is (still) a FILE on the VM — the copy
+// reuses the sqlite snapshot machinery (consistent .backup, cp fallback),
+// then gates on PRAGMA integrity_check — a corrupted or torn copy is
+// refused before fetch. The db path comes from the env file
+// (KAMPODRA_DB_PATH): query needed a URL, snapshot needs the file.
+func runLibsqlSnapshot(d Deps, ctx context.Context, target Target, envFile, out string) error {
+	pathOut, err := d.Runner.Run(ctx, target.HostSpec, dbq.LibsqlDbPathFromEnvCommand(envFile))
+	if err != nil {
+		return fmt.Errorf("cannot reach VM %s (ssh failed) — nothing to snapshot", target.HostSpec.Host)
+	}
+	dbPath := strings.TrimSpace(pathOut)
+	if dbPath == "" {
+		return fmt.Errorf("snapshot needs %s (the sqld --db-path on the VM) in the env file — set it via kampodra env set; a Hrana URL alone cannot be snapshotted", dbq.LibsqlPathEnvKey)
+	}
+	if err := dbq.ValidateDbPath(dbPath); err != nil {
+		return err
+	}
+	if out == "" {
+		out = filepath.Base(dbPath)
+	}
+	if _, err := os.Stat(out); err == nil {
+		return fmt.Errorf("refusing to overwrite %s — remove it or pass --out <path>", out)
+	}
+	run := func(remote string) (string, error) {
+		return d.Runner.Run(ctx, target.HostSpec, remote)
+	}
+	probe, err := run(dbq.Sqlite3ProbeCommand)
+	if err != nil {
+		return fmt.Errorf("cannot reach VM %s (ssh failed) — nothing to snapshot", target.HostSpec.Host)
+	}
+	scratch := dbq.LibsqlScratchPath()
+	defer func() {
+		if _, err := d.Runner.Run(context.Background(), target.HostSpec, dbq.SnapshotCleanupCommand(scratch)); err != nil {
+			fmt.Fprintf(d.Stderr, "[db] WARNING: scratch cleanup failed (%s): %v\n", scratch, err)
+		}
+	}()
+	if strings.TrimSpace(probe) == "yes" {
+		fmt.Fprintf(d.Stderr, "[db] consistent copy via sqlite3 .backup → %s:%s\n", target.HostSpec.Host, scratch)
+		if _, err := run(dbq.SnapshotBackupCommand(dbPath, scratch)); err != nil {
+			return fmt.Errorf("sqlite3 .backup failed for %s: %w", dbPath, err)
+		}
+		if ic, err := run(dbq.LibsqlIntegrityCheckCommand(scratch)); err != nil || strings.TrimSpace(ic) != "ok" {
+			return fmt.Errorf("the snapshot of %s failed PRAGMA integrity_check — refusing to fetch a corrupt copy", dbPath)
+		}
+	} else {
+		fmt.Fprintf(d.Stderr, "[db] sqlite3 not found on %s — falling back to plain cp, which is NOT consistent against concurrent writes (install sqlite3 on the VM for safe snapshots)\n", target.HostSpec.Host)
+		if _, err := run(dbq.SnapshotCpCommand(dbPath, scratch)); err != nil {
+			return fmt.Errorf("cp fallback failed for %s: %w", dbPath, err)
+		}
+	}
+	data, err := run(dbq.SnapshotFetchCommand(scratch))
+	if err != nil {
+		return fmt.Errorf("cannot fetch the snapshot from %s: %w", target.HostSpec.Host, err)
 	}
 	if err := writeFile0600(out, []byte(data)); err != nil {
 		return err
