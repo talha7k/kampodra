@@ -127,6 +127,14 @@ func (p *vmProvisioner) run(remote string) error {
 	return err
 }
 
+// read runs a READ-ONLY gate without elevation: gates must never take
+// the sudo prefix (the live GCP finding — the podman-version gate under
+// sudo printed sudo's own usage). Gates only observe.
+func (p *vmProvisioner) read(remote string) error {
+	_, err := p.d.Runner.Run(p.ctx, p.target.HostSpec, remote)
+	return err
+}
+
 // runRoot elevates a COMPOUND command (&& / || chains) as one shell:
 // a bare `sudo a || b` prefix-scopes only `a` — `b` runs unprivileged
 // (the live GCP finding: the sshd Include grep got sudo, the sed after

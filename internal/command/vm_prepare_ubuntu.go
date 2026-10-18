@@ -39,7 +39,7 @@ func (p *vmProvisioner) ubuntuInitGates() error {
 		return p.die("systemd is NOT PID1 — this is not the Ubuntu golden image (start-fresh boots systemd)", err)
 	}
 	p.say("gate: apt operational")
-	if err := p.run(vmbootstrap.GateAptOperational); err != nil {
+	if err := p.read(vmbootstrap.GateAptOperational); err != nil {
 		return p.die("apt is not operational (apt-get update failed — is the mirror reachable?)", err)
 	}
 	return nil
@@ -71,10 +71,10 @@ func (p *vmProvisioner) ubuntuPodmanStack() error {
 		return p.die("podman stack install failed (apt output above)", err)
 	}
 	p.say("gate: podman >= 4.9 + netavark backend")
-	if err := p.run(vmbootstrap.GatePodmanVersion); err != nil {
+	if err := p.read(vmbootstrap.GatePodmanVersion); err != nil {
 		return p.die("podman too old (need >= 4.9 for netavark — Ubuntu 24.04 ships 4.9.x)", err)
 	}
-	if err := p.run(vmbootstrap.GateNetavark); err != nil {
+	if err := p.read(vmbootstrap.GateNetavark); err != nil {
 		return p.die("network backend is not netavark", err)
 	}
 	return nil
@@ -162,14 +162,14 @@ func (p *vmProvisioner) ubuntuConvergeAPI() error {
 func (p *vmProvisioner) ubuntuPostGates() error {
 	n := p.n
 	p.say("gate: podman >= 4.9 + netavark backend")
-	if err := p.run(vmbootstrap.GatePodmanVersion); err != nil {
+	if err := p.read(vmbootstrap.GatePodmanVersion); err != nil {
 		return p.die("podman too old (need >= 4.9 for netavark)", err)
 	}
-	if err := p.run(vmbootstrap.GateNetavark); err != nil {
+	if err := p.read(vmbootstrap.GateNetavark); err != nil {
 		return p.die("network backend is not netavark", err)
 	}
 	p.say("gate: sysctl effective")
-	if err := p.run(vmbootstrap.GateSysctl); err != nil {
+	if err := p.read(vmbootstrap.GateSysctl); err != nil {
 		return p.die("net.ipv4.ip_unprivileged_port_start is not 80", err)
 	}
 	p.say("gate: registries.conf effective")
@@ -192,7 +192,7 @@ func (p *vmProvisioner) ubuntuPostGates() error {
 	if err := p.run("! test -e " + n.AnchorConf); err != nil {
 		return p.die(n.AnchorConf+" already exists on a fresh VM (wrong machine?)", err)
 	}
-	if err := p.run(vmbootstrap.GateAnchorIdleLog); err != nil {
+	if err := p.read(vmbootstrap.GateAnchorIdleLog); err != nil {
 		return p.die("kampodra-anchor is started but never logged its idle transition (watcher loop not running?)", err)
 	}
 	return nil

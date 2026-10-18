@@ -38,7 +38,7 @@ func (p *vmProvisioner) sshdHardening(restart string) error {
 		return p.die("sshd restart failed after hardening ensure", err)
 	}
 	p.say("gate: sshd hardening effective")
-	if err := p.run(vmbootstrap.GateSSHDHardened); err != nil {
+	if err := p.read(vmbootstrap.GateSSHDHardened); err != nil {
 		return p.die("sshd still allows passwords (hardening ensure failed?)", err)
 	}
 	return nil

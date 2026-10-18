@@ -33,10 +33,10 @@ func (p *vmProvisioner) provisionAlpine(ansiblePath string) error {
 // alpineInitGates — the Alpine pre gates (fail BEFORE mutating anything).
 func (p *vmProvisioner) alpineInitGates() error {
 	p.say("gate: OpenRC init + tooling")
-	if err := p.run(vmbootstrap.GateNoSystemd); err != nil {
+	if err := p.read(vmbootstrap.GateNoSystemd); err != nil {
 		return p.die("systemd is PID1 — this is not the Alpine golden image (start-fresh has NO systemd anywhere)", err)
 	}
-	if err := p.run(vmbootstrap.GateOpenRCTooling); err != nil {
+	if err := p.read(vmbootstrap.GateOpenRCTooling); err != nil {
 		return p.die("OpenRC tooling missing or not operational (openrc/rc-service/rc-update/supervise-daemon, rc-status)", err)
 	}
 	return nil
@@ -175,14 +175,14 @@ func (p *vmProvisioner) alpineConvergeAPI() error {
 func (p *vmProvisioner) alpinePostGates() error {
 	n := p.n
 	p.say("gate: podman >= 4.9 + netavark backend")
-	if err := p.run(vmbootstrap.GatePodmanVersion); err != nil {
+	if err := p.read(vmbootstrap.GatePodmanVersion); err != nil {
 		return p.die("podman too old (need >= 4.9 for netavark)", err)
 	}
-	if err := p.run(vmbootstrap.GateNetavark); err != nil {
+	if err := p.read(vmbootstrap.GateNetavark); err != nil {
 		return p.die("network backend is not netavark", err)
 	}
 	p.say("gate: sysctl effective")
-	if err := p.run(vmbootstrap.GateSysctl); err != nil {
+	if err := p.read(vmbootstrap.GateSysctl); err != nil {
 		return p.die("net.ipv4.ip_unprivileged_port_start is not 80", err)
 	}
 	p.say("gate: registries.conf effective")
@@ -208,7 +208,7 @@ func (p *vmProvisioner) alpinePostGates() error {
 	if err := p.run("! test -e " + n.AnchorConf); err != nil {
 		return p.die(n.AnchorConf+" already exists on a fresh VM (wrong machine?)", err)
 	}
-	if err := p.run(vmbootstrap.GateAnchorIdleLog); err != nil {
+	if err := p.read(vmbootstrap.GateAnchorIdleLog); err != nil {
 		return p.die("kampodra-anchor is started but never logged its idle transition (watcher loop not running?)", err)
 	}
 	return nil
