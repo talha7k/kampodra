@@ -22,12 +22,22 @@ import (
 )
 
 const dbHelp = `Usage:
-  kampodra db query    --db <sqlite-path-on-vm | mariadb-schema> (--sql "<statement>" | --file <local.sql>)
-                       [--engine auto|sqlite|mariadb] [--profile <name>] [--host <user@ip>] [--ssh-key <path>]
-  kampodra db snapshot --db <sqlite-path-on-vm | mariadb-schema> [--out <local-path>]
-                       [--engine auto|sqlite|mariadb] [--profile <name>] [--host <user@ip>] [--ssh-key <path>]
+  kampodra db query    [--db <path|schema>] (--sql "<statement>" | --file <local.sql>)
+  kampodra db snapshot [--db <path|schema>] [--out <local-path>]
+      both take: [--engine auto|sqlite|mariadb|postgres|libsql] [--db-mode auto|ssh|pod]
+                 [--db-host <user@ip>] [--profile <name>] [--host <user@ip>] [--ssh-key <path>]
 
-Read-only database access over SSH — the kampodra-owned surface for the\n"hand-rolled read-only query binary over ssh" habit. Two engines:
+The two execution modes (mariadb/postgres only — sqlite and libsql have
+exactly one shape each):
+  ssh = the DB client runs on the VM HOST (mariadb-client/psql installed
+        there; least-privilege: query as a provisioned read-only role)
+  pod = the client runs INSIDE the server's podman container via
+        'podman exec' (zero host installs; in-container credentials;
+        mariadb snapshots become PHYSICAL mariabackup archives)
+  auto (the default) prefers a running container — a container is
+  self-evident, while a host client can exist without a host server.
+
+Read-only database access over SSH — the kampodra-owned surface for the\n"hand-rolled read-only query binary over ssh" habit. Four engines:
 
 sqlite (a FILE on the VM):
   query runs ONE statement through a small static-linux helper

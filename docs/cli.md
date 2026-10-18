@@ -451,6 +451,15 @@ URL alone cannot be snapshotted) and gates the copy on
 `PRAGMA integrity_check` before fetch. `KAMPODRA_DB_URL` defaults to
 `http://127.0.0.1:8080`.
 
+**The two execution modes** (mariadb/postgres only — sqlite and libsql
+have exactly one shape each): `--db-mode ssh` runs the DB client on the
+VM **host** (client package installed there; least-privilege — query as
+a provisioned read-only role); `--db-mode pod` runs it **inside the
+server's podman container** via `podman exec` (zero host installs;
+in-container credentials; MariaDB snapshots become physical mariabackup
+archives). `auto` prefers a running container — a container is
+self-evident, while a host client can exist without a host server.
+
 All engines: `--db` input is validated locally before any ssh (bad input
 costs zero round-trips); staged credentials and scratch files are
 cleaned up in a deferred pass that survives ctrl-C; `vm-prepare`

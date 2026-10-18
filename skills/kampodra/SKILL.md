@@ -126,6 +126,11 @@ KAMPODRA_DB_ENGINE > file magic):
   header file; rows as flat JSON (same shape as sqlite); snapshot needs
   KAMPODRA_DB_PATH and gates on PRAGMA integrity_check.
 
+The two execution modes (mariadb/postgres): `ssh` = the client runs on
+the VM host (least-privilege ro-role); `pod` = inside the server's
+container via podman exec (zero host installs; MariaDB snapshots become
+physical mariabackup). Auto prefers a running container.
+
 Server engines on their own VM: `--db-host` / profile `dbHost` moves the
 flows' ssh to the DB VM (its env file carries the creds). TSV engines
 emit string values (batch text has no types); file engines emit typed
