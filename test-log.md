@@ -128,7 +128,7 @@ run for real (podman build → save|ssh load → env → shadow → health gate
 | health contract | the app must serve `"git":"<sha>"` JSON (probe.BodyServesSha) — three app-side iterations to discover the exact contract (prefix text → bare sha → JSON field); the contract deserves a doc |
 | first-deploy bootstrap | gate passed → proxy switched → `systemctl stop smokeapp` found no unit (this host never had one) → the flow's own `deploy converge` path finished it: **smokeapp active, serving through the proxy** |
 | rolling update (v2) | **full pass**: shadow → gate → switch → verified `served git sha via /up + public smoke` |
-| rollback | **ran, then real finding F13**: it restored a FAILED attempt's image (selected by presence-on-VM, not by last-successful-deployment) — the restored body was empty (that build never consumed the sha). Rollback must prefer the last health-gate-passed release |
+| rollback | **ran, then real finding F13 — FIXED same day**: it restored a FAILED attempt's image (presence-on-VM selection). The ladder is now: explicit sha > the ledger's last `result=success` excluding what's serving > die naming the empty ledger; failed deployments never qualify, and the alternation works because the rollback records a success at its own sha |
 
 Also noted: converge/rollback's public smoke reads the PROFILE's
 proxyHost over the manifest's (local runs see the profile's production
