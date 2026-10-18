@@ -84,7 +84,7 @@ func PostgresGrantROSQL(role, password, dbName string) string {
 	// live-smoke execution caught PASSWORD "…" (JSON-style double quotes)
 	// as a syntax error. Identifiers stay double-quoted (jsonString).
 	return "DO $$ BEGIN" +
-		" IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = ' + pgString(role) + ') THEN" +
+		" IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = " + pgString(role) + ") THEN" +
 		" CREATE ROLE " + jsonString(role) + " LOGIN PASSWORD " + pgString(password) + ";" +
 		" ELSE ALTER ROLE " + jsonString(role) + " LOGIN PASSWORD " + pgString(password) + ";" +
 		" END IF; END $$;" +

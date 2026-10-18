@@ -29,13 +29,16 @@ const dbHelp = `Usage:
 
 The two execution modes (mariadb/postgres only — sqlite and libsql have
 exactly one shape each):
-  ssh = the DB client runs on the VM HOST (mariadb-client/psql installed
-        there; least-privilege: query as a provisioned read-only role)
-  pod = the client runs INSIDE the server's podman container via
-        'podman exec' (zero host installs; in-container credentials;
-        mariadb snapshots become PHYSICAL mariabackup archives)
+  host      = the DB client runs on the VM HOST (mariadb-client/psql
+              installed there; least-privilege: query as a provisioned
+              read-only role)
+  container = the client runs INSIDE the server's podman container via
+              'podman exec' (zero host installs; in-container
+              credentials; mariadb snapshots become PHYSICAL
+              mariabackup archives)
   auto (the default) prefers a running container — a container is
   self-evident, while a host client can exist without a host server.
+  Legacy aliases accepted: ssh = host, pod = container.
 
 Read-only database access over SSH — the kampodra-owned surface for the\n"hand-rolled read-only query binary over ssh" habit. Four engines:
 
@@ -158,7 +161,7 @@ func newDBGrantROSub(d Deps) *cobra.Command {
 	cmd.Flags().String("role-host", "localhost", "the role's connect host part (localhost = same-VM apps)")
 	cmd.Flags().String("engine", "mariadb", "mariadb (executes) | postgres (prints the SQL)")
 	cmd.Flags().String("db-host", "", "ssh target of the DB VM (default: the profile's dbHost, else the app VM)")
-	cmd.Flags().String("db-mode", "auto", "mariadb execution mode: auto | ssh | pod")
+	cmd.Flags().String("db-mode", "auto", "server-engine execution: auto | host | container (aliases: ssh, pod)")
 	return cmd
 }
 
@@ -243,7 +246,7 @@ func newDBQuerySub(d Deps) *cobra.Command {
 	cmd.Flags().String("file", "", "a local .sql file holding the statement (exactly one of --sql/--file)")
 	cmd.Flags().String("engine", "auto", "sqlite | mariadb | postgres | libsql | auto (flag > unit env KAMPODRA_DB_ENGINE > file magic)")
 	cmd.Flags().String("db-host", "", "ssh target of the DB VM when the server engine lives on its own host (default: the profile's dbHost, else the app VM)")
-	cmd.Flags().String("db-mode", "auto", "mariadb execution mode: auto | ssh (host client) | pod (podman exec — the estate's shape); default reads KAMPODRA_DB_MODE")
+	cmd.Flags().String("db-mode", "auto", "server-engine execution: auto | host (client on the VM) | container (podman exec); aliases: ssh=host, pod=container; default reads KAMPODRA_DB_MODE")
 	return cmd
 }
 
@@ -824,7 +827,7 @@ func runMariaQuery(d Deps, ctx context.Context, target Target, dbModeFlag, dbNam
 	case "host":
 		return runEngineQuery(d, ctx, target, dbq.MariaEngine(target.Project.EnvFile), engineMaria, dbName, stmt)
 	default:
-		return fmt.Errorf("mariadb is unreachable on %s — install the host client (%s), run the server in a podman container, or run kampodra vm-prepare with KAMPODRA_DB_ENGINE set (or pin the shape with --db-mode ssh|pod)", target.HostSpec.Host, dbq.MariaInstallHint)
+		return fmt.Errorf("mariadb is unreachable on %s — install the host client (%s), run the server in a podman container, or run kampodra vm-prepare with KAMPODRA_DB_ENGINE set (or pin the shape with --db-mode host|container)", target.HostSpec.Host, dbq.MariaInstallHint)
 	}
 }
 
@@ -856,7 +859,7 @@ func runMariaSnapshot(d Deps, ctx context.Context, target Target, dbModeFlag, db
 	case "host":
 		return runMariaHostSnapshot(d, ctx, target, dbName, out)
 	default:
-		return fmt.Errorf("mariadb is unreachable on %s — install the host client (%s), run the server in a podman container, or run kampodra vm-prepare with KAMPODRA_DB_ENGINE set (or pin the shape with --db-mode ssh|pod)", target.HostSpec.Host, dbq.MariaInstallHint)
+		return fmt.Errorf("mariadb is unreachable on %s — install the host client (%s), run the server in a podman container, or run kampodra vm-prepare with KAMPODRA_DB_ENGINE set (or pin the shape with --db-mode host|container)", target.HostSpec.Host, dbq.MariaInstallHint)
 	}
 }
 
@@ -997,7 +1000,7 @@ func runPgQuery(d Deps, ctx context.Context, target Target, dbModeFlag, dbName, 
 	case "host":
 		return runEngineQuery(d, ctx, target, dbq.PostgresEngine(target.Project.EnvFile), enginePg, dbName, stmt)
 	default:
-		return fmt.Errorf("postgres is unreachable on %s — install the host client (%s) or run the server in a podman container (or pin the shape with --db-mode ssh|pod)", target.HostSpec.Host, dbq.PostgresInstallHint)
+		return fmt.Errorf("postgres is unreachable on %s — install the host client (%s) or run the server in a podman container (or pin the shape with --db-mode host|container)", target.HostSpec.Host, dbq.PostgresInstallHint)
 	}
 }
 

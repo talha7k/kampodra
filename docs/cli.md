@@ -454,7 +454,7 @@ URL alone cannot be snapshotted) and gates the copy on
 **The two execution modes** (mariadb/postgres only — sqlite and libsql
 have exactly one shape each): `--db-mode ssh` runs the DB client on the
 VM **host** (client package installed there; least-privilege — query as
-a provisioned read-only role); `--db-mode pod` runs it **inside the
+a provisioned read-only role); `--db-mode container` runs it **inside the
 server's podman container** via `podman exec` (zero host installs;
 in-container credentials; MariaDB snapshots become physical mariabackup
 archives). `auto` prefers a running container — a container is

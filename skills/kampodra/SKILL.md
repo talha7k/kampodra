@@ -126,8 +126,8 @@ KAMPODRA_DB_ENGINE > file magic):
   header file; rows as flat JSON (same shape as sqlite); snapshot needs
   KAMPODRA_DB_PATH and gates on PRAGMA integrity_check.
 
-The two execution modes (mariadb/postgres): `ssh` = the client runs on
-the VM host (least-privilege ro-role); `pod` = inside the server's
+The two execution modes (mariadb/postgres): `host` = the client runs on
+the VM host (least-privilege ro-role); `container` = inside the server's
 container via podman exec (zero host installs; MariaDB snapshots become
 physical mariabackup). Auto prefers a running container.
 
