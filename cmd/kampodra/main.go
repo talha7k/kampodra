@@ -12,7 +12,7 @@ import (
 
 // version is stamped at release time via -ldflags "-X main.version=…"; the
 // npm package.json version is pinned to the same value.
-var version = "0.8.8"
+var version = "0.8.9"
 
 // commit is stamped at release time via -ldflags "-X main.commit=…" — the
 // short sha the binary was built from. "dev" = local build. Printed with
