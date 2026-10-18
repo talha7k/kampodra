@@ -64,18 +64,39 @@ func TestDeployRollbackSpaceFormTakesTheNextArgument(t *testing.T) {
 	mustContain(t, invocations(t, stubDir), "podman tag "+deployImageRepo+":ccc3333 "+deployImageRepo+":latest")
 }
 
-func TestDeployRollbackResolvesFromStampFile(t *testing.T) {
+// appendLedger seeds the deployment ledger with one entry line (tests
+// that need prior history: rollback's previous-success selection).
+func appendLedger(t *testing.T, home, line string) {
+	t.Helper()
+	path := filepath.Join(home, ".kampodra", "deployments.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(line + "\n"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeployRollbackResolvesFromLedgerLastSuccess(t *testing.T) {
 	deps, stubDir, stdout, stderr := setupPipeline(t)
-	// The stamp fixture serves ccc3333 (the harness default); the edge must
-	// serve it too for the smoke.
-	writeFixture(t, stubDir, "health", `{"ok":true,"git":"ccc3333"}`)
-	writeFixture(t, stubDir, "served-sha", "ccc3333")
+	// The ledger's previous SUCCESS (bbb2222) is the target: the current
+	// serving release is ccc3333 (the stamp fixture), and a FAILED attempt
+	// (dead444) must never qualify.
+	appendLedger(t, deps.Home, `{"ts":"t1","host":"`+statusHost+`","sha":"bbb2222","result":"success"}`)
+	appendLedger(t, deps.Home, `{"ts":"t2","host":"`+statusHost+`","sha":"dead444","result":"failed"}`)
+	writeFixture(t, stubDir, "health", `{"ok":true,"git":"bbb2222"}`)
+	writeFixture(t, stubDir, "served-sha", "bbb2222")
 	if code := runDeploy(t, deps, "--host", statusHost, "--rollback"); code != 0 {
 		t.Fatalf("exit = %d\nstderr: %s", code, stderr.String())
 	}
 	inv := invocations(t, stubDir)
-	mustContain(t, inv, "podman tag "+deployImageRepo+":ccc3333 "+deployImageRepo+":latest")
-	mustContain(t, stdout.String(), "deployed-sha stamp")
+	mustContain(t, inv, "podman tag "+deployImageRepo+":bbb2222 "+deployImageRepo+":latest")
+	mustContain(t, stdout.String(), "last successful deployment")
 	// NEVER HEAD: not a single git invocation in the whole rollback path.
 	if strings.Contains(inv, "git ") {
 		t.Errorf("rollback fell back to git (the shell latent bug):\n%s", inv)
@@ -85,6 +106,11 @@ func TestDeployRollbackResolvesFromStampFile(t *testing.T) {
 func TestDeployRollbackWithoutShaAndStampDies(t *testing.T) {
 	deps, stubDir, _, stderr := setupPipeline(t)
 	if err := os.Remove(filepath.Join(stubDir, "stamp")); err != nil {
+		t.Fatal(err)
+	}
+	// no ledger either: the ladder has nothing to resolve — the die is
+	// the contract (never HEAD, never the current release)
+	if err := os.Remove(filepath.Join(deps.Home, ".kampodra", "deployments.jsonl")); err != nil {
 		t.Fatal(err)
 	}
 	if code := runDeploy(t, deps, "--host", statusHost, "--rollback"); code != 1 {
@@ -97,7 +123,7 @@ func TestDeployRollbackWithoutShaAndStampDies(t *testing.T) {
 		}
 	}
 	mustContain(t, stderr.String(), "--rollback <sha7>")
-	mustContain(t, stderr.String(), pipelineStamp)
+	mustContain(t, stderr.String(), "no previous successful deployment")
 }
 
 func TestDeployRollbackStreamsWhenTagOnlyExistsLocally(t *testing.T) {

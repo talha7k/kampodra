@@ -66,10 +66,10 @@ test -x /usr/libexec/podman/aardvark-dns
 [ "$(podman info --format '{{.Host.NetworkBackend}}' 2>/dev/null)" = netavark ]`
 }
 
-// TouchEnvFileSnippet ensures the env file EXISTS (0600, empty): fresh
-// estates deploy without an env push, and the app unit's --env-file parse
-// fails closed on a missing file (live-smoke finding — the shadow died
-// on "/etc/kampodra/env: no such file or directory").
+// TouchEnvFileSnippet ensures the env file EXISTS (0600, empty) at the
+// caller-supplied project env path: fresh estates deploy without an env
+// push, and the app unit's --env-file parse fails closed on a missing
+// file (live-smoke finding — the shadow died on exactly that absence).
 func TouchEnvFileSnippet(envFile string) string {
 	return `test -f ` + envFile + ` || { umask 077; : > ` + envFile + ` && chmod 600 ` + envFile + `; }`
 }

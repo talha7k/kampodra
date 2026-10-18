@@ -287,3 +287,21 @@ func SelectProfileName(cfg *Config, explicit string, lookup func(string) (string
 	}
 	return name, nil
 }
+
+// LedgerPreviousSuccess walks the ledger NEWEST-FIRST and returns the most
+// recent successful deployment whose sha differs from currentSha — the
+// rollback target. Failed deployments never qualify (a rollback must
+// restore a release that was HEALTH-GATE-PASSED, not merely streamed to
+// the VM — the image-presence selection restored failed attempts once,
+// live-smoke finding F13). found=false when no such entry exists.
+func LedgerPreviousSuccess(path, host, currentSha string) (LedgerEntry, bool) {
+	entries := LedgerEntries(path, host)
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		if e.Result != "success" || e.Sha == "" || e.Sha == currentSha {
+			continue
+		}
+		return e, true
+	}
+	return LedgerEntry{}, false
+}

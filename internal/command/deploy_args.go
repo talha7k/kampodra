@@ -229,14 +229,19 @@ func resolveRollbackSha(d Deps, ctx context.Context, target Target, explicit str
 	if explicit != "" {
 		return explicit, "explicit", nil
 	}
+	// What's SERVING right now (the stamp) — excluded as a target: bare
+	// --rollback must never redeploy the current release (F13: the stamp
+	// selection made bare rollback a no-op).
 	stampFile := target.Project.DeployedShaFile
-	out, err := d.Runner.Run(ctx, target.HostSpec, fmt.Sprintf("cat %s 2>/dev/null", stampFile))
-	sha := strings.TrimSpace(out)
-	if err == nil && shaFragmentRe.MatchString(sha) {
-		fmt.Fprintf(d.Stdout, "[deploy] rollback target: %s (from the VM's deployed-sha stamp)\n", sha)
-		return sha, "stamp", nil
+	current := ""
+	if out, err := d.Runner.Run(ctx, target.HostSpec, fmt.Sprintf("cat %s 2>/dev/null", stampFile)); err == nil {
+		current = strings.TrimSpace(out)
 	}
-	return "", "", fmt.Errorf("no rollback target: pass the sha (kampodra deploy --rollback <sha7>) or make sure %s exists on the VM (every successful deploy writes it; see: kampodra deploy list) — a bare --rollback never falls back to git HEAD", stampFile)
+	if e, found := state.LedgerPreviousSuccess(state.LedgerPath(d.Home), target.ProfileName, current); found {
+		fmt.Fprintf(d.Stdout, "[deploy] rollback target: %s (last successful deployment in the ledger; current: %s)\n", e.Sha, current)
+		return e.Sha, "ledger", nil
+	}
+	return "", "", fmt.Errorf("no rollback target: the ledger has no previous successful deployment for %s (see: kampodra deploy list) — pass the sha (kampodra deploy --rollback <sha7>); a bare --rollback never redeploys the current release or falls back to git HEAD", target.ProfileName)
 }
 
 // fanOutProfileNames: single-shot resolution yields [""] (the normal
