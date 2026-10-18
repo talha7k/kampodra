@@ -148,12 +148,12 @@ func (p *vmProvisioner) runSh(snippet string) error {
 }
 
 func (p *vmProvisioner) upload(path, content string) error {
-	// system-path uploads elevate as one shell (the non-root shape:
-	// /etc/ssh/sshd_config.d is root-writable only — live GCP finding)
-	cmd := "umask 077; cat > " + path
+	// system-path uploads elevate WITHOUT nested quoting: the content
+	// rides stdin into `sudo tee path` (quoting-free — the sh -c escape
+	// variant broke in transport on the live GCP VM), then a 0600 chmod.
+	cmd := "cat > " + path + " && chmod 600 " + path
 	if p.sudo != "" {
-		escaped := strings.ReplaceAll(cmd, "'", "'\\''")
-		cmd = "sudo -n sh -c '" + escaped + "'"
+		cmd = "sudo -n tee " + path + " > /dev/null && sudo -n chmod 600 " + path
 	}
 	if _, err := p.d.Runner.RunWithStdin(p.ctx, p.target.HostSpec, cmd, strings.NewReader(content)); err != nil {
 		return fmt.Errorf("upload %s: %w", path, err)
