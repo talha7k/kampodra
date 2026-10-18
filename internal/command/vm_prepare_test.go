@@ -52,8 +52,8 @@ func setupPrepare(t *testing.T) *prepareHarness {
 		"tries=\"$(cat '" + filepath.Join(stub, "unreachable") + "' 2>/dev/null || echo 0)\"\n" +
 		"if [ \"$cmd\" = \"true\" ] && [ \"$tries\" -gt 0 ] 2>/dev/null; then echo $((tries-1)) > '" + filepath.Join(stub, "unreachable") + "'; exit 1; fi\n" +
 		"case \"$cmd\" in\n" +
-		"  \"umask 077; cat >\"*|\"cat > \"*)\n" +
-		"    case \"$cmd\" in *tee*) dest=\"${cmd##*tee }\"; dest=\"${dest%% *}\";; *) dest=\"${cmd##*cat > }\"; dest=\"${dest%% &&*}\";; esac\n" +
+		"  \"umask 077; cat >\"*|\"cat > \"*|\"sudo -n tee \"*)\n" +
+		"    case \"$cmd\" in *tee*) dest=\"${cmd#*tee }\"; dest=\"${dest%% *}\";; *) dest=\"${cmd##*cat > }\"; dest=\"${dest%% &&*}\";; esac\n" +
 		"    base=\"${dest##*/}\"\n" +
 		"    cat > \"" + uploads + "/upload-$base\"\n" +
 		"    exit 0 ;;\n" +

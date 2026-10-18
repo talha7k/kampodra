@@ -25,6 +25,15 @@ func (p *vmProvisioner) sshdHardening(restart string) error {
 	if err := p.upload(vmbootstrap.SSHDHardeningPath, vmbootstrap.RenderSSHDHardening()); err != nil {
 		return err
 	}
+	// VALIDATE BEFORE RESTART: a broken sshd config + a restart = locked
+	// out of the VM (live-smoke incident: stray invalid drop-ins made the
+	// restart fail with sshd down). On a failed sshd -t the drop-in is
+	// removed and ssh restarted — the host heals itself, the run dies
+	// naming the config error.
+	if err := p.runRoot("sshd -t"); err != nil {
+		p.runRoot("rm -f " + vmbootstrap.SSHDHardeningPath + " && systemctl restart ssh 2>/dev/null || service sshd restart 2>/dev/null || true")
+		return p.die("sshd config invalid after hardening — drop-in removed, ssh restored, fix the render and re-run", err)
+	}
 	if err := p.run(restart); err != nil {
 		return p.die("sshd restart failed after hardening ensure", err)
 	}
