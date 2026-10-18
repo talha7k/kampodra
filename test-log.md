@@ -114,6 +114,27 @@ granular token; the npm-CLI EOTP demand was client-side only).
   release-check's stamp assertion, publish-verify's registry re-probe,
   the netavark binary check, the comm-based PID1 gates.
 
+## 2026-10-18 (late) — the sudo-wrap's live GCP iterations + the lockout lesson
+
+Environment: three GCP ubuntu-minimal VMs (provisioned + torn down each),
+non-root ssh user throughout.
+
+| iteration | result |
+|---|---|
+| 1 | gates green as non-root through sshd hardening (the sudo-wrap worked); failed at the drop-in upload — /etc/ssh is root-writable only |
+| 2 | the sh -c escape for elevated uploads broke in transport (sudo usage error) — replaced with the quoting-free `sudo tee` + chmod form |
+| 3 | tee uploads verified manually (exit 0), then the sshd RESTART failed: sshd -t invalid — root cause was MY OWN diagnostic litter (stray drop-ins with junk content from manual debugging, invalid as sshd directives) |
+
+Incident + fix: the failed restart took the running sshd down = the VM
+locked out (deleted; disposable). The lockout class is now closed:
+**sshd -t validates the config before the restart** — on failure the
+drop-in is removed, ssh is restored, and the run dies naming the config
+error (128b0f0). A broken render can never lock an operator out again.
+
+Also proven live: the privilege detection (root vs sudo -n) and the
+compound-elevation (runRoot) fix — the sshd Include grep got sudo while
+its sed ran bare (prefix-scoping bug, now runRoot-elevated as one shell).
+
 ## 2026-10-18 — first real deploy → rolling update → rollback (local systemd container)
 
 Environment: the G5 container (ubuntu:24.04, systemd PID1, vm-prepared —
