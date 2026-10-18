@@ -6,6 +6,8 @@
 
 package dbq
 
+import "strings"
+
 // Env-file contract keys — the SAME KAMPODRA_DB_* family as MariaDB
 // (ENGINE=postgres selects this leg).
 const (
@@ -78,16 +80,25 @@ func PostgresVerifyDumpCommand(scratch string) string {
 // SELECT on the schema's tables/sequences plus default privileges for
 // future tables.
 func PostgresGrantROSQL(role, password, dbName string) string {
+	// Postgres string LITERALS are single-quoted with '' escapes — the
+	// live-smoke execution caught PASSWORD "…" (JSON-style double quotes)
+	// as a syntax error. Identifiers stay double-quoted (jsonString).
 	return "DO $$ BEGIN" +
-		" IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = " + jsonString(role) + ") THEN" +
-		" CREATE ROLE " + jsonString(role) + " LOGIN PASSWORD " + jsonString(password) + ";" +
-		" ELSE ALTER ROLE " + jsonString(role) + " LOGIN PASSWORD " + jsonString(password) + ";" +
+		" IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = ' + pgString(role) + ') THEN" +
+		" CREATE ROLE " + jsonString(role) + " LOGIN PASSWORD " + pgString(password) + ";" +
+		" ELSE ALTER ROLE " + jsonString(role) + " LOGIN PASSWORD " + pgString(password) + ";" +
 		" END IF; END $$;" +
 		" GRANT CONNECT ON DATABASE " + jsonString(dbName) + " TO " + jsonString(role) + ";" +
 		" GRANT USAGE ON SCHEMA public TO " + jsonString(role) + ";" +
 		" GRANT SELECT ON ALL TABLES IN SCHEMA public TO " + jsonString(role) + ";" +
 		" GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO " + jsonString(role) + ";" +
 		" ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO " + jsonString(role) + ";"
+}
+
+// pgString renders a Postgres string literal: single quotes with ”
+// escapes (a password containing a quote must survive).
+func pgString(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 // --- the podman container path -------------------------------------------

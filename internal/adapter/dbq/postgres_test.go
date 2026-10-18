@@ -63,4 +63,17 @@ func TestPostgresGrantROSQL(t *testing.T) {
 			t.Errorf("grant SQL missing %q:\n%s", want, sql)
 		}
 	}
+	// The live-smoke quoting lessons: PASSWORD is a SINGLE-quoted literal
+	// (pg rejects "double quotes" for values), the rolname comparison
+	// inside the DO block is a literal too, identifiers stay
+	// double-quoted.
+	if !strings.Contains(sql, `LOGIN PASSWORD 'pw123'`) {
+		t.Errorf("password must be a single-quoted literal:\n%s", sql)
+	}
+	if strings.Contains(sql, `PASSWORD "`) {
+		t.Errorf("double-quoted password = syntax error on real pg:\n%s", sql)
+	}
+	if !strings.Contains(sql, `rolname = 'kampodra_ro'`) {
+		t.Errorf("the DO-block rolname comparison must be a literal:\n%s", sql)
+	}
 }
