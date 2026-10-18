@@ -93,6 +93,29 @@ type vmProvisioner struct {
 	d      Deps
 	target Target
 	n      vmbootstrap.Naming
+	// sudo prefixes privileged remote commands when the ssh user is not
+	// root (root-disabled clouds: GCP users are never root). Detected
+	// once before the sequence; empty = commands run as-is.
+	sudo string
+}
+
+// detectSudo: root → no prefix; non-root → sudo -n (passwordless), and a
+// missing privilege names itself instead of failing 40 gates later.
+func (p *vmProvisioner) detectSudo() error {
+	out, err := p.d.Runner.Run(p.ctx, p.target.HostSpec, `id -u`)
+	if err != nil {
+		return p.die("cannot identify the ssh user (id -u)", err)
+	}
+	if strings.TrimSpace(out) == "0" {
+		p.say("ssh user is root — commands run as-is")
+		return nil
+	}
+	p.sudo = "sudo -n "
+	if err := p.run(`sudo -n true`); err != nil {
+		return p.die("the ssh user is not root and has no passwordless sudo — add the user to a sudoers group (e.g. google-sudoers) or ssh as root", err)
+	}
+	p.say("ssh user is not root — privileged steps run via sudo -n")
+	return nil
 }
 
 func (p *vmProvisioner) say(format string, args ...any) {
@@ -100,17 +123,39 @@ func (p *vmProvisioner) say(format string, args ...any) {
 }
 
 func (p *vmProvisioner) run(remote string) error {
-	_, err := p.d.Runner.Run(p.ctx, p.target.HostSpec, remote)
+	_, err := p.d.Runner.Run(p.ctx, p.target.HostSpec, p.sudo+remote)
+	return err
+}
+
+// runRoot elevates a COMPOUND command (&& / || chains) as one shell:
+// a bare `sudo a || b` prefix-scopes only `a` — `b` runs unprivileged
+// (the live GCP finding: the sshd Include grep got sudo, the sed after
+// the || did not). The single-quote escaping survives sh -c.
+func (p *vmProvisioner) runRoot(remote string) error {
+	if p.sudo == "" {
+		return p.run(remote)
+	}
+	escaped := strings.ReplaceAll(remote, "'", "'\\''")
+	_, err := p.d.Runner.Run(p.ctx, p.target.HostSpec, "sudo -n sh -c '"+escaped+"'")
 	return err
 }
 
 func (p *vmProvisioner) runSh(snippet string) error {
-	_, err := p.d.Runner.RunWithStdin(p.ctx, p.target.HostSpec, "sh -s", strings.NewReader(snippet))
+	// snippets run via `sh -s` under the login shell; sudo -n sh -s keeps
+	// stdin (the snippet) flowing through the elevation.
+	_, err := p.d.Runner.RunWithStdin(p.ctx, p.target.HostSpec, p.sudo+"sh -s", strings.NewReader(snippet))
 	return err
 }
 
 func (p *vmProvisioner) upload(path, content string) error {
-	if _, err := p.d.Runner.RunWithStdin(p.ctx, p.target.HostSpec, "umask 077; cat > "+path, strings.NewReader(content)); err != nil {
+	// system-path uploads elevate as one shell (the non-root shape:
+	// /etc/ssh/sshd_config.d is root-writable only — live GCP finding)
+	cmd := "umask 077; cat > " + path
+	if p.sudo != "" {
+		escaped := strings.ReplaceAll(cmd, "'", "'\\''")
+		cmd = "sudo -n sh -c '" + escaped + "'"
+	}
+	if _, err := p.d.Runner.RunWithStdin(p.ctx, p.target.HostSpec, cmd, strings.NewReader(content)); err != nil {
 		return fmt.Errorf("upload %s: %w", path, err)
 	}
 	return nil

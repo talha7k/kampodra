@@ -13,6 +13,7 @@ import (
 // readiness gates) rendered for systemd + apt instead of OpenRC + apk.
 func (p *vmProvisioner) provisionUbuntu(ansiblePath string) error {
 	err := runProvisionSequence(
+		p.detectSudo,
 		p.ubuntuInitGates,
 		func() error { return p.sshdHardening("systemctl restart ssh") },
 		p.ubuntuPodmanStack,

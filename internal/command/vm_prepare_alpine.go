@@ -13,6 +13,7 @@ import (
 // fail-closed gates through the post gates, the summary, the ansible tail.
 func (p *vmProvisioner) provisionAlpine(ansiblePath string) error {
 	err := runProvisionSequence(
+		p.detectSudo,
 		p.alpineInitGates,
 		func() error { return p.sshdHardening("rc-service sshd restart") },
 		p.alpinePodmanStack,
@@ -77,10 +78,10 @@ func (p *vmProvisioner) alpinePodmanStack() error {
 	if err := p.runSh(vmbootstrap.PodstackGateSnippet()); err != nil {
 		return p.die("podman stack install failed", err)
 	}
-	if err := p.run(`rc-update show boot | grep -q cgroups || rc-update add cgroups boot`); err != nil {
+	if err := p.runRoot(`rc-update show boot | grep -q cgroups || rc-update add cgroups boot`); err != nil {
 		return p.die("rc-update cgroups failed", err)
 	}
-	if err := p.run(`rc-service cgroups status >/dev/null 2>&1 || rc-service cgroups start`); err != nil {
+	if err := p.runRoot(`rc-service cgroups status >/dev/null 2>&1 || rc-service cgroups start`); err != nil {
 		return p.die("cgroups start failed", err)
 	}
 	return nil
@@ -129,7 +130,7 @@ func (p *vmProvisioner) alpineOpenRCUnits() error {
 	if err := p.run("sh -n " + anchorInitD); err != nil {
 		return p.die(anchorInitD+" does not parse", err)
 	}
-	if err := p.run(`rc-update show default | grep -qE "^[[:space:]]*kampodra-anchor[[:space:]]*\|" || rc-update add kampodra-anchor default`); err != nil {
+	if err := p.runRoot(`rc-update show default | grep -qE "^[[:space:]]*kampodra-anchor[[:space:]]*\|" || rc-update add kampodra-anchor default`); err != nil {
 		return p.die("rc-update add kampodra-anchor default failed", err)
 	}
 	if err := p.run("rc-service kampodra-anchor start"); err != nil {
@@ -137,7 +138,7 @@ func (p *vmProvisioner) alpineOpenRCUnits() error {
 	}
 
 	for _, svc := range []string{n.Container, vmbootstrap.ProxyContainer} {
-		if err := p.run(fmt.Sprintf(`rc-update show default | grep -qE "^[[:space:]]*%[1]s[[:space:]]*\|" || rc-update add %[1]s default`, svc)); err != nil {
+		if err := p.runRoot(fmt.Sprintf(`rc-update show default | grep -qE "^[[:space:]]*%[1]s[[:space:]]*\|" || rc-update add %[1]s default`, svc)); err != nil {
 			return p.die(fmt.Sprintf("rc-update add %s default failed", svc), err)
 		}
 	}

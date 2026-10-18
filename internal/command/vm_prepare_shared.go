@@ -16,10 +16,10 @@ import (
 // differs (OpenRC's sshd unit vs systemd's ssh unit).
 func (p *vmProvisioner) sshdHardening(restart string) error {
 	p.say("sshd hardening: ensure drop-in + Include + restart…")
-	if err := p.run(`grep -q "^Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config || sed -i "1i Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config`); err != nil {
+	if err := p.runRoot(`grep -q "^Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config || sed -i "1i Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config`); err != nil {
 		return p.die("could not ensure the sshd_config Include line", err)
 	}
-	if err := p.run("mkdir -p /etc/ssh/sshd_config.d && chmod 700 /etc/ssh/sshd_config.d"); err != nil {
+	if err := p.runRoot("mkdir -p /etc/ssh/sshd_config.d && chmod 700 /etc/ssh/sshd_config.d"); err != nil {
 		return p.die("could not create /etc/ssh/sshd_config.d", err)
 	}
 	if err := p.upload(vmbootstrap.SSHDHardeningPath, vmbootstrap.RenderSSHDHardening()); err != nil {
@@ -41,7 +41,7 @@ func (p *vmProvisioner) sshdHardening(restart string) error {
 func (p *vmProvisioner) managedState(sysctlSnippet string) error {
 	n := p.n
 	p.say("creating %s (the env file lands here via kampodra env push, 0600 root)…", n.EnvDir)
-	if err := p.run("mkdir -p " + n.EnvDir + " && chmod 700 " + n.EnvDir); err != nil {
+	if err := p.runRoot("mkdir -p " + n.EnvDir + " && chmod 700 " + n.EnvDir); err != nil {
 		return p.die("state dir create failed", err)
 	}
 	// The env file itself must EXIST: the app unit's --env-file parse
@@ -70,7 +70,7 @@ func (p *vmProvisioner) managedState(sysctlSnippet string) error {
 	// here so a binary push never depends on provisioning order.
 	if n.BinaryDir != "" {
 		p.say("ensuring the binary artifact dir %s (the app unit bind-mounts it)…", n.BinaryDir)
-		if err := p.run("mkdir -p " + n.BinaryDir + " && chmod 755 " + n.BinaryDir); err != nil {
+		if err := p.runRoot("mkdir -p " + n.BinaryDir + " && chmod 755 " + n.BinaryDir); err != nil {
 			return p.die("binary artifact dir create failed", err)
 		}
 		if n.BinaryDepsPath != "" {
@@ -111,7 +111,7 @@ func (p *vmProvisioner) managedState(sysctlSnippet string) error {
 func (p *vmProvisioner) ensurePodmanNetwork() error {
 	n := p.n
 	p.say("ensuring the '%s' podman network (the proxy re-point resolves %s:%s by network DNS)…", n.Network, n.Container, n.Port)
-	if err := p.run(fmt.Sprintf("podman network exists %s 2>/dev/null || podman network create %s", n.Network, n.Network)); err != nil {
+	if err := p.runRoot(fmt.Sprintf("podman network exists %s 2>/dev/null || podman network create %s", n.Network, n.Network)); err != nil {
 		return p.die(fmt.Sprintf("podman network create %s failed", n.Network), err)
 	}
 	return nil
