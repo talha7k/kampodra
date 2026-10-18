@@ -61,7 +61,12 @@ func assertUbuntuUploadsBeforeEnable(t *testing.T, calls []string) {
 		"/etc/systemd/system/kamal-proxy.service",
 		"/etc/systemd/system/kampodra-anchor.service",
 	} {
-		up := callIdx(calls, "cat > "+unit)
+		up := -1
+		for _, form := range []string{"cat > " + unit, "tee " + unit} {
+			if i := callIdx(calls, form); i >= 0 && (up < 0 || i < up) {
+				up = i
+			}
+		}
 		if up < 0 {
 			t.Fatalf("unit upload missing: %s", unit)
 		}
