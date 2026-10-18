@@ -55,8 +55,13 @@ smoke (local pods, env-gated, torn down) is the pattern to extend:
       VM, torn down): found the PID1 gate's /proc/1/exe is unreadable to
       non-root (comm-based gate now) — vm-prepare could never have run
       on a real GCP VM before this
-- [ ] follow-up: sudo-wrap for vm-prepare on root-disabled clouds (GCP
-      ssh users are never root; privileged steps assume root today)
+- [ ] follow-up (IN PROGRESS, live-found): the sudo-wrap landed
+      (52e279c→4ad2eaf) and clears every gate through podman-install as a
+      non-root user; the REMAINING defect: read-only GATES also elevate
+      (the podman-version gate under sudo printed sudo's own usage) —
+      the design refinement is selective elevation: only MUTATING steps
+      take the prefix, read-only gates run as the user. One GCP pass
+      remains to verify end-to-end after that split.
 - Rule: local pods first; cloud only when containers cannot represent the
   surface; EVERYTHING torn down after
 
