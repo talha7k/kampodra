@@ -88,6 +88,11 @@ func (r *deployRun) executeRolling() error {
 
 	// --- 2. gate the shadow (before it can possibly take traffic) ---------
 	if err := r.healthGate(pj.ShadowProbePort, r.ver); err != nil {
+		// capture the shadow's last words BEFORE the rm — the rm deletes
+		// the only place the crash reason lives (live-smoke finding: the
+		// failure path printed the MAIN container's logs instead)
+		r.say("shadow's last logs:")
+		fmt.Fprint(r.d.Stdout, r.vmTolerant(fmt.Sprintf("podman logs --tail 30 %s 2>&1", shadow)))
 		r.vmTolerant("podman rm -f " + shadow)
 		return fmt.Errorf("shadow container never became healthy — nothing took traffic; the main service is untouched (removed %s): %w", shadow, err)
 	}

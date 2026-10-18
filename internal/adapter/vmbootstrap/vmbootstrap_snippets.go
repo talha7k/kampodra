@@ -66,6 +66,14 @@ test -x /usr/libexec/podman/aardvark-dns
 [ "$(podman info --format '{{.Host.NetworkBackend}}' 2>/dev/null)" = netavark ]`
 }
 
+// TouchEnvFileSnippet ensures the env file EXISTS (0600, empty): fresh
+// estates deploy without an env push, and the app unit's --env-file parse
+// fails closed on a missing file (live-smoke finding — the shadow died
+// on "/etc/kampodra/env: no such file or directory").
+func TouchEnvFileSnippet(envFile string) string {
+	return `test -f ` + envFile + ` || { umask 077; : > ` + envFile + ` && chmod 600 ` + envFile + `; }`
+}
+
 // ApkMariaClientSnippet installs the MariaDB client stack (dump + query)
 // on Alpine — idempotent, no server.
 func ApkMariaClientSnippet() string {
@@ -141,7 +149,7 @@ func AptPodmanSnippet() string {
 	return `grep -qsE 'universe' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || add-apt-repository -y universe
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y podman netavark aardvark-dns crun iptables`
+apt-get install -y podman netavark aardvark-dns crun iptables wget`
 }
 
 // SysctlApplyUbuntuSnippet applies the sysctl drop-in live (systemd re-reads

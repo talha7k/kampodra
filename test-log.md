@@ -114,6 +114,26 @@ granular token; the npm-CLI EOTP demand was client-side only).
   release-check's stamp assertion, publish-verify's registry re-probe,
   the netavark binary check, the comm-based PID1 gates.
 
+## 2026-10-18 — first real deploy → rolling update → rollback (local systemd container)
+
+Environment: the G5 container (ubuntu:24.04, systemd PID1, vm-prepared —
+every gate green), a busybox smoke app in a throwaway git repo, deploy
+run for real (podman build → save|ssh load → env → shadow → health gate
+→ kamal-proxy switch).
+
+| step | result |
+|---|---|
+| fresh-estate deploy | **FAILED → real finding F11**: the app unit's `--env-file` parse fails on a missing env file; vm-prepare created the dir but not the file. Fixed: prepare touches the env file 0600 |
+| health gate | **FAILED → real finding F12**: "unreachable" ×30 while the app 404'd — the VM-side fetcher (wget/curl) was never ensured by vm-prepare, and an HTTP-error body printed as "unreachable" instead of "serving". Fixed: wget in the Ubuntu snippet + the gate distinguishes up-and-wrong from unreachable; the shadow's last logs are now captured BEFORE its removal (the rm deleted the only evidence) |
+| health contract | the app must serve `"git":"<sha>"` JSON (probe.BodyServesSha) — three app-side iterations to discover the exact contract (prefix text → bare sha → JSON field); the contract deserves a doc |
+| first-deploy bootstrap | gate passed → proxy switched → `systemctl stop smokeapp` found no unit (this host never had one) → the flow's own `deploy converge` path finished it: **smokeapp active, serving through the proxy** |
+| rolling update (v2) | **full pass**: shadow → gate → switch → verified `served git sha via /up + public smoke` |
+| rollback | **ran, then real finding F13**: it restored a FAILED attempt's image (selected by presence-on-VM, not by last-successful-deployment) — the restored body was empty (that build never consumed the sha). Rollback must prefer the last health-gate-passed release |
+
+Also noted: converge/rollback's public smoke reads the PROFILE's
+proxyHost over the manifest's (local runs see the profile's production
+hostname) — precedence to revisit alongside F13.
+
 ## Not yet covered (honest ledger)
 
 - deploy → bluegreen flip → rollback against a REAL VM (the flows are

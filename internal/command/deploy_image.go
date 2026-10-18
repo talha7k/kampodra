@@ -248,10 +248,15 @@ func (r *deployRun) healthGateOne(port, sha, healthPath string) error {
 		if attempt > 0 {
 			time.Sleep(DeployGateSleep)
 		}
-		if out, err := r.vm(fetch); err == nil && probe.BodyServesSha(out, sha) {
+		out, err := r.vm(fetch)
+		if err == nil && probe.BodyServesSha(out, sha) {
 			r.say("✓ health gate passed on attempt %d (served %s)", attempt+1, sha)
 			return nil
-		} else if err == nil {
+		} else if err == nil || strings.TrimSpace(out) != "" {
+			// output with a nonzero exit is an HTTP error (wget exit 8 on
+			// 404/5xx) — the endpoint is UP and answering wrongly, which
+			// is a different truth than unreachable (live-smoke finding:
+			// a 404-ing app reported "unreachable" for all 30 attempts)
 			r.say("… health gate attempt %d/%d — endpoint up, serving %q (want %s)",
 				attempt+1, DeployGateAttempts, strings.TrimSpace(out), sha)
 		} else {

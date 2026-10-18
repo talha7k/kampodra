@@ -44,6 +44,15 @@ func (p *vmProvisioner) managedState(sysctlSnippet string) error {
 	if err := p.run("mkdir -p " + n.EnvDir + " && chmod 700 " + n.EnvDir); err != nil {
 		return p.die("state dir create failed", err)
 	}
+	// The env file itself must EXIST: the app unit's --env-file parse
+	// fails closed on a missing file, and a fresh estate deploys without
+	// an env push (live-smoke finding — the shadow died on
+	// "env: no such file or directory"). Touch it 0600; env push/env set
+	// overwrite content later.
+	p.say("ensuring the env file exists (empty, 0600 — fresh estates deploy without an env push)…")
+	if err := p.runSh(vmbootstrap.TouchEnvFileSnippet(n.EnvFile)); err != nil {
+		return p.die("env file ensure failed", err)
+	}
 	// The app unit bind-mounts the dataDir — ensure it exists. A
 	// volume-less host's datamount tolerates absence and only mkdirs when
 	// it mounts a volume; without this the first deploy's podman run
