@@ -60,6 +60,47 @@ smoke (local pods, env-gated, torn down) is the pattern to extend:
 - Rule: local pods first; cloud only when containers cannot represent the
   surface; EVERYTHING torn down after
 
+## G6 — sqlq helper cache trusts presence — OPEN (live-fired 2026-10-18, esellar prod)
+
+`ensureSQLHelper` reuses the VM copy and the local build cache on EXISTENCE
+alone (`test -x` / `os.Stat`) — no content check. A 22-byte ASCII stub
+("fake-sqlq-helper-bytes", leaked from a test run that wrote into the REAL
+user cache instead of an injected dir) poisoned both layers:
+`~/Library/Caches/kampodra/dbq/kampodra-sqlq-<goos>-<goarch>-v<ver>` + the
+VM's `/tmp/kampodra-sqlq-v<ver>-<arch>`. Every `db query`/`db snapshot`
+then failed with `fake-sqlq-helper-bytes: not found`, and re-streaming
+re-shipped the poisoned local bytes. `vm gc` cannot help (its never-touch
+allowlist protects `/tmp/kampodra-*` by design).
+
+- [ ] fingerprint-verify both cache layers before trust (sha256 stamped
+      beside the artifact at build time — the same discipline the binary
+      push already has); on mismatch, rebuild + re-stream
+- [ ] audit tests for cache-dir injection: every test that touches
+      `HelperLocalPath` must pass an injected `CacheDir` (the Deps field
+      exists for exactly this) — find the leak that wrote the real cache
+- [ ] recovery runbook: delete the local stub (rebuild is automatic) AND
+      the VM copy (kampodra ssh rm; gc will never do it)
+
+## G7 — no migration-write / migrate-stage surface — OPEN (live-fired 2026-10-18, esellar prod)
+
+`migrate` RUNS what is already staged on the VM (probe + per-file runner —
+no streaming), and `db query` is SELECT/WITH-gated by design. The esellar
+support-billing phase-1 rollout therefore needed TWO hand-surfaces:
+(a) staging the migrater + migrations bundle (tar stream over
+`kampodra ssh`, now pinned by the repo manifest's
+`migrateScript=migrate/migrater` + `KAMPODRA_MIGRATE_MODE/DIR` env), and
+(b) the binding one-time subscription row move (a one-off static Go helper
+built/uploaded/run/removed — the "requeue16 precedent"). The runbook's
+"kampodra migrate streams the fresh migrations bundle + migrater" is
+aspirational.
+
+- [ ] `migrate stage` (or deploy-block-driven): build the migrater,
+      stream it + the migrations dirs to `<repo-root>` on the VM with
+      byte-verify — the runbook sentence becomes true
+- [ ] `db exec`-equivalent for ONE gated write statement (explicit
+      `--i-am-writing`, refuse multi-statement strings, print rows-affected)
+      — the sanctioned escape from ad-hoc helpers for one-time data moves
+
 ## Working rules (corrected to the repo's git discipline)
 
 - Work in the main checkout when changes are isolated (per AGENTS.md);
