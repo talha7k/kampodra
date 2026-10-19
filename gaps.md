@@ -129,3 +129,18 @@ aspirational.
   worktrees only for isolation needs, never ritual.
 - Tooling gaps become kampodra patches — never hand-run workarounds.
 - The lead session owns merge/push/tag; `make publish` = owner.
+
+## db exec — adapter generalization (user direction: all engines)
+dbq.ValidateWrite (gate.go: verb allowlist UPDATE|INSERT|DELETE|REPLACE,
+single-statement terminator scan) is ALREADY engine-agnostic — runDBExec
+reuses it verbatim for server engines. The two refusal sites in db.go
+(explicit engine spellings; post-resolve `engine != engineSQLite`) become
+dispatch into the SAME staged-creds runner runDBQuery uses (QueryCommand
++ creds staging); --db-host/--db-mode then apply naturally; libsql rides
+the Hrana execute. changes-count: maria affected-rows via the client
+exit/`SELECT ROW_COUNT()`; pg via `commandTag` rows.
+
+## OCI creds — open question
+esellar .env.schema has NO oci entries (likely instance-principal
+on-host auth). Confirm with Talha where the varlock/pass OCI values
+live before the throwaway leg.
