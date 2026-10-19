@@ -38,7 +38,7 @@ func (p *vmProvisioner) sshdHardening(restart string) error {
 		return p.die("sshd restart failed after hardening ensure", err)
 	}
 	p.say("gate: sshd hardening effective")
-	if err := p.read(vmbootstrap.GateSSHDHardened); err != nil {
+	if err := p.run(vmbootstrap.GateSSHDHardened); err != nil { // sshd -T is a PRIVILEGED read (host keys) — it must elevate
 		return p.die("sshd still allows passwords (hardening ensure failed?)", err)
 	}
 	return nil
@@ -130,7 +130,7 @@ func (p *vmProvisioner) ensurePodmanNetwork() error {
 // stays offline-fast).
 func (p *vmProvisioner) pullProxyImage() error {
 	pullProxy := fmt.Sprintf("podman image exists %s || podman pull %s", vmbootstrap.ProxyImageRef, vmbootstrap.ProxyImageRef)
-	if err := p.run(pullProxy); err != nil {
+	if err := p.runRoot(pullProxy); err != nil { // reads the 0600 registries.conf — needs the elevation
 		return p.die("kamal-proxy image pull failed (docker.io reachable from the VM?)", err)
 	}
 	return nil
