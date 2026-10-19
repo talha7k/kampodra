@@ -69,8 +69,12 @@ smoke (local pods, env-gated, torn down) is the pattern to extend:
       non-root user; the REMAINING defect: read-only GATES also elevate
       (the podman-version gate under sudo printed sudo's own usage) —
       the design refinement is selective elevation: only MUTATING steps
-      take the prefix, read-only gates run as the user. One GCP pass
-      remains to verify end-to-end after that split.
+      take the prefix, read-only gates run as the user. LANDED for most
+      gates (22149d9) + the privileged-read re-filings (ssh -T, podman
+      info — 388601e, 464152c). REMAINING: GatePodmanVersion under
+      sudo -n prints sudo's OWN usage on ubuntu-minimal (the exact
+      remote command works via manual ssh) — debug the sudoers/secure_path
+      interaction on the minimal image, then the final end-to-end pass.
 - Rule: local pods first; cloud only when containers cannot represent the
   surface; EVERYTHING torn down after
 
