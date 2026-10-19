@@ -112,6 +112,94 @@ func TestValidateDbPath(t *testing.T) {
 	}
 }
 
+// The write gate (db exec): exactly ONE statement, first keyword
+// UPDATE/INSERT/DELETE/REPLACE. Same one-statement discipline as the
+// read-only gate; SELECT/WITH get pointed at db query.
+func TestValidateWriteAcceptsDML(t *testing.T) {
+	ok := []string{
+		"UPDATE t SET x = 1 WHERE id = 7",
+		"update t set x = 1",
+		"INSERT INTO t VALUES (1)",
+		"insert into t (k) values (2)",
+		"DELETE FROM t WHERE k = 1",
+		"delete from t",
+		"REPLACE INTO t VALUES (1, 'x')",
+		"replace into t select * from other",
+		"  UPDATE t SET x = 1",
+		"\t\n DELETE FROM t",
+		"-- move the row\nUPDATE t SET owner = 'acme' WHERE id = 16",
+		"/* requeue */ UPDATE t SET owner = 'acme'",
+		"/* nested /* deep */ block */ DELETE FROM t",
+		"UPDATE t SET note = 'a;b' WHERE id = 1", // quoted ';' is a value, not a separator
+		"UPDATE t SET x = 1;",
+		"UPDATE t SET x = 1 ;",
+		"UPDATE t SET x = 1;\n",
+	}
+	for _, stmt := range ok {
+		if err := dbq.ValidateWrite(stmt); err != nil {
+			t.Errorf("ValidateWrite(%q) = %v, want nil", stmt, err)
+		}
+	}
+}
+
+func TestValidateWriteRejectsReadsDDLAndEverythingElse(t *testing.T) {
+	reject := []string{
+		"SELECT 1",
+		"select * from t",
+		"WITH c AS (SELECT 1) SELECT * FROM c",
+		"  SELECT count(*) FROM t",
+		"CREATE TABLE t (x)",
+		"CREATE INDEX idx ON t (x)",
+		"ALTER TABLE t ADD COLUMN y",
+		"DROP TABLE t",
+		"ATTACH DATABASE '/tmp/evil.db' AS evil",
+		"DETACH DATABASE evil",
+		"PRAGMA wal_checkpoint",
+		"VACUUM",
+		"REINDEX t",
+		"EXPLAIN UPDATE t SET x = 1", // not a bare DML keyword
+		"(UPDATE t SET x = 1)",       // parenthesized — not a bare keyword
+		`"UPDATE" t SET x = 1`,       // quoted identifier is NOT the keyword
+		"",
+		"   ",
+		"; DROP TABLE t",
+		"UPDATE t SET x = 1; DELETE FROM t", // multi-statement smuggling
+		"UPDATE t SET x = 1;\nDELETE FROM t",
+		"WITH c AS (SELECT 1) UPDATE t SET x = 1; ATTACH '/x' AS y",
+	}
+	for _, stmt := range reject {
+		err := dbq.ValidateWrite(stmt)
+		if err == nil {
+			t.Errorf("ValidateWrite(%q) = nil, want an error", stmt)
+			continue
+		}
+		if !strings.Contains(err.Error(), "write gate") {
+			t.Errorf("ValidateWrite(%q) error %q must name the write gate", stmt, err)
+		}
+	}
+	// Reads specifically get pointed at db query.
+	for _, stmt := range []string{"SELECT 1", "WITH c AS (SELECT 1) SELECT * FROM c"} {
+		if err := dbq.ValidateWrite(stmt); !strings.Contains(err.Error(), "db query") {
+			t.Errorf("ValidateWrite(%q) error %q must point at db query", stmt, err)
+		}
+	}
+	// Multi-statement specifically names the one-statement rule.
+	if err := dbq.ValidateWrite("UPDATE t SET x = 1; DELETE FROM t"); !strings.Contains(err.Error(), "ONE statement") {
+		t.Errorf("multi-statement error %q must name the one-statement rule", err)
+	}
+}
+
+// ReadWriteDSN is db exec's driver-level shape: mode=rw opens an EXISTING
+// file read-write — a missing path is a driver error, never a fresh empty
+// db silently created over a typo'd --db.
+func TestReadWriteDSN(t *testing.T) {
+	got := dbq.ReadWriteDSN("/data/tenants/x.db")
+	want := "file:/data/tenants/x.db?mode=rw&immutable=0"
+	if got != want {
+		t.Errorf("ReadWriteDSN = %q, want %q", got, want)
+	}
+}
+
 // ReadOnlyDSN is the driver-level backstop: mode=ro&immutable=0 — writes
 // fail at the driver even if the gate were bypassed.
 func TestReadOnlyDSN(t *testing.T) {

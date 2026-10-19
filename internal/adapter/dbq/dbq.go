@@ -25,7 +25,8 @@ import (
 // (the VM's /tmp artifact and the local build cache), so any helper change
 // invalidates every cached copy by name — bump it together with the
 // sqlqVersion stamp in sqlq/main.go (pinned by a test).
-const Version = "1"
+// v2: the write mode (-write, db exec).
+const Version = "2"
 
 // sqlqTarget is the helper's cross-build triple: linux/arm64, CGO off —
 // the same estate shape deploy --binary builds for (the OCI VM is aarch64).
@@ -82,6 +83,13 @@ func HelperInstallCommand(remote string) string {
 // SQL never rides the argv (no quoting hazards).
 func QueryCommand(remoteHelper, dbPath string) string {
 	return remoteHelper + " -db " + dbPath
+}
+
+// ExecCommand runs the helper in write mode (-write): ONE gated
+// UPDATE/INSERT/DELETE/REPLACE from stdin, {"changes":N} JSON on stdout.
+// Same argv discipline as the query leg — the statement never rides argv.
+func ExecCommand(remoteHelper, dbPath string) string {
+	return remoteHelper + " -db " + dbPath + " -write"
 }
 
 // Sqlite3ProbeCommand answers yes/no in ONE round-trip: sqlite3 present?

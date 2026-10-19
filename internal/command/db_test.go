@@ -489,6 +489,154 @@ func TestDbWithoutTargetFails(t *testing.T) {
 	}
 }
 
+// --- db exec: the gated ONE-statement write -------------------------------
+
+// TestDbExecGateRejections: the write gate + the ack flag fire BEFORE any
+// ssh round-trip and exit 2. Every rejection shape: wrong verb, DDL,
+// multi-statement, missing ack, missing statement.
+func TestDbExecGateRejections(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want []string // substrings the stderr must carry
+	}{
+		{
+			name: "read pointed at db query",
+			args: []string{"--db", "/data/x.db", "--sql", "SELECT 1", "--ack-write"},
+			want: []string{"write gate", "db query"},
+		},
+		{
+			name: "WITH pointed at db query",
+			args: []string{"--db", "/data/x.db", "--sql", "WITH c AS (SELECT 1) SELECT * FROM c", "--ack-write"},
+			want: []string{"write gate", "db query"},
+		},
+		{
+			name: "DDL refused",
+			args: []string{"--db", "/data/x.db", "--sql", "CREATE TABLE t (x)", "--ack-write"},
+			want: []string{"write gate"},
+		},
+		{
+			name: "PRAGMA refused",
+			args: []string{"--db", "/data/x.db", "--sql", "PRAGMA wal_checkpoint", "--ack-write"},
+			want: []string{"write gate"},
+		},
+		{
+			name: "multi-statement refused",
+			args: []string{"--db", "/data/x.db", "--sql", "UPDATE t SET x = 1; DELETE FROM t", "--ack-write"},
+			want: []string{"ONE statement"},
+		},
+		{
+			name: "missing ack",
+			args: []string{"--db", "/data/x.db", "--sql", "UPDATE t SET x = 1"},
+			want: []string{"--ack-write", "db snapshot"},
+		},
+		{
+			name: "missing statement",
+			args: []string{"--db", "/data/x.db", "--ack-write"},
+			want: []string{"write gate"},
+		},
+	}
+	for _, tc := range cases {
+		h := setupDb(t)
+		code := h.run(t, append([]string{"exec", "--host", statusHost}, tc.args...)...)
+		if code != 2 {
+			t.Errorf("exec %s: exit = %d, want 2 (stderr: %s)", tc.name, code, h.stderr.String())
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(h.stderr.String(), want) {
+				t.Errorf("exec %s: stderr %q must name %q", tc.name, h.stderr.String(), want)
+			}
+		}
+		if inv := h.invocations(t, h.sshLog); inv != "" {
+			t.Errorf("exec %s: a rejected statement must cost ZERO round-trips:\n%s", tc.name, inv)
+		}
+	}
+}
+
+// TestDbExecHappyPath: helper already on the VM, one UPDATE rides stdin
+// into a -write helper run, stdout carries ONLY the helper's JSON result,
+// stderr carries the snapshot reminder.
+func TestDbExecHappyPath(t *testing.T) {
+	h := setupDb(t)
+	if err := os.WriteFile(filepath.Join(h.fixtures, "helper-present"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code := h.run(t, "exec", "--host", statusHost, "--db", "/data/tenants/acme/tenant_acme.db", "--sql", "UPDATE pos_order SET total = 420 WHERE id = 7", "--ack-write")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	if got := h.stdout.String(); got != dbFixtureRows {
+		t.Errorf("stdout = %q, want exactly %q (stdout is DATA only)", got, dbFixtureRows)
+	}
+	inv := h.invocations(t, h.sshLog)
+	// the write run goes through the helper's -write mode
+	if !strings.Contains(inv, " -db /data/tenants/acme/tenant_acme.db -write") {
+		t.Errorf("exec leg missing the -db/-write argv:\n%s", inv)
+	}
+	if strings.Contains(inv, "cat > /tmp/kampodra-sqlq-") {
+		t.Errorf("present helper must NOT be re-streamed:\n%s", inv)
+	}
+	// the statement crossed on STDIN, never argv
+	stdin := h.invocations(t, h.stdinLog)
+	if !strings.Contains(stdin, "UPDATE pos_order SET total = 420 WHERE id = 7") {
+		t.Errorf("statement must ride stdin, got:\n%s", stdin)
+	}
+	if strings.Contains(inv, "UPDATE pos_order") {
+		t.Errorf("statement leaked into the remote argv:\n%s", inv)
+	}
+	// the snapshot reminder rides stderr on EVERY successful exec
+	if !strings.Contains(h.stderr.String(), "db snapshot") {
+		t.Errorf("stderr %q must remind the snapshot command", h.stderr.String())
+	}
+}
+
+// TestDbExecStreamsHelperWhenMissing: v2 helper (the write mode) arrives —
+// presence check fails, build + stream, then the exec runs.
+func TestDbExecStreamsHelperWhenMissing(t *testing.T) {
+	h := setupDb(t)
+	code := h.run(t, "exec", "--host", statusHost, "--db", "/data/x.db", "--sql", "DELETE FROM t WHERE id = 9", "--ack-write")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, h.stderr.String())
+	}
+	inv := h.invocations(t, h.sshLog)
+	if !strings.Contains(inv, "umask 077; cat > /tmp/kampodra-sqlq-v"+dbq.Version+"-") {
+		t.Errorf("helper upload missing (version-stamped v%s):\n%s", dbq.Version, inv)
+	}
+	if !strings.Contains(inv, " -db /data/x.db -write") {
+		t.Errorf("exec leg missing the -write flag:\n%s", inv)
+	}
+}
+
+// TestDbExecEngineScoped: exec is sqlite-only for now — explicit
+// non-sqlite engines fail closed BEFORE any round-trip (exit 2).
+func TestDbExecEngineScoped(t *testing.T) {
+	for _, engine := range []string{"mariadb", "postgres", "libsql"} {
+		h := setupDb(t)
+		code := h.run(t, "exec", "--host", statusHost, "--engine", engine, "--db", "esellar", "--sql", "UPDATE t SET x = 1", "--ack-write")
+		if code != 2 {
+			t.Errorf("exec --engine %s: exit = %d, want 2 (stderr: %s)", engine, code, h.stderr.String())
+		}
+		if !strings.Contains(h.stderr.String(), "sqlite-only") {
+			t.Errorf("exec --engine %s: stderr %q must say sqlite-only", engine, h.stderr.String())
+		}
+		if inv := h.invocations(t, h.sshLog); inv != "" {
+			t.Errorf("exec --engine %s: refusal must cost ZERO round-trips:\n%s", engine, inv)
+		}
+	}
+}
+
+// TestDbExecUnsafeDbPath: the shared --db shape gate applies to exec too.
+func TestDbExecUnsafeDbPath(t *testing.T) {
+	h := setupDb(t)
+	code := h.run(t, "exec", "--host", statusHost, "--db", "/data/x.db; rm -rf /data", "--sql", "UPDATE t SET x = 1", "--ack-write")
+	if code != 1 {
+		t.Errorf("unsafe --db exit = %d, want 1", code)
+	}
+	if inv := h.invocations(t, h.sshLog); inv != "" {
+		t.Errorf("unsafe --db must not ssh:\n%s", inv)
+	}
+}
+
 // --- the MariaDB leg -----------------------------------------------------
 
 // Happy path: the unit env declares the engine, the client stack answers,

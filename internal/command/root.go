@@ -66,7 +66,7 @@ BACKUP
   backup         object-storage backups via the provider CLI's own auth: list | download | verify | restore-plan (restore-plan never executes)
 
 DB
-  db             read-only sqlite over SSH: query (ONE SELECT/WITH → raw JSON rows on stdout; exit 2 = gate rejection) | snapshot (consistent copy back, 0600; cp fallback noted)
+  db             read-only sqlite over SSH: query (ONE SELECT/WITH → raw JSON rows on stdout; exit 2 = gate rejection) | exec (ONE gated write, sqlite, --ack-write required) | snapshot (consistent copy back, 0600; cp fallback noted)
 
 Every command supports --help with usage + examples.
 `

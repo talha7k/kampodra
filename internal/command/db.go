@@ -23,9 +23,11 @@ import (
 
 const dbHelp = `Usage:
   kampodra db query    [--db <path|schema>] (--sql "<statement>" | --file <local.sql>)
+  kampodra db exec     [--db <path>] --sql "<write-statement>" --ack-write
   kampodra db snapshot [--db <path|schema>] [--out <local-path>]
-      both take: [--engine auto|sqlite|mariadb|postgres|libsql] [--db-mode auto|ssh|pod]
-                 [--db-host <user@ip>] [--profile <name>] [--host <user@ip>] [--ssh-key <path>]
+      all take: [--engine auto|sqlite|mariadb|postgres|libsql] [--db-mode auto|ssh|pod]
+                [--db-host <user@ip>] [--profile <name>] [--host <user@ip>] [--ssh-key <path>]
+      (db exec is sqlite-only for now — the other engines exit 2)
 
 The two execution modes (mariadb/postgres only — sqlite and libsql have
 exactly one shape each):
@@ -52,6 +54,20 @@ sqlite (a FILE on the VM):
   ".backup" (consistent under concurrent writes; plain cp fallback noted
   on stderr when sqlite3 is absent). An existing --out is never
   overwritten.
+
+  exec is the gated WRITE sibling (sqlite only): ONE statement starting
+  with UPDATE/INSERT/DELETE/REPLACE, refused otherwise (SELECT/WITH are
+  pointed at db query; DDL/PRAGMA/ATTACH are refused; multi-statement
+  strings are refused — exactly ONE statement per invocation, exit 2,
+  nothing sent). It requires --ack-write: without the flag it exits 2
+  naming the snapshot command. The helper re-enforces the same gate on
+  the VM and opens the file mode=rw (an EXISTING file — a typo'd --db
+  never materializes as a fresh empty db), then prints one JSON object:
+  {"changes":<rows-affected>,"statement":"<first line>"} — the audit
+  trail. Every successful exec echoes the snapshot command on stderr.
+  THIS IS NOT A MIGRATION TOOL: schema changes belong to the repo's
+  staged migrations; exec exists for one-time data moves with a snapshot
+  taken first.
 
 mariadb (a SCHEMA on a server — same VM or a db host reachable from it):
   query runs ONE gate-checked statement through the VM's mariadb client
@@ -118,6 +134,7 @@ Examples:
   kampodra db query --db /data/root.db --sql "SELECT count(*) AS orgs FROM org"
   kampodra db query --db <dataDir>/acme/tenant_acme.db --file ./audit.sql --profile prod
   kampodra db snapshot --db <dataDir>/acme/tenant_acme.db --out ./acme-snapshot.db
+  kampodra db exec --db <dataDir>/acme/tenant_acme.db --sql "UPDATE subscription SET org_id = 'x' WHERE id = 16" --ack-write
   kampodra env set KAMPODRA_DB_ENGINE=mariadb KAMPODRA_DB_NAME=esellar KAMPODRA_DB_USER=kampodra_ro
   kampodra db query --db esellar --sql "SELECT id, total FROM pos_order ORDER BY id DESC LIMIT 5"
   kampodra db snapshot --db esellar --out ./esellar.sql
@@ -126,7 +143,7 @@ Examples:
 func newDBCommand(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "db",
-		Short: "read-only sqlite over SSH: query (SELECT/WITH → JSON rows) | snapshot (consistent copy, 0600)",
+		Short: "read-only sqlite over SSH: query (SELECT/WITH → JSON rows) | exec (ONE gated write, --ack-write) | snapshot (consistent copy, 0600)",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			fmt.Fprint(c.OutOrStdout(), dbHelp)
@@ -136,7 +153,7 @@ func newDBCommand(d Deps) *cobra.Command {
 	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
 		fmt.Fprint(c.OutOrStdout(), dbHelp)
 	})
-	cmd.AddCommand(newDBQuerySub(d), newDBSnapshotSub(d), newDBGrantROSub(d))
+	cmd.AddCommand(newDBQuerySub(d), newDBExecSub(d), newDBSnapshotSub(d), newDBGrantROSub(d))
 	return cmd
 }
 
@@ -247,6 +264,31 @@ func newDBQuerySub(d Deps) *cobra.Command {
 	cmd.Flags().String("engine", "auto", "sqlite | mariadb | postgres | libsql | auto (flag > unit env KAMPODRA_DB_ENGINE > file magic)")
 	cmd.Flags().String("db-host", "", "ssh target of the DB VM when the server engine lives on its own host (default: the profile's dbHost, else the app VM)")
 	cmd.Flags().String("db-mode", "auto", "server-engine execution: auto | host (client on the VM) | container (podman exec); aliases: ssh=host, pod=container; default reads KAMPODRA_DB_MODE")
+	return cmd
+}
+
+// newDBExecSub is db's gated WRITE leg: ONE UPDATE/INSERT/DELETE/REPLACE
+// statement through the same streamed helper, in write mode. The gates
+// are the point — verb allowlist + exactly-one-statement + the explicit
+// --ack-write — and every rejection fires BEFORE any ssh round-trip
+// (exit 2, nothing sent). Scope v1: sqlite only (the estate's tenant dbs
+// are files on the VM).
+func newDBExecSub(d Deps) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "exec --db <path-on-vm> --sql \"<statement>\" --ack-write",
+		Short: "ONE gated write statement (UPDATE/INSERT/DELETE/REPLACE, sqlite only) → JSON {changes} (exit 2 = gate/ack rejection)",
+		Args:  cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			return runDBExec(d, c)
+		},
+	}
+	remoteTargetFlags(cmd)
+	cmd.Flags().String("db", "", "the sqlite file's path ON THE VM")
+	cmd.Flags().String("sql", "", "the single write statement (UPDATE|INSERT|DELETE|REPLACE)")
+	cmd.Flags().Bool("ack-write", false, "REQUIRED: acknowledge this WRITES the live db — snapshot first (kampodra db snapshot --db <path> --out <local>)")
+	cmd.Flags().String("engine", "auto", "sqlite (the only engine exec serves) | auto")
+	cmd.Flags().String("db-host", "", "ssh target of the DB VM when the server engine lives on its own host (does not apply to sqlite)")
+	cmd.Flags().String("db-mode", "auto", "server-engine execution mode (does not apply to sqlite)")
 	return cmd
 }
 
@@ -439,6 +481,85 @@ func runDBQuery(d Deps, c *cobra.Command) error {
 		return runEngineQuery(d, ctx, target, dbq.LibsqlEngine(target.Project.EnvFile), engineLibsql, dbPath, stmt)
 	}
 	return fmt.Errorf("unreachable engine %q", engine)
+}
+
+// runDBExec is db exec's flow. The fail-closed ladder is ordered cheapest
+// first and every rung before the ssh legs costs ZERO round-trips:
+// statement gate (verb allowlist + exactly-one) → ack flag → explicit
+// non-sqlite engine refusal → --db shape gate → target resolution → the
+// sqlite write leg (helper provision, -write run, stdin statement). The
+// helper re-enforces the same gate VM-side; nothing here trusts the pipe.
+func runDBExec(d Deps, c *cobra.Command) error {
+	dbPath, _ := c.Flags().GetString("db")
+	sqlFlag, _ := c.Flags().GetString("sql")
+	ack, _ := c.Flags().GetBool("ack-write")
+
+	// The gate FIRST — a rejected statement costs zero round-trips. The
+	// empty-statement case is the gate's own error (mirrors query).
+	if err := dbq.ValidateWrite(sqlFlag); err != nil {
+		fmt.Fprintf(d.Stderr, "[db] %v\n", err)
+		return &exitError{code: 2}
+	}
+	// The ack: a write surface MUST be explicit, and the runbook line is
+	// part of the contract — snapshot first, always.
+	if !ack {
+		fmt.Fprintf(d.Stderr, "[db] db exec WRITES the live db — pass --ack-write to confirm, and take a consistent copy first: kampodra db snapshot --db <path> --out <local>\n")
+		return &exitError{code: 2}
+	}
+	// Engine scope BEFORE any round-trip: explicit server-engine spellings
+	// refuse locally (auto is resolved after target resolution).
+	engineFlag, _ := c.Flags().GetString("engine")
+	switch engineFlag {
+	case "mariadb", "postgres", "libsql":
+		fmt.Fprintf(d.Stderr, "[db] db exec is sqlite-only for now — no gated write surface for %s; nothing was sent\n", engineFlag)
+		return &exitError{code: 2}
+	}
+	// Local input sanity BEFORE any ssh — the same shape gate as query.
+	if dbPath != "" {
+		if err := validateDbArgByShape(dbPath); err != nil {
+			return err
+		}
+	}
+
+	target, err := resolveTargetFromFlags(d, c)
+	if err != nil {
+		return err
+	}
+	// stdout IS the payload (the helper's JSON result) — provenance rides stderr.
+	sayProvenance(Deps{Stdout: d.Stderr}, "db exec", target)
+	if err := requireHost(target); err != nil {
+		return err
+	}
+
+	ctx := c.Context()
+	dbHostFlag, _ := c.Flags().GetString("db-host")
+	dbTarget, separate := dbTargetFor(target, dbHostFlag)
+	engine, err := resolveDBEngine(d, ctx, dbTarget, engineFlag, dbPath)
+	if err != nil {
+		return err
+	}
+	if engine != engineSQLite {
+		fmt.Fprintf(d.Stderr, "[db] db exec is sqlite-only for now — no gated write surface for %s; nothing was written\n", engine)
+		return &exitError{code: 2}
+	}
+	if separate {
+		return fmt.Errorf("--db-host does not apply to sqlite — the file lives on the app VM; drop the flag or drop --engine sqlite")
+	}
+	if err := dbq.ValidateDbPath(dbPath); err != nil {
+		return err
+	}
+	helper, err := ensureSQLHelper(d, ctx, target)
+	if err != nil {
+		return err
+	}
+
+	out, err := d.Runner.RunWithStdin(ctx, target.HostSpec, dbq.ExecCommand(helper, dbPath), strings.NewReader(sqlFlag))
+	if err != nil {
+		return fmt.Errorf("exec failed on %s (target %q): %w", target.HostSpec.Host, dbPath, err)
+	}
+	fmt.Fprint(d.Stdout, out)
+	fmt.Fprintf(d.Stderr, "[db] write committed — before any further surgery take a fresh consistent copy: kampodra db snapshot --db %s --out <local>\n", dbPath)
+	return nil
 }
 
 // runEngineQuery is the shared query flow — identical shape for every

@@ -115,9 +115,13 @@ aspirational.
 - [ ] `migrate stage` (or deploy-block-driven): build the migrater,
       stream it + the migrations dirs to `<repo-root>` on the VM with
       byte-verify — the runbook sentence becomes true
-- [ ] `db exec`-equivalent for ONE gated write statement (explicit
+- [x] `db exec`-equivalent for ONE gated write statement (explicit
       `--i-am-writing`, refuse multi-statement strings, print rows-affected)
       — the sanctioned escape from ad-hoc helpers for one-time data moves
+      — LANDED 2026-10-19 as `db exec` (`--ack-write` flag; verb allowlist
+      UPDATE/INSERT/DELETE/REPLACE; multi-statement/DDL refused pre-ssh;
+      sqlite-only for now; prints {"changes":N,"statement":…}). G7 stays
+      OPEN on the `migrate stage` bullet.
 
 ## Working rules (corrected to the repo's git discipline)
 

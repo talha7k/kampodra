@@ -34,6 +34,37 @@ func ValidateReadOnly(stmt string) error {
 	return nil
 }
 
+// ValidateWrite is db exec's write gate: exactly ONE statement, and its
+// first keyword must be UPDATE, INSERT, DELETE, or REPLACE. Reads are
+// refused WITH the pointer to db query; DDL (CREATE/ALTER/DROP/ATTACH/
+// DETACH/PRAGMA/VACUUM/REINDEX) and anything else fails with an error
+// naming the gate (exit 2 on both sides of the wire — the same contract
+// the helper enforces again on the VM). One gated statement per
+// invocation: a write that mutates more than the operator spelled out is
+// not a write this surface will make.
+func ValidateWrite(stmt string) error {
+	s := strings.TrimSpace(stmt)
+	if s == "" {
+		return errors.New("write gate: a statement is required (--sql)")
+	}
+	switch kw := firstKeyword(s); kw {
+	case "UPDATE", "INSERT", "DELETE", "REPLACE":
+		// the allowed verbs — plain data mutation, no schema, no attach
+	case "SELECT", "WITH":
+		return fmt.Errorf("write gate: %s is a read — db exec runs ONE write statement (UPDATE|INSERT|DELETE|REPLACE); reads belong in db query", kw)
+	default:
+		return fmt.Errorf("write gate: statements must start with UPDATE, INSERT, DELETE, or REPLACE — got %.40q (DDL/PRAGMA/ATTACH are refused; reads belong in db query)", s)
+	}
+	body := s
+	if strings.HasSuffix(body, ";") {
+		body = strings.TrimSpace(strings.TrimSuffix(body, ";"))
+	}
+	if statementTerminator(body) >= 0 {
+		return errors.New("write gate: exactly ONE statement per invocation — a statement-terminating ';' was found")
+	}
+	return nil
+}
+
 // statementTerminator returns the index of the first `;` that actually
 // terminates a statement: semicolons inside string literals, quoted
 // identifiers, backticks, and comments don't count ('a;b' is a value, not
@@ -205,4 +236,12 @@ func ValidateDbPath(p string) error {
 // were bypassed.
 func ReadOnlyDSN(dbPath string) string {
 	return "file:" + dbPath + "?mode=ro&immutable=0"
+}
+
+// ReadWriteDSN is db exec's open mode: an EXISTING file, read-write.
+// mode=rw (not rwc) means a missing path is a driver error — a typo'd
+// --db must never materialize as a fresh empty database. immutable=0
+// keeps the driver honest about concurrent writers.
+func ReadWriteDSN(dbPath string) string {
+	return "file:" + dbPath + "?mode=rw&immutable=0"
 }

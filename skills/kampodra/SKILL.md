@@ -95,12 +95,15 @@ A leftover shadow must be converged before the next `--rolling` deploy. `--drain
 | `backup verify <file>` | Read-only: uploads to VM scratch files and runs the VM's `restore-verify` | Never writes into the data dir |
 | `deploy prune` | Removes old sha-tagged images (keeps running + ts-rollback + newest N) | `--dry-run` prints exact commands first |
 | `migrate` | Writes db schema | Stop-first guard: refuses while the api service runs unless `--allow-running` |
+| `db exec` | ONE gated write statement (UPDATE/INSERT/DELETE/REPLACE, sqlite only) | `--ack-write` REQUIRED; snapshot first (`db snapshot`); exit 2 = gate/ack rejection, nothing sent |
 | `env push` | Overwrites the remote env file atomically | Preview first with `env diff <local-file>` (exit 1 = differs) |
 | `vm-prepare` | Mutates a bare host (packages, sshd, services) | Idempotent; safe to re-run |
 
 ## Read-only database access (db)
 
-`kampodra db query` (one SELECT/WITH → rows on stdout) and
+`kampodra db query` (one SELECT/WITH → rows on stdout),
+`kampodra db exec` (ONE gated write: UPDATE/INSERT/DELETE/REPLACE,
+sqlite only, `--ack-write` required → `{"changes":N}` on stdout) and
 `kampodra db snapshot` (verified consistent copy, 0600) over ssh, three
 engines behind `--engine auto` (flag > the VM env file's
 KAMPODRA_DB_ENGINE > file magic):
@@ -141,11 +144,15 @@ mariadb executes end-to-end (random password, env keys written on the
 VM, password never printed); `--engine postgres` prints the ready SQL.
 
 The gate rejects non-SELECT/WITH statements (exit 2) BEFORE any ssh on
-every engine — a rejected statement costs zero round-trips.
+every engine — a rejected statement costs zero round-trips. `db exec`
+(sqlite only) inverts it: only UPDATE/INSERT/DELETE/REPLACE pass, multi-
+statement strings and DDL are refused, `--ack-write` is required, and
+every success echoes the snapshot command — snapshot first, always.
 
 ```
 kampodra db query --db /data/root.db --sql "SELECT count(*) FROM org" --profile prod
 kampodra db query --db esellar --sql "SELECT id, total FROM pos_order LIMIT 5"   # mariadb, after env set
+kampodra db exec --db /data/root.db --sql "UPDATE subscription SET org_id = 'x' WHERE id = 16" --ack-write
 kampodra db snapshot --db esellar --out ./esellar.sql
 kampodra db snapshot --out ./app.db                                              # libsql, after env set
 ```

@@ -395,6 +395,7 @@ file (`KAMPODRA_DB_ENGINE`), then the file's magic bytes.
 
 ```
 kampodra db query    --db <path|schema> (--sql "SELECT ..." | --file q.sql) [--engine auto]
+kampodra db exec     --db <path> --sql "UPDATE|INSERT|DELETE|REPLACE ..." --ack-write
 kampodra db snapshot --db <path|schema> [--out <local>] [--engine auto]
 ```
 
@@ -405,6 +406,23 @@ rejects anything not starting with SELECT/WITH (exit 2, zero ssh
 round-trips) and the helper opens the file `mode=ro`. Snapshot uses the
 VM's `sqlite3 .backup` (consistent under concurrent writes; plain `cp`
 fallback is noted on stderr when sqlite3 is absent).
+
+**db exec** (sqlite only): the gated WRITE sibling. Exactly ONE statement
+starting with UPDATE/INSERT/DELETE/REPLACE — SELECT/WITH are pointed at
+`db query`, DDL/PRAGMA/ATTACH are refused, multi-statement strings are
+refused (exit 2, nothing sent). It requires `--ack-write` (without the
+flag: exit 2 naming the snapshot command), and the helper re-enforces the
+same gate on the VM, opening the file `mode=rw` (an EXISTING file — a
+typo'd `--db` never materializes as a fresh empty db). Success prints one
+JSON object — `{"changes":<rows-affected>,"statement":"<first line>"}` —
+and echoes the snapshot command on stderr. This is NOT a migration tool:
+schema changes belong to the repo's staged migrations; exec exists for
+one-time data moves with a snapshot taken first.
+
+```
+kampodra db exec --db /data/tenants/acme/tenant_acme.db \
+  --sql "UPDATE subscription SET org_id = 'acme' WHERE id = 16" --ack-write
+```
 
 **mariadb** (a schema on a server — same VM, or a db host reachable from
 the app VM; a podman container is the estate's shape): `--db` is the
