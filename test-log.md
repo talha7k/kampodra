@@ -176,3 +176,19 @@ Lesson: elevation composition has TWO failure modes — under-elevation
 (privileged reads denied) and mis-elevation (sudo parsing shell
 syntax). Every remote command is now classified: read (no elevation),
 run (simple argv), runRoot (shell syntax).
+
+## The 0.8.10→0.8.13 release train — two release-pipeline findings (2026-10-19)
+- F16: the platform binaries shipped 0644 — macOS `cp` over an EXISTING
+  destination keeps the destination's mode, and gitignored stale bins
+  from earlier builds kept reinfecting the tarballs. Fix: chmod 755
+  after the cp (963986e). Caught by the fresh-install smoke (EACCES).
+- F17: `make bump` builds BEFORE the release commit exists — the stamped
+  sha is the PRE-release commit, so publish-verify's tag-sha probe
+  rightly failed. The designed path is `make publish-tagged` (worktree
+  at the tag → the stamp matches). Caught by our own provenance gate.
+- The plain `publish` target after a bump is a TRAP; the train now is:
+  bump → push → publish-tagged. Transient registry E404s on PUT need a
+  retry INSIDE the tagged worktree — never a manual retry from main.
+- 0.8.10 (exec bit) + 0.8.11/0.8.12 (stamps) deprecated with pointers
+  to 0.8.13. 0.8.13 verified: all four platforms + root, fresh-install
+  smoke prints 0.8.13 (commit 67d6836).
