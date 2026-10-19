@@ -12,12 +12,17 @@ artifact-publish side and the Ubuntu base strategy:
       the OFFICIAL ubuntu-minimal cloud image (systemd included, cloud-init
       for first-boot keys) + `vm-prepare` convergence — no custom Packer
       build to maintain for Ubuntu; custom recipes stay esellar/Alpine-only
-- [ ] `vm image publish` — artifact → Object Storage
-      `golden-image/<name>-<date>-<digest>/`, sha256 + provenance manifest
-      (source URL, import date)
-- [ ] `vm image list` / `verify` — bucket inventory + digest check
+- [x] the manifest CONTRACT layer landed (goldenmanifest.go + 5 tests):
+      EmitGoldenManifest (always digests the REAL bytes), the
+      golden-image/<name>-<date>-<digest8> layout (overwrites
+      structurally impossible; "latest" unrepresentable),
+      VerifyGoldenArtifact (tamper detection), fail-closed parsing.
+- [ ] `vm image publish` — thin shim: EmitGoldenManifest + the oci CLI
+      object put into GoldenImageDir (the contract is tested; the shim
+      is one command away)
+- [ ] `vm image list` / `verify` — bucket inventory + ReadGoldenManifest
+      + VerifyGoldenArtifact against the downloaded bytes
 - [ ] `--image-manifest` pinning (digests, never "latest")
-- [ ] tests: manifest emit/verify, digest pinning, never-overwrite
 
 ## G2 — dbq MariaDB "drift" — CLOSED (was stale)
 
