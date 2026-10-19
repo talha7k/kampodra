@@ -71,10 +71,10 @@ func (p *vmProvisioner) ubuntuPodmanStack() error {
 		return p.die("podman stack install failed (apt output above)", err)
 	}
 	p.say("gate: podman >= 4.9 + netavark backend")
-	if err := p.run(vmbootstrap.GatePodmanVersion); err != nil {
+	if err := p.runRoot(vmbootstrap.GatePodmanVersion); err != nil { // COMPOUND ($(); echo) — sudo chokes on bare shell syntax; sh -c it
 		return p.die("podman too old (need >= 4.9 for netavark — Ubuntu 24.04 ships 4.9.x)", err)
 	}
-	if err := p.run(vmbootstrap.GateNetavark); err != nil {
+	if err := p.runRoot(vmbootstrap.GateNetavark); err != nil { // COMPOUND (&& + $()) — sh -c it
 		return p.die("network backend is not netavark", err)
 	}
 	return nil
@@ -162,10 +162,10 @@ func (p *vmProvisioner) ubuntuConvergeAPI() error {
 func (p *vmProvisioner) ubuntuPostGates() error {
 	n := p.n
 	p.say("gate: podman >= 4.9 + netavark backend")
-	if err := p.run(vmbootstrap.GatePodmanVersion); err != nil {
+	if err := p.runRoot(vmbootstrap.GatePodmanVersion); err != nil { // COMPOUND ($(); echo) — sudo chokes on bare shell syntax; sh -c it
 		return p.die("podman too old (need >= 4.9 for netavark)", err)
 	}
-	if err := p.run(vmbootstrap.GateNetavark); err != nil {
+	if err := p.runRoot(vmbootstrap.GateNetavark); err != nil { // COMPOUND (&& + $()) — sh -c it
 		return p.die("network backend is not netavark", err)
 	}
 	p.say("gate: sysctl effective")

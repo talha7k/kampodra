@@ -80,7 +80,7 @@ type waitPolicy struct {
 
 var (
 	vmPrepareSSHWait   = waitPolicy{attempts: 60, interval: 5 * time.Second}
-	vmPrepareProxyWait = waitPolicy{attempts: 20, interval: 3 * time.Second}
+	vmPrepareProxyWait = waitPolicy{attempts: 60, interval: 5 * time.Second} // 5min: the cold first pull on a small VM (F14)
 )
 
 // vmProvisioner carries the shared bootstrap machinery (the ssh closures +
