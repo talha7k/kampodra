@@ -58,12 +58,11 @@ smoke (local pods, env-gated, torn down) is the pattern to extend:
 - [x] SELECTIVE ELEVATION landed: the 14 read-only gates run via read()
       (no sudo prefix — the live finding: elevation broke their shapes);
       mutating steps keep sudo -n / runRoot
-- [ ] OCI throwaway leg — BLOCKED on OCI CLI auth (401: the config's
-      credentials are stale; rotate via varlock: oci session authenticate
-      or a fresh API key). The recipe, ready to run: AD from
-      `oci iam availability-domain list`, e2.micro (always-free) with the
-      Ubuntu-minimal or Alpine image, root ssh (the OCI shape — no sudo
-      needed), `vm-prepare --host`, teardown
+- [x] OCI throwaway leg EXECUTED (a0e8ccd): A1.Flex ARM, Ubuntu 24.04
+      Minimal, me-riyadh-1 via the esellar-api API-key profile; non-root
+      ubuntu@ — ALL gates passed first try. The recipe in the test log;
+      the auth answer: esellar is instance-principal (keyless, on-host);
+      the local CLI rides the durable esellar-api profile.
 - [ ] follow-up (IN PROGRESS, live-found): the sudo-wrap landed
       (52e279c→4ad2eaf) and clears every gate through podman-install as a
       non-root user; the REMAINING defect: read-only GATES also elevate
