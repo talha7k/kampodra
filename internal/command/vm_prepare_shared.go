@@ -139,7 +139,9 @@ func (p *vmProvisioner) pullProxyImage() error {
 // awaitProxy — the shared kamal-proxy readiness loop (statusHint names the
 // guest's init-system status command for the failure message).
 func (p *vmProvisioner) awaitProxy(statusHint string) error {
-	proxyPS := fmt.Sprintf(`podman ps --format "{{.Names}}" | grep -qx %s`, vmbootstrap.ProxyContainer)
+	// The proxy container lives in the ROOTFUL podman store — the probe
+	// must carry the elevation prefix or it greps an empty list (F15).
+	proxyPS := fmt.Sprintf(`%spodman ps --format "{{.Names}}" | grep -qx %s`, p.sudo, vmbootstrap.ProxyContainer)
 	return waitUntil(p.ctx, p.d.Runner, p.target.HostSpec, vmPrepareProxyWait, proxyPS,
 		"kamal-proxy container never came up (podman logs kamal-proxy; "+statusHint+")")
 }

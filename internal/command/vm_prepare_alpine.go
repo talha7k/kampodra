@@ -186,7 +186,8 @@ func (p *vmProvisioner) alpinePostGates() error {
 		return p.die("net.ipv4.ip_unprivileged_port_start is not 80", err)
 	}
 	p.say("gate: registries.conf effective")
-	if err := p.run(vmbootstrap.RegistriesGate(n)); err != nil {
+	// &&-chain on the 0600 conf — every grep needs the elevation (runRoot scopes it)
+	if err := p.runRoot(vmbootstrap.RegistriesGate(n)); err != nil {
 		return p.die("registries.conf incomplete ("+n.Registry+" insecure + docker.io search)", err)
 	}
 	p.say("gate: services enabled in the default runlevel")
@@ -205,7 +206,8 @@ func (p *vmProvisioner) alpinePostGates() error {
 	if err := p.run("rc-service kampodra-anchor status >/dev/null"); err != nil {
 		return p.die("kampodra-anchor service not started", err)
 	}
-	if err := p.run("! test -e " + n.AnchorConf); err != nil {
+	// ! is shell syntax — sudo cannot run it bare
+	if err := p.runRoot("! test -e " + n.AnchorConf); err != nil {
 		return p.die(n.AnchorConf+" already exists on a fresh VM (wrong machine?)", err)
 	}
 	if err := p.read(vmbootstrap.GateAnchorIdleLog); err != nil {
