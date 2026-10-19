@@ -9,6 +9,8 @@
 package command
 
 import (
+	"encoding/json"
+
 	"context"
 	"fmt"
 	"os"
@@ -27,7 +29,7 @@ const dbHelp = `Usage:
   kampodra db snapshot [--db <path|schema>] [--out <local-path>]
       all take: [--engine auto|sqlite|mariadb|postgres|libsql] [--db-mode auto|ssh|pod]
                 [--db-host <user@ip>] [--profile <name>] [--host <user@ip>] [--ssh-key <path>]
-      (db exec is sqlite-only for now — the other engines exit 2)
+      (db exec serves every engine — server writes ride the staged-creds runners)
 
 The two execution modes (mariadb/postgres only — sqlite and libsql have
 exactly one shape each):
@@ -55,7 +57,7 @@ sqlite (a FILE on the VM):
   on stderr when sqlite3 is absent). An existing --out is never
   overwritten.
 
-  exec is the gated WRITE sibling (sqlite only): ONE statement starting
+  exec is the gated WRITE sibling (every engine): ONE statement starting
   with UPDATE/INSERT/DELETE/REPLACE, refused otherwise (SELECT/WITH are
   pointed at db query; DDL/PRAGMA/ATTACH are refused; multi-statement
   strings are refused — exactly ONE statement per invocation, exit 2,
@@ -276,7 +278,7 @@ func newDBQuerySub(d Deps) *cobra.Command {
 func newDBExecSub(d Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "exec --db <path-on-vm> --sql \"<statement>\" --ack-write",
-		Short: "ONE gated write statement (UPDATE/INSERT/DELETE/REPLACE, sqlite only) → JSON {changes} (exit 2 = gate/ack rejection)",
+		Short: "ONE gated write statement (UPDATE/INSERT/DELETE/REPLACE) → JSON summary (exit 2 = gate/ack rejection)",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			return runDBExec(d, c)
@@ -286,9 +288,9 @@ func newDBExecSub(d Deps) *cobra.Command {
 	cmd.Flags().String("db", "", "the sqlite file's path ON THE VM")
 	cmd.Flags().String("sql", "", "the single write statement (UPDATE|INSERT|DELETE|REPLACE)")
 	cmd.Flags().Bool("ack-write", false, "REQUIRED: acknowledge this WRITES the live db — snapshot first (kampodra db snapshot --db <path> --out <local>)")
-	cmd.Flags().String("engine", "auto", "sqlite (the only engine exec serves) | auto")
-	cmd.Flags().String("db-host", "", "ssh target of the DB VM when the server engine lives on its own host (does not apply to sqlite)")
-	cmd.Flags().String("db-mode", "auto", "server-engine execution mode (does not apply to sqlite)")
+	cmd.Flags().String("engine", "auto", "sqlite | mariadb | postgres | libsql | auto")
+	cmd.Flags().String("db-host", "", "ssh target of the DB VM when the server engine lives on its own host")
+	cmd.Flags().String("db-mode", "auto", "server-engine execution mode: host | container | auto")
 	return cmd
 }
 
@@ -489,6 +491,17 @@ func runDBQuery(d Deps, c *cobra.Command) error {
 // non-sqlite engine refusal → --db shape gate → target resolution → the
 // sqlite write leg (helper provision, -write run, stdin statement). The
 // helper re-enforces the same gate VM-side; nothing here trusts the pipe.
+// printExecSummary — exec's JSON summary for the server engines (the
+// client's own affected-rows output already streamed above it).
+func printExecSummary(d Deps, engine dbEngine, stmt string) error {
+	enc, err := json.Marshal(stmt)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(d.Stdout, "{\"engine\":\"%s\",\"statement\":%s,\"ok\":true}\n", engine, enc)
+	return nil
+}
+
 func runDBExec(d Deps, c *cobra.Command) error {
 	dbPath, _ := c.Flags().GetString("db")
 	sqlFlag, _ := c.Flags().GetString("sql")
@@ -506,14 +519,10 @@ func runDBExec(d Deps, c *cobra.Command) error {
 		fmt.Fprintf(d.Stderr, "[db] db exec WRITES the live db — pass --ack-write to confirm, and take a consistent copy first: kampodra db snapshot --db <path> --out <local>\n")
 		return &exitError{code: 2}
 	}
-	// Engine scope BEFORE any round-trip: explicit server-engine spellings
-	// refuse locally (auto is resolved after target resolution).
+	// Engine scope BEFORE any round-trip: server engines are SERVED — the
+	// adapter generalization dispatches them through the same staged-creds
+	// runners query uses (the write gate already ran above).
 	engineFlag, _ := c.Flags().GetString("engine")
-	switch engineFlag {
-	case "mariadb", "postgres", "libsql":
-		fmt.Fprintf(d.Stderr, "[db] db exec is sqlite-only for now — no gated write surface for %s; nothing was sent\n", engineFlag)
-		return &exitError{code: 2}
-	}
 	// Local input sanity BEFORE any ssh — the same shape gate as query.
 	if dbPath != "" {
 		if err := validateDbArgByShape(dbPath); err != nil {
@@ -538,9 +547,26 @@ func runDBExec(d Deps, c *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	if engine != engineSQLite {
-		fmt.Fprintf(d.Stderr, "[db] db exec is sqlite-only for now — no gated write surface for %s; nothing was written\n", engine)
-		return &exitError{code: 2}
+	// Server-engine dispatch — the SAME runners query uses; the write is
+	// gated client-side (ValidateWrite above) and the client's own output
+	// (pg's UPDATE tag; maria's exit status) is the affected-rows payload.
+	dbModeFlag, _ := c.Flags().GetString("db-mode")
+	switch engine {
+	case engineMaria:
+		if err := runMariaQuery(d, ctx, dbTarget, dbModeFlag, dbPath, sqlFlag); err != nil {
+			return err
+		}
+		return printExecSummary(d, engine, sqlFlag)
+	case enginePg:
+		if err := runPgQuery(d, ctx, dbTarget, dbModeFlag, dbPath, sqlFlag); err != nil {
+			return err
+		}
+		return printExecSummary(d, engine, sqlFlag)
+	case engineLibsql:
+		if err := runEngineQuery(d, ctx, target, dbq.LibsqlEngine(target.Project.EnvFile), engineLibsql, dbPath, sqlFlag); err != nil {
+			return err
+		}
+		return printExecSummary(d, engine, sqlFlag)
 	}
 	if separate {
 		return fmt.Errorf("--db-host does not apply to sqlite — the file lives on the app VM; drop the flag or drop --engine sqlite")

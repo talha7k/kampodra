@@ -609,18 +609,19 @@ func TestDbExecStreamsHelperWhenMissing(t *testing.T) {
 
 // TestDbExecEngineScoped: exec is sqlite-only for now — explicit
 // non-sqlite engines fail closed BEFORE any round-trip (exit 2).
-func TestDbExecEngineScoped(t *testing.T) {
+// TestDbExecEngineDispatch: the adapter generalization — explicit server
+// engines are SERVED (no refusal): the gated write proceeds into the same
+// staged-creds runners query uses, so a dead ssh host surfaces a CONNECT
+// error, never the old exit-2 scope refusal.
+func TestDbExecEngineDispatch(t *testing.T) {
 	for _, engine := range []string{"mariadb", "postgres", "libsql"} {
 		h := setupDb(t)
 		code := h.run(t, "exec", "--host", statusHost, "--engine", engine, "--db", "esellar", "--sql", "UPDATE t SET x = 1", "--ack-write")
-		if code != 2 {
-			t.Errorf("exec --engine %s: exit = %d, want 2 (stderr: %s)", engine, code, h.stderr.String())
+		if code == 2 {
+			t.Errorf("exec --engine %s: exit 2 means the old sqlite-only refusal is back (stderr: %s)", engine, h.stderr.String())
 		}
-		if !strings.Contains(h.stderr.String(), "sqlite-only") {
-			t.Errorf("exec --engine %s: stderr %q must say sqlite-only", engine, h.stderr.String())
-		}
-		if inv := h.invocations(t, h.sshLog); inv != "" {
-			t.Errorf("exec --engine %s: refusal must cost ZERO round-trips:\n%s", engine, inv)
+		if strings.Contains(h.stderr.String(), "sqlite-only") {
+			t.Errorf("exec --engine %s: the sqlite-only refusal must never appear (stderr: %s)", engine, h.stderr.String())
 		}
 	}
 }
