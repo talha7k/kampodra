@@ -162,3 +162,17 @@ hostname) — precedence to revisit alongside F13.
 - alpine container-mode vm-prepare (the alpine leg is root-ssh OCI shape)
 - grant-ro against real postgres (SQL printed, not executed — admin path)
 - the GCP container-mode db flows over a real dbHost hop
+
+## The sudo-wrap closed — the full non-root GCP pass (2026-10-19)
+GCP ubuntu-minimal 24.04, e2-micro, non-root ssh user: vm-prepare
+completed end-to-end. Three more live findings fixed en route:
+- F14: the 60s proxy wait lost the race to a cold first pull (5min now)
+- F15: the readiness probe read the ROOTFUL podman store unprivileged —
+  the probe carries the elevation prefix
+- the compound podman gates, the &&-chained registries gate, and the
+  `!` negation gate all carried shell syntax the blanket sudo prefix
+  cannot parse — elevated forms go through runRoot's sh -c now
+Lesson: elevation composition has TWO failure modes — under-elevation
+(privileged reads denied) and mis-elevation (sudo parsing shell
+syntax). Every remote command is now classified: read (no elevation),
+run (simple argv), runRoot (shell syntax).
