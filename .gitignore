@@ -26,3 +26,4 @@ coverage.out
 # articles / drafts
 /article.md
 /article*.html
+.npmrc
