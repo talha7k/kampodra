@@ -62,7 +62,7 @@ func newVMCommand(d Deps) *cobra.Command {
 	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
 		fmt.Fprint(c.OutOrStdout(), vmGcHelp)
 	})
-	cmd.AddCommand(newVMGCSub(d))
+	cmd.AddCommand(newVMGCSub(d), newVMImageCommand(d))
 	return cmd
 }
 

@@ -17,11 +17,15 @@ artifact-publish side and the Ubuntu base strategy:
       golden-image/<name>-<date>-<digest8> layout (overwrites
       structurally impossible; "latest" unrepresentable),
       VerifyGoldenArtifact (tamper detection), fail-closed parsing.
-- [ ] `vm image publish` — thin shim: EmitGoldenManifest + the oci CLI
-      object put into GoldenImageDir (the contract is tested; the shim
-      is one command away)
-- [ ] `vm image list` / `verify` — bucket inventory + ReadGoldenManifest
-      + VerifyGoldenArtifact against the downloaded bytes
+- [x] `vm image publish/list/verify` LANDED (25c531d + this): publish =
+      EmitGoldenManifest + object put into the digest-pinned dir (the
+      never-overwrite guard heads the manifest first — already-published
+      says verify, never re-put); list = the golden-image/ inventory;
+      verify = manifest fetch + byte-level digest check. Fail-closed
+      verified live (missing artifact, unsafe name). Auth rides the
+      profile cloud block exactly like image-import.
+- [ ] the live OCI publish/verify smoke (one tiny artifact, torn down)
+      — the commands ride the live-proven ImageStage primitives
 - [ ] `--image-manifest` pinning (digests, never "latest")
 
 ## G2 — dbq MariaDB "drift" — CLOSED (was stale)
