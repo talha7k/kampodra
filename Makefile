@@ -87,6 +87,7 @@ cross-compile:
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$$(git rev-parse --short HEAD)" -o dist/kampodra-$$triple ./cmd/kampodra; \
 		mkdir -p npm/platforms/$$triple/bin; \
 		cp dist/kampodra-$$triple npm/platforms/$$triple/bin/kampodra; \
+		chmod 755 npm/platforms/$$triple/bin/kampodra; \
 		node -e "const fs=require('fs');const f='npm/platforms/$$triple/package.json';const p=JSON.parse(fs.readFileSync(f));p.version='$(VERSION)';fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"; \
 		echo "built $$os/$$arch -> dist/kampodra-$$triple"; \
 	done
