@@ -1,6 +1,6 @@
 {
   "name": "@kampodra/linux-arm64",
-  "version": "0.8.10",
+  "version": "0.8.11",
   "description": "kampodra native binary for linux-arm64 — installed automatically as an optionalDependency of the kampodra package; do not install directly",
   "license": "AGPL-3.0",
   "os": [
