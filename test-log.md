@@ -192,3 +192,13 @@ run (simple argv), runRoot (shell syntax).
 - 0.8.10 (exec bit) + 0.8.11/0.8.12 (stamps) deprecated with pointers
   to 0.8.13. 0.8.13 verified: all four platforms + root, fresh-install
   smoke prints 0.8.13 (commit 67d6836).
+
+## The OCI leg — the second real cloud (2026-10-19)
+OCI A1.Flex (ARM, 1 OCPU/6GB), Ubuntu 24.04 Minimal, me-riyadh-1,
+launched via the `esellar-api` API-key profile (the default profiles'
+session tokens had expired — the durable API-key profile was the key).
+ubuntu@ (non-root, passwordless sudo): vm-prepare passed ALL gates
+first try — the sudo-wrap is now proven on TWO clouds and TWO
+architectures (GCP x86 + OCI ARM). The esellar infra's OCI auth is
+instance-principal (keyless, on-host only) — nothing to mirror into
+varlock/pass for local CLI use; the API-key profile already covers it.
