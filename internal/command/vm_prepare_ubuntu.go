@@ -39,7 +39,7 @@ func (p *vmProvisioner) ubuntuInitGates() error {
 		return p.die("systemd is NOT PID1 — this is not the Ubuntu golden image (start-fresh boots systemd)", err)
 	}
 	p.say("gate: apt operational")
-	if err := p.read(vmbootstrap.GateAptOperational); err != nil {
+	if err := p.run(vmbootstrap.GateAptOperational); err != nil { // apt-get update MUTATES the lists — the one gate that must elevate
 		return p.die("apt is not operational (apt-get update failed — is the mirror reachable?)", err)
 	}
 	return nil
