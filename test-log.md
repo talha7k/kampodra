@@ -215,3 +215,12 @@ client riding the DB VM's own ssh session (dbTargetFor):
   touched. Fixed: mkdir -p before the write (env set now works on bare
   hosts). Ports: kampodra takes ssh-config aliases (hopB with Port in
   ~/.ssh/config) — the sanctioned route; no host:port parsing duplicated.
+
+## 0.8.14 — the golden-image release (2026-10-19)
+The train ran clean end-to-end: bump → push → tagged worktree (the
+stamp verified ea6115e BEFORE any upload) → five publishes with the
+retry loop → publish-verify verified all four platforms → the
+fresh-install smoke prints 0.8.14 (commit ea6115e). Carries: the G1
+golden-image surface (publish/list/verify over the digest-pinned
+manifest contract), F18 (env on bare hosts), the dbHost hop fixes, and
+everything since 0.8.13.
