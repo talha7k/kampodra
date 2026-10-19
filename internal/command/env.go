@@ -1,6 +1,8 @@
 package command
 
 import (
+	"path/filepath"
+
 	"context"
 	"fmt"
 	"io"
@@ -159,7 +161,10 @@ func newEnvPushSub(d Deps) *cobra.Command {
 func installRemoteEnv(d Deps, ctx context.Context, target Target, content string) error {
 	remote := target.Project.EnvFile
 	tmp := envfile.RemoteTmpPath(remote, os.Getpid())
-	if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, "umask 077; cat > "+tmp, strings.NewReader(content)); err != nil {
+	// mkdir -p first: the env file's directory exists on vm-prepared hosts,
+	// but env set must also work on bare hosts (the F18 hop finding — a
+	// missing /etc/kampodra surfaced as a cryptic "upload failed").
+	if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, "umask 077; mkdir -p "+filepath.Dir(tmp)+"; cat > "+tmp, strings.NewReader(content)); err != nil {
 		return fmt.Errorf("upload failed")
 	}
 	if _, err := d.Runner.Run(ctx, target.HostSpec, fmt.Sprintf("chmod 600 %s && mv -f %s %s", tmp, tmp, remote)); err != nil {

@@ -38,7 +38,7 @@ func setupEnv(t *testing.T) (deps command.Deps, stubDir string, stdout, stderr *
 		"case \"$cmd\" in\n" +
 		"  \"cat /etc/kampodra/env\") cat '" + fixture + "'; exit 0 ;;\n" +
 		"  *\"if [ -f /etc/kampodra/env\"*) cat '" + fixture + "'; exit 0 ;;\n" +
-		"  \"umask 077; cat >\"*) cat > '" + uploaded + "'; exit 0 ;;\n" +
+		"  \"umask 077\"*) cat > '" + uploaded + "'; exit 0 ;;\n" +
 		"  *\"command -v rc-service\"*) printf 'openrc\\nhttpc=wget\\n'; exit 0 ;;\n" +
 		"  *\"rc-service \"*) exit 0 ;;\n" +
 		"  \"chmod 600\"*) exit 0 ;;\n" +
@@ -145,7 +145,7 @@ func TestEnvPushUploadsVerbatimWithAtomicInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	commands := string(inv)
-	if !strings.Contains(commands, "umask 077; cat > /etc/kampodra/env.tmp.") {
+	if !strings.Contains(commands, "umask 077; mkdir -p /etc/kampodra; cat > /etc/kampodra/env.tmp.") {
 		t.Errorf("push never created the 0600-from-creation remote temp:\n%s", commands)
 	}
 	if !strings.Contains(commands, "chmod 600 /etc/kampodra/env.tmp.") ||

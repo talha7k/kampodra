@@ -202,3 +202,16 @@ first try — the sudo-wrap is now proven on TWO clouds and TWO
 architectures (GCP x86 + OCI ARM). The esellar infra's OCI auth is
 instance-principal (keyless, on-host only) — nothing to mirror into
 varlock/pass for local CLI use; the API-key profile already covers it.
+
+## The dbHost real hop + F18 (2026-10-19)
+Two sshd containers: hopA (the app VM, port 2222) + hopB (the DB VM,
+port 2223, mariadb-server). The full matrix through the hop, with the
+client riding the DB VM's own ssh session (dbTargetFor):
+- query ✓ (hopcheck=1) · gated exec ✓ (the engine-agnostic write gate
+  serving MariaDB through --db-host) · grant-ro ✓ (role provisioned on
+  the DB VM, env keys written there) · DDL refused ✓ (exit 2)
+- F18: installRemoteEnv wrote /etc/kampodra/env.tmp.N without ensuring
+  the directory — cryptic "upload failed" on any host vm-prepare never
+  touched. Fixed: mkdir -p before the write (env set now works on bare
+  hosts). Ports: kampodra takes ssh-config aliases (hopB with Port in
+  ~/.ssh/config) — the sanctioned route; no host:port parsing duplicated.
