@@ -12,6 +12,76 @@ and the command reference in [cli.md](cli.md); the user-level overview is
 
 The tree is a strict three-layer ports-and-adapters architecture:
 
+![kampodra ports-and-adapters](arch-diagram.png)
+
+```mermaid
+graph TB
+    subgraph entrypoint["cmd/kampodra — thin entrypoint"]
+        E["version stamp + Execute"]
+    end
+
+    subgraph cmd["internal/command — orchestration only (no OS knowledge)"]
+        DEPLOY["deploy / rolling<br/>blue-green"]
+        DB["db query · exec · snapshot<br/>grant-ro"]
+        PREP["vm-prepare · vm gc<br/>vm image"]
+        ENVS["env · envgen"]
+    end
+
+    subgraph adapters["internal/adapter — every boundary to the world"]
+        T["transport<br/>the ssh binary"]
+        R["runtime<br/>podman on the VM"]
+        I["init<br/>openrc · systemd"]
+        P["probe<br/>edge health"]
+        C["cloud<br/>oci · gcp ops"]
+        DQ["dbq<br/>4 engines"]
+        OS["osfacts"]
+        ST["state<br/>profiles + ledger"]
+        EF["envfile<br/>envschema"]
+        VB["vmbootstrap"]
+    end
+
+    subgraph world["the outside world"]
+        VM["Linux VMs<br/>(ssh, podman)"]
+        EDGE["kamal-proxy<br/>edge"]
+        CLOUD["OCI / GCP<br/>APIs + CLIs"]
+        DBS["sqlite · mariadb<br/>postgres · sqld"]
+        LOCAL["~/.kampodra<br/>config + ledger"]
+    end
+
+    E --> cmd
+    DEPLOY --> T
+    DEPLOY --> R
+    DEPLOY --> I
+    DEPLOY --> P
+    DEPLOY --> C
+    DEPLOY --> ST
+    DB --> T
+    DB --> DQ
+    DB --> ST
+    PREP --> T
+    PREP --> VB
+    PREP --> C
+    ENVS --> EF
+    ENVS --> T
+    T --> VM
+    R --> VM
+    I --> VM
+    OS --> VM
+    P --> EDGE
+    C --> CLOUD
+    DQ --> DBS
+    ST --> LOCAL
+    EF --> VM
+```
+
+The flows read off the diagram: a **deploy** rides transport → runtime →
+init → probe (health-gate by sha) → cloud (flip/DNS), with every
+successful attempt appended to the state ledger; a **db** command rides
+transport → dbq (one engine seam; the staged-creds ladder) and — with
+`--db-host` — a second ssh hop; **vm-prepare** rides transport →
+vmbootstrap (the per-OS snippets/units/gates) → cloud; nothing skips a
+layer.
+
 ```
 cmd/kampodra        thin entrypoint: version stamp + command.Execute
 internal/command    Cobra command tree: orchestration + rendering

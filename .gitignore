@@ -27,3 +27,5 @@ coverage.out
 /article.md
 /article*.html
 .npmrc
+config.bat
+node_modules
