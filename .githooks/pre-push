@@ -1,0 +1,74 @@
+#!/bin/bash
+# kampodra pre-push: secret-leak guard.
+# Scans every commit being pushed (origin..HEAD and any other refs)
+# with gitleaks. Rejects the push if a secret is found.
+#
+# Installed via `make hooks` (git config core.hooksPath .githooks).
+# Skip in a genuine emergency with: git push --no-verify
+
+set -uo pipefail
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "⚠ gitleaks not found — install it (brew install gitleaks) to keep the" >&2
+  echo "  pre-push secret scan active. Push continues this once." >&2
+  exit 0
+fi
+
+# Read "local-ref local-sha remote-ref remote-sha" lines from stdin.
+# Collect the range(s) of new commits per remote ref; fall back to
+# origin..HEAD when stdin is empty (e.g. hook run manually).
+ranges=()
+while read -r lref lsha rref rsha; do
+  [ -n "$lsha" ] || continue
+  zeros="0000000000000000000000000000000000000000"
+  if [ "$lsha" = "$zeros" ]; then
+    continue # deletion, nothing to scan
+  fi
+  if [ "$rsha" = "$zeros" ] || ! git cat-file -e "$rsha" 2>/dev/null; then
+    ranges+=("$lsha" "--not" "--remotes=origin")
+  else
+    ranges+=("${rsha}..${lsha}")
+  fi
+done
+
+if [ ${#ranges[@]} -eq 0 ]; then
+  branch=$(git rev-parse --abbrev-ref HEAD)
+  if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
+    ranges=("origin/${branch}..HEAD")
+  else
+    ranges=("HEAD")
+  fi
+fi
+
+echo "🔍 gitleaks: scanning commits before push..."
+found=0
+i=0
+while [ $i -lt ${#ranges[@]} ]; do
+  range="${ranges[$i]}"
+  case "$range" in
+    --not|--remotes=*) i=$((i+1)); continue ;; # part of multi-arg form
+  esac
+  # Reassemble multi-arg form: "<sha> --not --remotes=origin"
+  if [ "${ranges[$((i+1))]:-}" = "--not" ]; then
+    range="${ranges[$i]} ${ranges[$((i+1))]} ${ranges[$((i+2))]}"
+    i=$((i+3))
+  else
+    i=$((i+1))
+  fi
+  if ! gitleaks git --pre-commit --no-banner --redact --log-opts="$range" >/dev/null 2>&1; then
+    found=1
+  fi
+done
+
+if [ "$found" -eq 1 ]; then
+  echo "" >&2
+  echo "✗ PUSH REJECTED: gitleaks found potential secrets in commits being pushed." >&2
+  echo "  Secrets pushed to a remote are compromised even if force-removed later." >&2
+  echo "  Fix: remove/rotate the secret, amend or rebase, then push again." >&2
+  echo "  Inspect: gitleaks git --pre-commit --log-opts='<range>'" >&2
+  echo "  (true emergency bypass: git push --no-verify)" >&2
+  exit 1
+fi
+
+echo "✓ no secrets detected"
+exit 0

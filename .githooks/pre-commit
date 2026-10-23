@@ -23,4 +23,45 @@ if git diff --cached --name-only | grep -q '\.go$'; then
     exit 1
   fi
 fi
+
+# 3) Malware/implant + dep supply-chain gate (added 2026-10-24, A9-1730 purge
+# hardening; port of the timetandem-nuxt 96f36aa6 kit). Scans ADDED lines of
+# the staged diff for the implant's fingerprints and blocks lockfile
+# lifecycle-script vectors. CI runs the authoritative full-tree scan.
+PATTERNS_FILE="$(git rev-parse --show-toplevel)/scripts/malware-patterns.txt"
+PATTERNS="$(grep -vE '^\s*(#|$)' "$PATTERNS_FILE")"
+DIFF_ADDED="$(git diff --cached -U0 -- . ':(exclude)go.sum' ':(exclude)package-lock.json' ':(exclude)pnpm-lock.yaml' ':(exclude)*.md' ':(exclude)scripts/malware-patterns.txt' 2>/dev/null | grep '^+' | grep -v '^+++' | grep -vE '^\+\s*(//|\*|/\*|#)' || true)"
+
+if [ -n "$DIFF_ADDED" ]; then
+  HITS_FILE="$(mktemp)"
+  trap 'rm -f "$HITS_FILE"' EXIT
+  printf '%s\n' "$PATTERNS" | while IFS= read -r pattern; do
+    [ -z "$pattern" ] && continue
+    MATCHES="$(printf '%s\n' "$DIFF_ADDED" | { grep -InE "$pattern" || true; } | head -5)"
+    if [ -n "$MATCHES" ]; then
+      echo "━━━ MALWARE/IMPLANT PATTERN MATCHED IN STAGED CHANGES ━━━" >&2
+      echo "$MATCHES" | sed 's/^/    /' >&2
+      echo "    (pattern: $pattern)" >&2
+      echo 1 >"$HITS_FILE"
+    fi
+  done
+  if [ -s "$HITS_FILE" ]; then
+    echo "" >&2
+    echo "❌  Commit BLOCKED: staged changes match malware/implant fingerprints." >&2
+    echo "    Review the matches; if editing this hook or a security test is the" >&2
+    echo "    legitimate exception, use: git commit --no-verify (CI re-checks)." >&2
+    exit 1
+  fi
+fi
+
+STAGED_DEPS="$(git diff --cached --name-only -- package.json pnpm-lock.yaml pnpm-workspace.yaml package-lock.json)"
+if [ -n "$STAGED_DEPS" ]; then
+  echo "📦 dep-audit: dependency files staged — running supply-chain scan…"
+  if ! node "$(git rev-parse --show-toplevel)/scripts/dep-audit.mjs"; then
+    echo "❌  Commit BLOCKED: dependency audit failed (see above)." >&2
+    echo "    Lifecycle-script / network-fetch findings must be resolved." >&2
+    exit 1
+  fi
+fi
+
 exit 0
