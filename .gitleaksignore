@@ -1,0 +1,4 @@
+# go.sum.tmpl carries PUBLIC Go module checksums (h1:/go.mod hashes), not secrets.
+# gitleaks' generic-api-key rule false-positives on them in full-log scans.
+6341a1048935a5c1abc1967c356a0fa401158e8d:internal/adapter/dbq/helpermod/go.sum.tmpl:generic-api-key:49
+0e21f617870e2718095ae8c129ca2fc0522fcde2:internal/adapter/dbq/helpermod/go.sum.tmpl:generic-api-key:49
