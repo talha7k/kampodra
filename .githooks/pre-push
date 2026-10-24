@@ -1,7 +1,7 @@
 #!/bin/bash
-# kampodra pre-push: secret-leak guard.
-# Scans every commit being pushed (origin..HEAD and any other refs)
-# with gitleaks. Rejects the push if a secret is found.
+# kampodra pre-push: secret-leak + unsigned-commit guard.
+# 1) Rejects pushes containing unsigned commits.
+# 2) Scans every commit being pushed with gitleaks.
 #
 # Installed via `make hooks` (git config core.hooksPath .githooks).
 # Skip in a genuine emergency with: git push --no-verify
@@ -38,6 +38,35 @@ if [ ${#ranges[@]} -eq 0 ]; then
   else
     ranges=("HEAD")
   fi
+fi
+
+# --- Unsigned-commit guard: reject pushes containing unsigned commits ---
+unsigned=0
+check_range() {
+  while read -r sha; do
+    if [ "$(git cat-file commit "$sha" | grep -c '^gpgsig ')" -eq 0 ]; then
+      echo "✗ unsigned commit in push range: $(git log -1 --format='%h %s' "$sha")" >&2
+      unsigned=1
+    fi
+  done < <(git rev-list --topo-order $1)
+}
+for r in "${ranges[@]}"; do
+  case "$r" in
+    --not|--remotes=*) continue ;;
+  esac
+  if [[ "$r" == *..* ]]; then
+    check_range "$r"
+  else
+    check_range "$r --not --remotes=origin"
+  fi
+done
+
+if [ "$unsigned" -eq 1 ]; then
+  echo "" >&2
+  echo "✗ PUSH REJECTED: unsigned commits in range. GitHub would show them Unverified." >&2
+  echo "  Fix: git rebase --gpg-sign (or set commit.gpgsign=true — check why it was off)." >&2
+  echo "  (bypass: git push --no-verify)" >&2
+  exit 1
 fi
 
 echo "🔍 gitleaks: scanning commits before push..."
