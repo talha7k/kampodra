@@ -1,6 +1,6 @@
 {
   "name": "@kampodra/darwin-x64",
-  "version": "0.8.14",
+  "version": "0.8.15",
   "description": "kampodra native binary for darwin-x64 — installed automatically as an optionalDependency of the kampodra package; do not install directly",
   "license": "AGPL-3.0",
   "os": [
