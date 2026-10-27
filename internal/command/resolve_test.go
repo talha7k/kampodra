@@ -145,74 +145,75 @@ func TestResolveTargetProxyHosts(t *testing.T) {
 		return strings.Join(got.Project.EffectiveProxyHosts(), ",")
 	}
 
-	t.Run("no list anywhere: effective hosts stay exactly [scalar]", func(t *testing.T) {
-		got, err := ResolveTarget(cfg, "", "", "def", nil, noEnv)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if hosts(got) != "app.example.com" || got.ProxyHost != "app.example.com" {
-			t.Errorf("hosts = %q, scalar = %q — the unset list must fall back to the scalar alone", hosts(got), got.ProxyHost)
-		}
-	})
-	t.Run("profile block list resolves through the project ladder; first host becomes the edge", func(t *testing.T) {
-		got, err := ResolveTarget(cfg, "", "", "block", nil, noEnv)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if hosts(got) != "block-a.example.com,block-b.example.com" {
-			t.Errorf("hosts = %q, want the block list", hosts(got))
-		}
-		if got.ProxyHost != "block-a.example.com" || got.ProxyHostSource != "project (proxyHosts[0])" {
-			t.Errorf("scalar = %q (source %q), want the list's first host (the smoke probes it)", got.ProxyHost, got.ProxyHostSource)
-		}
-	})
-	t.Run("list-only profile: scalar derives from the list, flat field absent", func(t *testing.T) {
-		got, err := ResolveTarget(cfg, "", "", "listonly", nil, noEnv)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.ProxyHost != "first.example.com" || hosts(got) != "first.example.com,second.example.com" {
-			t.Errorf("scalar = %q, hosts = %q, want the first host + the full list", got.ProxyHost, hosts(got))
-		}
-	})
-	t.Run("flat list wins over the block list", func(t *testing.T) {
-		got, err := ResolveTarget(cfg, "", "", "both", nil, noEnv)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if hosts(got) != "flat-wins.example.com" {
-			t.Errorf("hosts = %q, want the flat profile list (legacy flat field wins)", hosts(got))
-		}
-	})
-	t.Run("flat scalar keeps winning the scalar while the flat list feeds the re-point", func(t *testing.T) {
-		got, err := ResolveTarget(cfg, "", "", "flat", nil, noEnv)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.ProxyHost != "flat.example.com" || got.ProxyHostSource != "profile (legacy flat field)" {
-			t.Errorf("scalar = %q (source %q), want the flat scalar (byte-compat with today)", got.ProxyHost, got.ProxyHostSource)
-		}
-		if hosts(got) != "flat-a.example.com,flat-b.example.com" {
-			t.Errorf("hosts = %q, want the flat list", hosts(got))
-		}
-	})
-	t.Run("an explicit scalar beats the derived first host", func(t *testing.T) {
-		got, err := ResolveTarget(cfg, "", "", "block", nil, func(key string) (string, bool) {
-			if key == "KAMPODRA_PROXY_HOST" {
-				return "explicit.example.com", true
+	// resolve is a table-driven step: one case per profile+env combination.
+	cases := []struct {
+		name       string
+		profile    string
+		env        map[string]string
+		wantHosts  string
+		wantScalar string
+		wantSource string
+	}{
+		{
+			name:       "no list anywhere: effective hosts stay exactly [scalar]",
+			profile:    "def",
+			wantHosts:  "app.example.com",
+			wantScalar: "app.example.com",
+		},
+		{
+			name:       "profile block list resolves through the project ladder; first host becomes the edge",
+			profile:    "block",
+			wantHosts:  "block-a.example.com,block-b.example.com",
+			wantScalar: "block-a.example.com",
+			wantSource: "project (proxyHosts[0])",
+		},
+		{
+			name:       "list-only profile: scalar derives from the list, flat field absent",
+			profile:    "listonly",
+			wantHosts:  "first.example.com,second.example.com",
+			wantScalar: "first.example.com",
+		},
+		{
+			name:      "flat list wins over the block list",
+			profile:   "both",
+			wantHosts: "flat-wins.example.com",
+		},
+		{
+			name:       "flat scalar keeps winning the scalar while the flat list feeds the re-point",
+			profile:    "flat",
+			wantHosts:  "flat-a.example.com,flat-b.example.com",
+			wantScalar: "flat.example.com",
+			wantSource: "profile (legacy flat field)",
+		},
+		{
+			name:       "an explicit scalar beats the derived first host",
+			profile:    "block",
+			env:        map[string]string{"KAMPODRA_PROXY_HOST": "explicit.example.com"},
+			wantHosts:  "block-a.example.com,block-b.example.com",
+			wantScalar: "explicit.example.com",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			envFn := noEnv
+			if len(tc.env) > 0 {
+				envFn = func(key string) (string, bool) { v, ok := tc.env[key]; return v, ok }
 			}
-			return "", false
+			got, err := ResolveTarget(cfg, "", "", tc.profile, nil, envFn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hosts(got) != tc.wantHosts {
+				t.Errorf("hosts = %q, want %q", hosts(got), tc.wantHosts)
+			}
+			if tc.wantScalar != "" && got.ProxyHost != tc.wantScalar {
+				t.Errorf("scalar = %q, want %q", got.ProxyHost, tc.wantScalar)
+			}
+			if tc.wantSource != "" && got.ProxyHostSource != tc.wantSource {
+				t.Errorf("source = %q, want %q", got.ProxyHostSource, tc.wantSource)
+			}
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.ProxyHost != "explicit.example.com" {
-			t.Errorf("scalar = %q, want the explicit env scalar over the derived first host", got.ProxyHost)
-		}
-		if hosts(got) != "block-a.example.com,block-b.example.com" {
-			t.Errorf("hosts = %q, want the block list untouched", hosts(got))
-		}
-	})
+	}
 }
 
 func TestResolveTargetManifestShapesProject(t *testing.T) {

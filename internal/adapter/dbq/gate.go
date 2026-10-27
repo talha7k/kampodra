@@ -69,17 +69,20 @@ func ValidateWrite(stmt string) error {
 // terminates a statement: semicolons inside string literals, quoted
 // identifiers, backticks, and comments don't count ('a;b' is a value, not
 // a separator). -1 = single statement.
+// lexState enumerates the SQL-scanner states for statementTerminator.
+type lexState int
+
+const (
+	normal lexState = iota
+	inSingle
+	inDouble
+	inBracket
+	inBacktick
+	inLineComment
+	inBlockComment
+)
+
 func statementTerminator(s string) int {
-	type state int
-	const (
-		normal state = iota
-		inSingle
-		inDouble
-		inBracket
-		inBacktick
-		inLineComment
-		inBlockComment
-	)
 	depth := 0 // block-comment nesting
 	st := normal
 	for i := 0; i < len(s); i++ {
@@ -88,71 +91,91 @@ func statementTerminator(s string) int {
 		if i+1 < len(s) {
 			two = s[i : i+2]
 		}
-		switch st {
-		case inSingle:
-			if c == '\'' {
-				// '' escapes a quote inside the literal
-				if strings.HasPrefix(s[i:], "''") {
-					i++
-					continue
-				}
-				st = normal
-			}
-		case inDouble:
-			if strings.HasPrefix(s[i:], "\"\"") {
+		// statement end — only reachable in normal state (a ';' inside any
+		// literal/comment is consumed by the state handlers below)
+		if st == normal {
+			if two == "--" {
+				st = inLineComment
 				i++
 				continue
 			}
-			if c == '"' {
-				st = normal
-			}
-		case inBracket:
-			if c == ']' {
-				st = normal
-			}
-		case inBacktick:
-			if c == '`' {
-				st = normal
-			}
-		case inLineComment:
-			if c == '\n' {
-				st = normal
-			}
-		case inBlockComment:
-			switch two {
-			case "/*":
-				depth++
-				i++
-			case "*/":
-				depth--
-				i++
-				if depth == 0 {
-					st = normal
-				}
-			}
-		default:
-			switch {
-			case two == "--":
-				st = inLineComment
-				i++
-			case two == "/*":
+			if two == "/*" {
 				st = inBlockComment
 				depth = 1
 				i++
-			case c == '\'':
+				continue
+			}
+			switch c {
+			case '\'':
 				st = inSingle
-			case c == '"':
+				continue
+			case '"':
 				st = inDouble
-			case c == '[':
+				continue
+			case '[':
 				st = inBracket
-			case c == '`':
+				continue
+			case '`':
 				st = inBacktick
-			case c == ';':
+				continue
+			case ';':
 				return i
+			}
+			continue
+		}
+		// inside a literal/comment — the state handler decides
+		st = stepLexer(st, c, two, &depth, &i, s)
+	}
+	return -1
+}
+
+// stepLexer advances one byte inside a non-normal state and returns the
+// next state. i may be advanced past a two-byte escape (” , "" , /* , */);
+// depth tracks block-comment nesting.
+func stepLexer(st lexState, c byte, two string, depth *int, i *int, s string) lexState {
+	switch st {
+	case inSingle:
+		if c == '\'' {
+			if strings.HasPrefix(s[*i:], "''") { // '' escapes a quote in the literal
+				*i++
+				return inSingle
+			}
+			return normal
+		}
+	case inDouble:
+		if strings.HasPrefix(s[*i:], "\"\"") { // "" escapes a quote
+			*i++
+			return inDouble
+		}
+		if c == '"' {
+			return normal
+		}
+	case inBracket:
+		if c == ']' {
+			return normal
+		}
+	case inBacktick:
+		if c == '`' {
+			return normal
+		}
+	case inLineComment:
+		if c == '\n' {
+			return normal
+		}
+	case inBlockComment:
+		switch two {
+		case "/*":
+			*depth++
+			*i++
+		case "*/":
+			*depth--
+			*i++
+			if *depth == 0 {
+				return normal
 			}
 		}
 	}
-	return -1
+	return st
 }
 
 // firstKeyword returns the statement's first BARE keyword (uppercased):

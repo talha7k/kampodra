@@ -495,50 +495,41 @@ func manifestListField(o ManifestFields, key string) []string {
 // profile's "project" block — same camelCase keys as the manifest/env
 // ladder (envFile included; the legacy envFilePath spelling is accepted at
 // unmarshal time only).
+// stringFieldGetters maps every string override key to its accessor — the
+// single source of truth for the key→field binding (a switch here trips
+// gocyclo at this key count; a table doesn't).
+var stringFieldGetters = map[string]func(Overrides) string{
+	"container":          func(o Overrides) string { return o.Container },
+	"pairInstancePrefix": func(o Overrides) string { return o.PairInstancePrefix },
+	"shadowSuffix":       func(o Overrides) string { return o.ShadowSuffix },
+	"envFile":            func(o Overrides) string { return o.EnvFile },
+	"dataDir":            func(o Overrides) string { return o.DataDir },
+	"bucket":             func(o Overrides) string { return o.Bucket },
+	"objectPrefix":       func(o Overrides) string { return o.ObjectPrefix },
+	"healthPath":         func(o Overrides) string { return o.HealthPath },
+	"proxyHost":          func(o Overrides) string { return o.ProxyHost },
+	"imagePrefix":        func(o Overrides) string { return o.ImagePrefix },
+	"port":               func(o Overrides) string { return o.Port },
+	"network":            func(o Overrides) string { return o.Network },
+	"shadowProbePort":    func(o Overrides) string { return o.ShadowProbePort },
+	"deployedShaFile":    func(o Overrides) string { return o.DeployedShaFile },
+	"dockerfile":         func(o Overrides) string { return o.Dockerfile },
+	"migrateScript":      func(o Overrides) string { return o.MigrateScript },
+	"migrateMode":        func(o Overrides) string { return o.MigrateMode },
+	"migrateDir":         func(o Overrides) string { return o.MigrateDir },
+}
+
 func overridesStringField(o Overrides, key string) string {
-	switch key {
-	case "container":
-		return o.Container
-	case "pairInstancePrefix":
-		return o.PairInstancePrefix
-	case "shadowSuffix":
-		return o.ShadowSuffix
-	case "envFile":
-		return o.EnvFile
-	case "dataDir":
-		return o.DataDir
-	case "bucket":
-		return o.Bucket
-	case "objectPrefix":
-		return o.ObjectPrefix
-	case "healthPath":
-		return o.HealthPath
-	case "proxyHost":
-		return o.ProxyHost
-	case "imagePrefix":
-		return o.ImagePrefix
-	case "port":
-		return o.Port
-	case "network":
-		return o.Network
-	case "shadowProbePort":
-		return o.ShadowProbePort
-	case "deployedShaFile":
-		return o.DeployedShaFile
-	case "dockerfile":
-		return o.Dockerfile
-	case "migrateScript":
-		return o.MigrateScript
-	case "migrateMode":
-		return o.MigrateMode
-	case "migrateDir":
-		return o.MigrateDir
-	case "serveWeb":
+	if key == "serveWeb" {
 		// The bool rides the scalar table as its spelled-out form ("true"/
 		// "false"); the binding's apply parses it back. nil = not provided.
 		if o.ServeWeb != nil {
 			return strconv.FormatBool(*o.ServeWeb)
 		}
+		return ""
+	}
+	if get, ok := stringFieldGetters[key]; ok {
+		return get(o)
 	}
 	return ""
 }

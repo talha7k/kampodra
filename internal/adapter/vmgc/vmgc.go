@@ -93,7 +93,7 @@ func ClassifyWith(pr Protect, e Entry) Class {
 	case hasAnyPrefix(p, "/etc/"), hasAnyPrefix(p, "/boot/"):
 		return ClassOS
 	case p == "/data" || hasAnyPrefix(p, "/data/"):
-		return classifyData(pr, p, e)
+		return classifyData(pr, p)
 	case p == "/root" || hasAnyPrefix(p, "/root/"):
 		return classifyRoot(e)
 	case hasAnyPrefix(p, "/tmp/"), hasAnyPrefix(p, "/var/tmp/"):
@@ -111,7 +111,7 @@ func ClassifyWith(pr Protect, e Entry) Class {
 // estate-specific paths fail closed to report-only classes.
 func Classify(e Entry) Class { return ClassifyWith(Protect{}, e) }
 
-func classifyData(pr Protect, p string, e Entry) Class {
+func classifyData(pr Protect, p string) Class {
 	switch {
 	case pr.DataDir != "" && (p == pr.DataDir || hasAnyPrefix(p, pr.DataDir+"/")):
 		return ClassTenantData
@@ -420,19 +420,7 @@ func BuildPlan(entries []Entry, inUse, ownerDirs []string, pr Protect) Plan {
 	for _, d := range ownerDirs {
 		ownerDirSet[d] = true
 	}
-	rows := make([]Classified, 0, len(entries))
-	for _, e := range entries {
-		cl := ClassifyWith(pr, e)
-		if Deletable(cl) {
-			for d := range ownerDirSet {
-				if e.Path == d || hasAnyPrefix(e.Path, d+"/") {
-					cl = ClassOwnerDecision // live build context — never auto
-					break
-				}
-			}
-		}
-		rows = append(rows, Classified{Entry: e, Class: cl})
-	}
+	rows := classifyRows(entries, ownerDirSet, pr)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Entry.Path < rows[j].Entry.Path })
 
 	inUseSet := map[string]bool{}
@@ -448,8 +436,33 @@ func BuildPlan(entries []Entry, inUse, ownerDirs []string, pr Protect) Plan {
 		}
 	}
 
-	// Bucket every deletable entry's bytes onto its nearest deletable
-	// ancestor (or itself): the top-level row's rm reclaims the subtree.
+	reclaims, tops := bucketReclaims(rows, deletableDirs)
+	return assemblePlan(rows, reclaims, tops, inUseSet)
+}
+
+// classifyRows runs the classifier per entry, demoting anything inside an
+// owner-declared live build context to ClassOwnerDecision (never auto).
+func classifyRows(entries []Entry, ownerDirSet map[string]bool, pr Protect) []Classified {
+	rows := make([]Classified, 0, len(entries))
+	for _, e := range entries {
+		cl := ClassifyWith(pr, e)
+		if Deletable(cl) {
+			for d := range ownerDirSet {
+				if e.Path == d || hasAnyPrefix(e.Path, d+"/") {
+					cl = ClassOwnerDecision // live build context — never auto
+					break
+				}
+			}
+		}
+		rows = append(rows, Classified{Entry: e, Class: cl})
+	}
+	return rows
+}
+
+// bucketReclaims buckets every deletable entry's bytes onto its nearest
+// deletable ancestor (or itself): the top-level row's rm reclaims the
+// subtree. Returns the per-key totals and the top-level rows.
+func bucketReclaims(rows []Classified, deletableDirs map[string]bool) (map[string]int64, []Classified) {
 	reclaims := map[string]int64{}
 	var tops []Classified
 	for _, r := range rows {
@@ -465,7 +478,12 @@ func BuildPlan(entries []Entry, inUse, ownerDirs []string, pr Protect) Plan {
 			tops = append(tops, r)
 		}
 	}
+	return reclaims, tops
+}
 
+// assemblePlan turns the top-level deletable rows into Removals, routing
+// in-use paths to Blocked.
+func assemblePlan(rows []Classified, reclaims map[string]int64, tops []Classified, inUseSet map[string]bool) Plan {
 	plan := Plan{Rows: rows}
 	for _, r := range tops {
 		cmd, err := RemoveCommand(r.Entry)

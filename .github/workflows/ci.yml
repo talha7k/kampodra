@@ -76,11 +76,27 @@ jobs:
         if: matrix.goos != 'linux' || matrix.goarch != 'amd64'
         run: |
           test -x dist/kampodra
-          case "${{ matrix.goos }}/${{ matrix.goarch }}" in
-            darwin/arm64) file dist/kampodra | grep -q "Mach-O 64-bit executable arm64" ;;
-            darwin/amd64) file dist/kampodra | grep -q "Mach-O 64-bit executable x86_64" ;;
-            linux/arm64)  file dist/kampodra | grep -q "ELF 64-bit.*ARM aarch64" ;;
-          esac
+          # magic-byte check, no `file` dependency (its wording varies per
+          # distro): Mach-O magic cffaedfe (arm64) / cffaedfe (x86_64, little
+          # endian so bytes are feedcff) vs ELF 7f454c46 + e_machine byte.
+          python3 - <<'EOF'
+          import struct, sys
+          data = open("dist/kampodra", "rb").read(20)
+          import os
+          target = "${{ matrix.goos }}/${{ matrix.goarch }}"
+          if data[:4] not in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe", b"\x7fELF"):
+              sys.exit(f"not a Mach-O or ELF binary: {data[:4].hex()}")
+          if target.startswith("darwin"):
+              # Mach-O: magic then cputype (uint32 LE). arm64=0x0100000c, x86_64=0x01000007
+              cpu = struct.unpack("<I", data[4:8])[0]
+              want = 0x0100000C if target == "darwin/arm64" else 0x01000007
+              sys.exit(f"cputype {cpu:#x} != expected {want:#x}") if cpu != want else None
+          else:
+              # ELF: e_machine at offset 18 (uint16 LE). aarch64=183
+              mach = struct.unpack("<H", data[18:20])[0]
+              sys.exit(f"e_machine {mach} != 183 (aarch64)") if mach != 183 else None
+          print(f"header OK for {target}")
+          EOF
       - uses: actions/upload-artifact@v4
         with:
           name: kampodra-${{ matrix.goos }}-${{ matrix.goarch }}

@@ -31,7 +31,9 @@ func (p *vmProvisioner) sshdHardening(restart string) error {
 	// removed and ssh restarted — the host heals itself, the run dies
 	// naming the config error.
 	if err := p.runRoot("sshd -t"); err != nil {
-		p.runRoot("rm -f " + vmbootstrap.SSHDHardeningPath + " && systemctl restart ssh 2>/dev/null || service sshd restart 2>/dev/null || true")
+		// best-effort heal: the compound command swallows its own errors
+		// (every leg ends in || true), and the run dies below regardless.
+		_ = p.runRoot("rm -f " + vmbootstrap.SSHDHardeningPath + " && systemctl restart ssh 2>/dev/null || service sshd restart 2>/dev/null || true")
 		return p.die("sshd config invalid after hardening — drop-in removed, ssh restored, fix the render and re-run", err)
 	}
 	if err := p.run(restart); err != nil {
