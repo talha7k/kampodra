@@ -647,7 +647,10 @@ func TestDNSGCPRmNoMatchFails(t *testing.T) {
 func TestDNSGCPMissingGCLOUDFailsClosed(t *testing.T) {
 	h := setupDNSGCP(t, map[string]string{})
 	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp"}}`)
-	t.Setenv("PATH", "/usr/bin:/bin") // no gcloud
+	// Empty PATH dir, NOT /usr/bin:/bin — GitHub runners ship gcloud in
+	// /usr/bin; see TestBackupGCPMissingGCLOUDFailsClosed.
+	empty := t.TempDir()
+	t.Setenv("PATH", empty)
 	if code := h.run(t, "records", "--profile", "gcp-prof"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}

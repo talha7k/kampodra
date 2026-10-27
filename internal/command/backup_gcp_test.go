@@ -144,7 +144,11 @@ func TestBackupGCPDownloadVerifiedByMD5(t *testing.T) {
 func TestBackupGCPMissingGCLOUDFailsClosed(t *testing.T) {
 	h := setupBackupGCP(t)
 	writeDNSProfile(t, h.deps.Home, "gcp-prof", `{"host": "root@198.51.100.7", "cloud": {"provider": "gcp"}}`)
-	t.Setenv("PATH", "/usr/bin:/bin") // no gcloud
+	// Empty PATH dir, NOT /usr/bin:/bin — GitHub runners ship gcloud in
+	// /usr/bin, which would make LookPath succeed and the real (unauthed)
+	// CLI run instead of failing closed.
+	empty := t.TempDir()
+	t.Setenv("PATH", empty)
 	if code := h.run(t, "list", "--bucket", "b", "--profile", "gcp-prof"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}

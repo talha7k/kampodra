@@ -163,7 +163,7 @@ func installRemoteEnv(d Deps, ctx context.Context, target Target, content string
 	tmp := envfile.RemoteTmpPath(remote, os.Getpid())
 	// mkdir -p first: the env file's directory exists on vm-prepared hosts,
 	// but env set must also work on bare hosts (the F18 hop finding — a
-	// missing /etc/kampodra surfaced as a cryptic "upload failed").
+	// missing env dir surfaced as a cryptic "upload failed").
 	if _, err := d.Runner.RunWithStdin(ctx, target.HostSpec, "umask 077; mkdir -p "+filepath.Dir(tmp)+"; cat > "+tmp, strings.NewReader(content)); err != nil {
 		return fmt.Errorf("upload failed")
 	}

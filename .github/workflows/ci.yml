@@ -10,7 +10,10 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.24"
+  # keep in sync with the `go` directive in go.mod — a mismatch makes the go
+  # command download its own toolchain mid-build (slow, and the module-cache
+  # download has been flaky on runners: tar "File exists" storms).
+  GO_VERSION: "1.27.1"
 
 jobs:
   test:
@@ -61,10 +64,23 @@ jobs:
           mkdir -p dist
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
             go build -trimpath -ldflags "-s -w" -o dist/kampodra ./cmd/kampodra
+      # smoke-exec only when the artifact matches the runner (ubuntu x64):
+      # a darwin/arm64 or linux/arm64 binary can't exec here — verify it
+      # structurally instead (Mach-O / ELF arm64 header).
       - name: smoke (serves --version)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: |
           chmod +x dist/kampodra
           ./dist/kampodra --version
+      - name: smoke (binary header matches target platform)
+        if: matrix.goos != 'linux' || matrix.goarch != 'amd64'
+        run: |
+          test -x dist/kampodra
+          case "${{ matrix.goos }}/${{ matrix.goarch }}" in
+            darwin/arm64) file dist/kampodra | grep -q "Mach-O 64-bit executable arm64" ;;
+            darwin/amd64) file dist/kampodra | grep -q "Mach-O 64-bit executable x86_64" ;;
+            linux/arm64)  file dist/kampodra | grep -q "ELF 64-bit.*ARM aarch64" ;;
+          esac
       - uses: actions/upload-artifact@v4
         with:
           name: kampodra-${{ matrix.goos }}-${{ matrix.goarch }}
