@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.15 — 2026-10-31
 
 - **`vm gc` (kampodra-native)** — dry-run-by-default VM garbage sweep: the
   inventory phase classifies every host artifact into a typed table
