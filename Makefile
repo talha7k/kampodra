@@ -128,12 +128,18 @@ version-check:
 # publish-tagged: republish an EXISTING release without disturbing trunk.
 # Runs the full publish flow from a throwaway worktree pinned at the
 # version's tag — version-check sees tag==HEAD there. The worktree is
-# removed on success AND failure.
+# removed on success AND failure. Auth: writes the worktree .npmrc with
+# ONLY the ${NPM_TOKEN} interpolation reference — inject the token via
+# the environment (varlock run -- make publish-tagged, or
+# NPM_TOKEN=$(pass show kampodra/npm-token) make publish-tagged).
 publish-tagged:
 	@test -n "$(VERSION)" || { echo "cannot read npm/package.json version"; exit 1; }
 	@git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null 2>&1 || { echo "no tag v$(VERSION) — nothing to republish"; exit 1; }
 	@test -z "$$(git worktree list --porcelain | grep 'refs/tags/v$(VERSION)')" || { echo "a worktree for v$(VERSION) already exists — remove it first"; exit 1; }
+	@test -n "$(NPM_TOKEN)" || { echo "NPM_TOKEN is not set — the publish would be anonymous (npm masks that as E404). Export it first, e.g. NPM_TOKEN=$$(pass show kampodra/npm-token) make publish-tagged"; exit 1; }
 	git worktree add .worktrees/publish-v$(VERSION) "v$(VERSION)"
+	printf '//registry.npmjs.org/:_authToken=$${NPM_TOKEN}\n' > .worktrees/publish-v$(VERSION)/.npmrc
+	chmod 600 .worktrees/publish-v$(VERSION)/.npmrc
 	@status=0; $(MAKE) -C .worktrees/publish-v$(VERSION) publish || status=$$?; \
 	git worktree remove --force .worktrees/publish-v$(VERSION) || true; \
 	exit $$status
