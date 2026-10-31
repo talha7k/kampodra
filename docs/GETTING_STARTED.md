@@ -19,7 +19,19 @@ your first production deploy.
 - **Podman** (rootful or rootless) — no Docker daemon needed
 - **kamal-proxy** — optional but recommended; it is the TLS edge that deploys re-point. `vm-prepare` can install it for you (note: `vm-prepare` targets a bare **Alpine** host — OpenRC, no systemd).
 
-## Build from source
+## Install
+
+From npm (macOS / Linux, x64 + arm64):
+
+```bash
+npm i -g kampodra
+kampodra --version
+```
+
+Binaries ship as `@kampodra/<platform>` optional deps under the `@kampodra`
+npm org; npm picks the one for your machine.
+
+Or build from source:
 
 ```bash
 git clone https://github.com/talha7k/kampodra && cd kampodra

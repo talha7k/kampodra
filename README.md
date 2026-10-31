@@ -33,7 +33,18 @@ backups, DNS, tenant migrations, and deployment history.
 
 ## Quick start
 
-Build from source:
+Install from npm (macOS / Linux, x64 + arm64):
+
+```bash
+npm i -g kampodra
+```
+
+The binary ships as platform-specific optional deps under the `@kampodra`
+npm org (`@kampodra/darwin-arm64`, `@kampodra/darwin-x64`,
+`@kampodra/linux-arm64`, `@kampodra/linux-x64`) — npm installs the one
+matching your machine.
+
+Or build from source:
 
 ```bash
 git clone https://github.com/talha7k/kampodra && cd kampodra
